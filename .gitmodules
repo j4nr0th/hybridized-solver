@@ -1,0 +1,3 @@
+[submodule "cpyutl"]
+	path = cpyutl
+	url = https://github.com/j4nr0th/cpyutl.git

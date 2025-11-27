@@ -1,0 +1,32 @@
+# IDE files
+.vscode/
+.idea/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extension build files
+build/
+dist/
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# CMake files
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# Test output
+test_output/
+*.log
+.coverage
+htmlcov/
