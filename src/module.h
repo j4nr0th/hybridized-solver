@@ -35,15 +35,16 @@
 
 typedef struct
 {
-    // Add module state here
+    PyTypeObject *type_block_info;
+    PyTypeObject *type_block_system;
 } module_state_t;
 
 MODULE_INTERNAL
-extern PyModuleDef template_module_def;
+extern PyModuleDef hybsol_module_def;
 
 static inline const module_state_t *module_state_from_type(PyTypeObject *type)
 {
-    PyObject *const mod = PyType_GetModuleByDef(type, &template_module_def);
+    PyObject *const mod = PyType_GetModuleByDef(type, &hybsol_module_def);
     if (!mod)
     {
         return NULL;
@@ -53,3 +54,11 @@ static inline const module_state_t *module_state_from_type(PyTypeObject *type)
 
 MODULE_INTERNAL
 int heap_type_traverse_type(PyObject *self, visitproc visit, void *arg);
+
+typedef uint64_t u64;
+typedef double_t f64;
+typedef uint32_t uint;
+
+#ifndef MODULE_TYPE_NAME
+#define MODULE_TYPE_NAME(name) ("hybsol._mod." #name)
+#endif

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.29)
 
 if (NOT DEFINED SKBUILD_PROJECT_NAME)
-    set(SKBUILD_PROJECT_NAME "cpython_template")
+    set(SKBUILD_PROJECT_NAME "hybsol")
 endif ()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -15,7 +15,12 @@ execute_process(
         OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-Python_add_library(_mod MODULE src/module.c WITH_SOABI)
+Python_add_library(_mod MODULE
+        src/module.c
+        src/blocks.c
+        src/block_info.c
+        src/block_system.c
+        WITH_SOABI)
 
 add_subdirectory(cpyutl)
 
@@ -32,4 +37,3 @@ target_include_directories(_mod PRIVATE ${NumPy_INCLUDE_DIRS} ${Python_INCLUDE_D
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(_mod PRIVATE -Wall -Wextra -Werror -fwhole-program -flto=auto)
 endif ()
-

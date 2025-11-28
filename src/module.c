@@ -2,6 +2,9 @@
 #include "module.h"
 
 //  Numpy
+#include "block_info.h"
+#include "block_system.h"
+
 #include <numpy/npy_no_deprecated_api.h>
 
 static void free_module_state(void *module)
@@ -25,7 +28,11 @@ static int module_exec(PyObject *mod)
         return -1;
 
     module_state_t *const module_state = (module_state_t *)PyModule_GetState(mod);
-    if (!module_state)
+    if (!module_state ||
+        (module_state->type_block_info = cpyutl_add_type_from_spec_to_module(mod, &block_info_type_spec, NULL)) ==
+            NULL ||
+        (module_state->type_block_system = cpyutl_add_type_from_spec_to_module(mod, &block_system_type_spec, NULL)) ==
+            NULL)
     {
         return -1;
     }
@@ -34,7 +41,7 @@ static int module_exec(PyObject *mod)
     return 0;
 }
 
-PyModuleDef interplib_module = {
+PyModuleDef hybsol_module_def = {
     .m_base = PyModuleDef_HEAD_INIT,
     .m_name = "hybsol._mod",
     .m_doc = "Extension to improve performance of the hybridized solver.",
@@ -52,7 +59,7 @@ PyMODINIT_FUNC PyInit__mod(void) // TODO: rename to match module name
 {
     import_array();
 
-    return PyModuleDef_Init(&interplib_module);
+    return PyModuleDef_Init(&hybsol_module_def);
 }
 
 int heap_type_traverse_type(PyObject *self, const visitproc visit, void *arg)

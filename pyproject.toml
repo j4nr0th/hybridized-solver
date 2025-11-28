@@ -52,7 +52,7 @@ docs = [
 
 
 [tool.pyrefly]
-project-includes = ["python/hybsol/**/*.py"]
+project-includes = ["python/hybsol/**/*.py", "python/hybsol/**/*.pyi"]
 use-ignore-files = true
 search-path = ["python/"]
 
