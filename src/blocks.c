@@ -148,3 +148,65 @@ u64 row_array_find_first_geq(const u64 size, const row_entry_t *const array[stat
 
     return size;
 }
+
+result_t block_system_get_block(const block_system_t *this, const u64 idx_row, const u64 idx_col, matrix_t *out)
+{
+    CPYUTL_ASSERT(idx_row < this->n && idx_col < this->n,
+                  "Row and/or column index was out of bounds (indices: (%zu, %zu) but the limits are [0, %u)).",
+                  idx_row, idx_col, this->n);
+    const sys_row_t *const row = this->rows + idx_row;
+    const u64 idx = row_array_find_first_geq(row->count, (const row_entry_t *const *)row->entries, idx_col);
+    if (idx == row->count || row->entries[idx]->col != idx_col)
+    {
+        // No block
+        return RESULT_BLOCK_NOT_IN_SYSTEM;
+    }
+    *out = (matrix_t){
+        .rows = this->block_sizes[idx_row], .cols = this->block_sizes[idx_col], .data = row->entries[idx]->vals};
+
+    return RESULT_SUCCESS;
+}
+PyArrayObject *matrix_to_array(const matrix_t *mat)
+{
+    const npy_intp dims[2] = {(npy_intp)mat->rows, (npy_intp)mat->cols};
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
+    if (!arr)
+        return NULL;
+    memcpy(PyArray_DATA(arr), mat->data, mat->rows * mat->cols * sizeof(*mat->data));
+    return arr;
+}
+matrix_t matrix_from_array(const PyArrayObject *arr)
+{
+    CPYUTL_ASSERT(PyArray_NDIM(arr) == 2, "Expected a 2D array, got a %dD array.", PyArray_NDIM(arr));
+    CPYUTL_ASSERT(check_input_array(arr, 0, (const npy_intp[]){}, NPY_DOUBLE,
+                                    NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "matrix") == 0,
+                  "Array did not have correct dtype and/or flags!");
+    return (matrix_t){.rows = (u64)PyArray_DIM(arr, 0), .cols = (u64)PyArray_DIM(arr, 1), .data = PyArray_DATA(arr)};
+}
+
+void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out)
+{
+    CPYUTL_ASSERT(a->cols == b->rows,
+                  "Matrix multiplication: number of columns of A (%zu) does not match number of rows of B (%zu).",
+                  a->cols, b->rows);
+    CPYUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
+
+    for (u64 i = 0; i < a->rows; ++i)
+    {
+        for (u64 j = 0; j < b->cols; ++j)
+        {
+            f64 v = 0;
+
+            for (u64 k = 0; k < a->cols; ++k)
+                v += a->data[i * a->cols + k] * b->data[k * b->cols + j];
+
+            out->data[i * out->cols + j] = v;
+        }
+    }
+}
+void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b)
+{
+    CPYUTL_ASSERT(a->rows == b->rows && a->cols == b->cols, "Matrices have different dimensions.");
+    for (u64 i = 0; i < a->rows * a->cols; ++i)
+        a->data[i] -= b->data[i];
+}

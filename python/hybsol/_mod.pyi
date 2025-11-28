@@ -68,5 +68,62 @@ class BlockSystem:
         ...
 
     def get_block(self, row: int, col: int) -> npt.NDArray[np.double]:
-        """Get the block of the matrix."""
+        """Get the block of the system.
+
+        Parameters
+        ----------
+        row : int
+            Row index of the block to get.
+        col : int
+            Column index of the block to get.
+
+        Returns
+        -------
+        array
+            New array with the same value as the block.
+        """
+        ...
+
+    def multiply_row(self, row: int, val: npt.ArrayLike) -> None:
+        """Multiply the row by the matrix.
+
+        Parameters
+        ----------
+        row : int
+            Row index of blocks to multiply.
+
+        val : array_like
+            Square matrix with which the row should be multiplied.
+        """
+        ...
+
+    def get_block_size(self, row: int, col: int) -> tuple[int, int]:
+        """Get the size of a system block."""
+        ...
+
+    def eliminate_row(self, row_src: int, row_tgt: int, val: npt.ArrayLike) -> None:
+        r"""Eliminate a target row using a source row, multiplied by matrix.
+
+        This performs the row elimination operation from the source row on the target
+        row. If the source row is represented by :math:`\mathbf{M}_s`, the target row
+        by :math:`\mathbf{M}_t`, and the scaling matrix as :math:`\mathbf{S}`, the
+        new vale of the target row will be:
+
+        ..math ::
+            \mathbf{M}_t^\prime = \mathbf{M}_t - \mathbf{S} \mathbf{M}_s
+
+        This operation will ignore all entres in both rows with column index lower or
+        equal to ``row_src``, since those are assumed to have already been eliminated.
+
+        Parameters
+        ----------
+        row_src : int
+            Index of the source row.
+
+        row_tgt : int
+            Index of the row to eliminate.
+
+        val : array_like
+            Matrix used to scale the target row.
+        """
         ...

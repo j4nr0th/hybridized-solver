@@ -35,6 +35,20 @@ int block_system_add_block(const block_system_t *this, u64 idx_row, u64 idx_col,
 MODULE_INTERNAL
 int block_system_is_valid(const block_system_t *this);
 
-// TODO: test this one
 MODULE_INTERNAL
 u64 row_array_find_first_geq(u64 size, const row_entry_t *const array[static size], u64 val);
+
+MODULE_INTERNAL
+result_t block_system_get_block(const block_system_t *this, u64 idx_row, u64 idx_col, matrix_t *out);
+
+MODULE_INTERNAL
+PyArrayObject *matrix_to_array(const matrix_t *mat);
+
+MODULE_INTERNAL
+matrix_t matrix_from_array(const PyArrayObject *arr);
+
+MODULE_INTERNAL
+void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out);
+
+MODULE_INTERNAL
+void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b);

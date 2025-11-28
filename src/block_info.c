@@ -39,7 +39,12 @@ static PyObject *block_info_get_col(const block_info_object *self, void *Py_UNUS
 
 static PyObject *block_info_get_shape(const block_info_object *self, void *Py_UNUSED(closure))
 {
-    return Py_BuildValue("(nn)", (Py_ssize_t)self->rows, (Py_ssize_t)self->cols);
+    return cpyutl_output_create_check(CPYOUT_TYPE_TUPLE,
+                                      (const cpyutl_output_t[]){
+                                          {.type = CPYOUT_TYPE_PYINT, .value_int = (Py_ssize_t)self->rows},
+                                          {.type = CPYOUT_TYPE_PYINT, .value_int = (Py_ssize_t)self->cols},
+                                          {},
+                                      });
 }
 
 static PyObject *block_info_get_value(const block_info_object *self, void *Py_UNUSED(closure))

@@ -62,3 +62,9 @@ typedef uint32_t uint;
 #ifndef MODULE_TYPE_NAME
 #define MODULE_TYPE_NAME(name) ("hybsol._mod." #name)
 #endif
+
+typedef enum
+{
+    RESULT_SUCCESS,
+    RESULT_BLOCK_NOT_IN_SYSTEM,
+} result_t;
