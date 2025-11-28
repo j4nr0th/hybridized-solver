@@ -52,8 +52,9 @@ docs = [
 
 
 [tool.pyrefly]
-project-includes = ["python/**/*.py"]
+project-includes = ["python/hybsol/**/*.py"]
 use-ignore-files = true
+search-path = ["python/"]
 
 
 [tool.codespell]

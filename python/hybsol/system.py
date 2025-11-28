@@ -279,7 +279,7 @@ def decompose_block_system(
                 # Scale by the first block
                 inv = np.linalg.inv(tgt[0][1])
                 for _, u in tgt:
-                    u[:] = u @ inv
+                    u[:] = inv @ u
                 operations.append(ScaleOperation(i_tgt, inv))
                 rows_src.append(i_tgt)
             else:

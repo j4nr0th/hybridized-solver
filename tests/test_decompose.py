@@ -38,5 +38,46 @@ def test_dense_matrix(n: int) -> None:
     assert pytest.approx(sol) == lhs
 
 
+@pytest.mark.parametrize("n_blocks", (2, 4, 10))
+@pytest.mark.parametrize("block_size", (2, 3, 4))
+def test_dense_matrix_blocks(n_blocks: int, block_size: int) -> None:
+    """Check the decomposition works on normal dense matrices."""
+    rng = np.random.default_rng(15)
+    mat = rng.random((n_blocks * block_size, n_blocks * block_size))
+    # Check the matrix that was randomly generated is not anywhere near singular
+    assert np.abs(np.linalg.det(mat)) > 1e-3, "RNG needs a better seed."
+
+    # Create the system from the full matrix
+    sys = BlockSystem(*np.full(n_blocks, block_size, int))
+    for i in range(n_blocks):
+        for j in range(n_blocks):
+            sys.add_block(
+                i,
+                j,
+                mat[
+                    block_size * i : block_size * (i + 1),
+                    block_size * j : block_size * (j + 1),
+                ],
+            )
+
+    # Check the system actually represents the right thing.
+    sys_mat = sys.as_array()
+    assert np.all(mat == sys_mat)
+
+    # Generate the lhs
+    lhs = rng.random(n_blocks * block_size)
+
+    # Get the rhs
+    rhs = mat @ lhs
+
+    # Decompose
+    ops, decomp = decompose_block_system(sys)
+
+    # Solve
+    sol = solve_decomposed(decomp, ops, rhs)
+
+    assert pytest.approx(sol) == lhs
+
+
 if __name__ == "__main__":
-    test_dense_matrix(5)
+    test_dense_matrix_blocks(5, 4)

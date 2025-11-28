@@ -35,4 +35,5 @@ repos:
       - id: pyrefly-typecheck-specific-version
         name: Pyrefly (type checking)
         pass_filenames: true
-        additional_dependencies: ["pyrefly==0.29.2"]
+        additional_dependencies:
+          ["pyrefly==0.29.2", "numpy>=2.0.0", "pytest==9.0.1"]
