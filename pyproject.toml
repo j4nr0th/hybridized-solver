@@ -1,8 +1,8 @@
 [project]
-name = "cpython-template"
+name = "hybsol"
 version = "0.0.1a"
 authors = [{ name = "Jan Roth", email = "r0th.j4n@gmail.com" }]
-description = "Template for CPython projects."
+description = "Solver for Hybridized systems."
 requires-python = ">=3.11"
 dependencies = ["numpy>=2.0.0", "scipy"]
 
@@ -52,7 +52,7 @@ docs = [
 
 
 [tool.pyrefly]
-project-includes = ["python/**.py"]
+project-includes = ["python/**/*.py"]
 use-ignore-files = true
 
 
@@ -81,7 +81,7 @@ unfixable = []
 convention = "numpy"
 
 [tool.pytest]
-addopts = ["--doctest-modules", "-ra", "--cov=interplib", "--ignore=cpyutl"]
+addopts = ["--doctest-modules", "-ra", "--cov=hybsol", "--ignore=cpyutl"]
 testpaths = ["tests", "src"]
 console_output_style = "count"
 

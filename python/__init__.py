@@ -1,1 +1,0 @@
-"""Module's entry point."""

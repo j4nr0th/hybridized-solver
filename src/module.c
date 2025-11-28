@@ -36,8 +36,8 @@ static int module_exec(PyObject *mod)
 
 PyModuleDef interplib_module = {
     .m_base = PyModuleDef_HEAD_INIT,
-    .m_name = "cpython_template._mod",
-    .m_doc = "Internal C-extension module for cpython_template",
+    .m_name = "hybsol._mod",
+    .m_doc = "Extension to improve performance of the hybridized solver.",
     .m_size = sizeof(module_state_t),
     .m_free = free_module_state,
     .m_slots =
