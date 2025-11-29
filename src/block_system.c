@@ -428,18 +428,20 @@ static PyObject *block_system_object_multiply_row(PyObject *self, PyTypeObject *
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
         return NULL;
 
-    Py_ssize_t row_idx;
+    Py_ssize_t row_idx, start_idx = 0;
     PyObject *value;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
                 {.type = CPYARG_TYPE_SSIZE, .p_val = &row_idx, .kwname = "row"},
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &value, .kwname = "val"},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &start_idx, .kwname = "start", .optional = 1},
                 {},
             },
             args, nargs, kwnames) < 0)
         return NULL;
 
-    if (check_block_indices(this->system.n, row_idx, "Row index") < 0)
+    if (check_block_indices(this->system.n, row_idx, "Row index") < 0 ||
+        check_block_indices(this->system.n, start_idx, "Start index"))
     {
         return NULL;
     }
@@ -481,6 +483,9 @@ static PyObject *block_system_object_multiply_row(PyObject *self, PyTypeObject *
     {
         // Prepare in and out arrays
         row_entry_t *const entry = row->entries[i];
+        if (entry->col < (u64)start_idx)
+            continue;
+
         const matrix_t block = {.rows = rows, .cols = this->system.block_sizes[entry->col], .data = entry->vals};
         const matrix_t out = {.rows = block.rows, .cols = block.cols, .data = buffer};
 
@@ -782,6 +787,134 @@ PyDoc_STRVAR(block_system_object_has_block_docstring,
              "has_block(row: int, col: int) -> bool\n"
              "Check if the block at row ``row`` and column ``col`` is present.\n");
 
+static PyObject *block_system_object_no_lower_connections(PyObject *self, PyTypeObject *defining_class,
+                                                          PyObject *const *Py_UNUSED(args), const Py_ssize_t nargs,
+                                                          const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (nargs != 0 || kwnames != NULL)
+    {
+        PyErr_SetString(PyExc_TypeError, "No arguments accepted.");
+        return NULL;
+    }
+
+    const npy_intp dim = (npy_intp)this->system.n;
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(1, &dim, NPY_BOOL);
+    if (!arr)
+        return NULL;
+    npy_bool *const out = (npy_bool *)PyArray_DATA(arr);
+    for (u64 i = 0; i < this->system.n; ++i)
+    {
+        out[i] = this->system.rows[i].count == 0 ? 1 : this->system.rows[i].entries[0]->col >= i;
+    }
+    return (PyObject *)arr;
+}
+
+PyDoc_STRVAR(block_system_object_no_lower_connections_docstring,
+             "no_lower_connections() -> numpy.typing.NDArray[numpy.bool]\n"
+             "Return an array indicating entries to the left of the diagonal.\n");
+
+static PyObject *block_system_object_first_column(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                                  const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+    Py_ssize_t i_row;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_row, .kwname = "row"},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (check_block_indices(this->system.n, i_row, "Row index") < 0)
+        return NULL;
+
+    const sys_row_t *const row = this->system.rows + i_row;
+    if (row->count == 0)
+    {
+        PyErr_SetString(PyExc_ValueError, "Row has no entries.");
+        return NULL;
+    }
+    return PyLong_FromUnsignedLongLong(row->entries[0]->col);
+}
+
+PyDoc_STRVAR(block_system_object_first_column_docstring, "first_column(row: int) -> int\n"
+                                                         "Return the index of the first index in a non-empy row.\n");
+
+static PyObject *block_system_object_get_next_column_index(PyObject *self, PyTypeObject *defining_class,
+                                                           PyObject *const *args, const Py_ssize_t nargs,
+                                                           const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    Py_ssize_t i_row, i_col;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_row, .kwname = "row"},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_col, .kwname = "col"},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (check_block_indices(this->system.n, i_row, "Row index") < 0 ||
+        check_block_indices(this->system.n, i_col, "Column index") < 0)
+    {
+        return NULL;
+    }
+
+    const sys_row_t *const row = this->system.rows + i_row;
+    if (row->count == 0)
+    {
+        PyErr_SetString(PyExc_ValueError, "Row has no entries.");
+        return NULL;
+    }
+
+    const u64 idx = row_array_find_first_geq(row->count, (const row_entry_t *const *)row->entries, i_col + 1);
+    if (idx == row->count)
+    {
+        PyErr_SetString(PyExc_ValueError, "Row has no entries after column index.");
+        return NULL;
+    }
+
+    return PyLong_FromUnsignedLongLong(row->entries[idx]->col);
+}
+
+PyDoc_STRVAR(block_system_object_get_next_column_index_docstring, "get_next_column_index(row: int, col: int) -> int\n"
+                                                                  "Get the column index after the current one.\n");
+
+static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
+{
+    const block_system_object *this = (block_system_object *)self;
+    return PyLong_FromUnsignedLongLong(this->system.n);
+}
+
+static PyObject *block_system_object_get_block_sizes(PyObject *self, void *Py_UNUSED(closure))
+{
+    const block_system_object *this = (block_system_object *)self;
+    const npy_intp dim = (npy_intp)this->system.n;
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(1, &dim, NPY_UINT64);
+    if (!arr)
+        return NULL;
+    npy_uint64 *const out = (npy_uint64 *)PyArray_DATA(arr);
+    for (u64 i = 0; i < this->system.n; ++i)
+    {
+        out[i] = this->system.block_sizes[i];
+    }
+    return (PyObject *)arr;
+}
+
 PyType_Spec block_system_type_spec = {
     .name = MODULE_TYPE_NAME(BlockSystem),
     .basicsize = sizeof(block_system_object),
@@ -848,6 +981,38 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_has_block,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_has_block_docstring,
+                 },
+                 {
+                     .ml_name = "no_lower_connections",
+                     .ml_meth = (void *)block_system_object_no_lower_connections,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_no_lower_connections_docstring,
+                 },
+                 {
+                     .ml_name = "first_column",
+                     .ml_meth = (void *)block_system_object_first_column,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_first_column_docstring,
+                 },
+                 {
+                     .ml_name = "get_next_column_index",
+                     .ml_meth = (void *)block_system_object_get_next_column_index,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_get_next_column_index_docstring,
+                 },
+                 {},
+             }},
+            {Py_tp_getset,
+             (PyGetSetDef[]){
+                 {
+                     .name = "n_blocks",
+                     .get = block_system_object_get_n_blocks,
+                     .doc = "int : Number of blocks.",
+                 },
+                 {
+                     .name = "block_sizes",
+                     .get = block_system_object_get_block_sizes,
+                     .doc = "numpy.typing.NDArray[numpy.uint64] : Array of sizes of blocks.",
                  },
                  {},
              }},

@@ -84,7 +84,7 @@ class BlockSystem:
         """
         ...
 
-    def multiply_row(self, row: int, val: npt.ArrayLike) -> None:
+    def multiply_row(self, row: int, val: npt.ArrayLike, start: int = 0) -> None:
         """Multiply the row by the matrix.
 
         Parameters
@@ -94,6 +94,9 @@ class BlockSystem:
 
         val : array_like
             Square matrix with which the row should be multiplied.
+
+        start : int, default: 0
+            All blocks before this block index are skipped.
         """
         ...
 
@@ -130,4 +133,26 @@ class BlockSystem:
 
     def has_block(self, row: int, col: int) -> bool:
         """Check if the block at row ``row`` and column ``col`` is present."""
+        ...
+
+    @property
+    def n_blocks(self) -> int:
+        """Number of blocks."""
+        ...
+
+    @property
+    def block_sizes(self) -> npt.NDArray[np.uint64]:
+        """Array of sizes of blocks."""
+        ...
+
+    def no_lower_connections(self) -> npt.NDArray[np.bool]:
+        """Return an array indicating entries to the left of the diagonal."""
+        ...
+
+    def first_column(self, row: int) -> int:
+        """Return the index of the first index in a non-empy row."""
+        ...
+
+    def get_next_column_index(self, row: int, col: int) -> int:
+        """Get the column index after the current one."""
         ...
