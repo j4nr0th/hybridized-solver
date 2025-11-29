@@ -260,10 +260,27 @@ def test_c_system_eliminate_row_sparse(
             assert pytest.approx(computed) == expected
 
 
+@pytest.mark.parametrize(("n", "m"), ((2, 2), (3, 3), (10, 15)))
+def test_c_system_inverse(n: int, m: int) -> None:
+    """Check that inverse matrix function works correctly."""
+    rng = np.random.default_rng(n * m)
+    mat = rng.random((n, n))
+    lhs = rng.random((n, m))
+    rhs = mat @ lhs
+    out = np.empty_like(rhs)
+
+    sys = CBlockSystem(n)
+    sys.add_block(0, 0, mat)
+    sys.decompose_diagonal(idx=0)
+    sys.solve_diagonal(out=out, idx=0, val=rhs)
+    assert pytest.approx(out) == lhs
+
+
 if __name__ == "__main__":
     with np.printoptions(precision=2, suppress=True):
         # test_c_system_as_array(11, 2)
         # test_c_system_get_block(3, 3)
         # test_c_system_multiply_row(10, 3)
         # test_c_system_eliminate_row_dense(10, 4)
-        test_c_system_eliminate_row_sparse(20, 4, 0.1)
+        # test_c_system_eliminate_row_sparse(20, 4, 0.1)
+        test_c_system_inverse(4, 4)

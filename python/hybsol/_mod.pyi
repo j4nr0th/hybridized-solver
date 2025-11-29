@@ -156,3 +156,55 @@ class BlockSystem:
     def get_next_column_index(self, row: int, col: int) -> int:
         """Get the column index after the current one."""
         ...
+
+    def decompose_diagonal(self, idx: int) -> None:
+        """Decomposes the diagonal block using LU decomposition.
+
+        Performs unpivoted LU decomposition on the block ``(idx, idx)``. This
+        is done in preparation to a call to ``solve_diagonal``.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the block to decompose.
+        """
+        ...
+
+    def solve_diagonal(
+        self, idx: int, val: npt.ArrayLike, out: npt.NDArray[np.double] | None = None
+    ) -> npt.NDArray[np.double]:
+        """Use the previously decomposed diagonal to solve the linear system.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the diagonal to use. For this method to make any sense, a call to
+            :meth:`BlockSystem.decompose_diagonal` should have been made for the same
+            block ``idx``.
+
+        val : array_like
+            Value to use as the right side of the matrix.
+
+        out : array, optional
+            Array to write the result to. If not given (or none), a new array
+            is created.
+
+        Returns
+        -------
+        array
+            Result, which if ``out`` was ``None`` will be in a new array, otherwise
+            another reference to ``out`` is returned.
+        """
+        ...
+
+    def row_apply_decomposition(self, row: int) -> None:
+        """Apply the decomposition of the diagonal block to the rest of the same row.
+
+        Parameters
+        ----------
+        row : int
+            Index of the row to perform this on. This row must have had its diagonal
+            block decomposed by a call to :meth:`BlockSystem.decompose_diagonal` with
+            ``row`` passed to it before.
+        """
+        ...

@@ -894,6 +894,208 @@ static PyObject *block_system_object_get_next_column_index(PyObject *self, PyTyp
 PyDoc_STRVAR(block_system_object_get_next_column_index_docstring, "get_next_column_index(row: int, col: int) -> int\n"
                                                                   "Get the column index after the current one.\n");
 
+static PyObject *block_system_object_decompose_diagonal(PyObject *self, PyTypeObject *defining_class,
+                                                        PyObject *const *args, const Py_ssize_t nargs,
+                                                        const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    Py_ssize_t i_row;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_row, .kwname = "idx"},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (check_block_indices(this->system.n, i_row, "Block index") < 0)
+        return NULL;
+
+    matrix_t mat;
+    if (block_system_get_block(&this->system, i_row, i_row, &mat) != RESULT_SUCCESS)
+    {
+        PyErr_Format(PyExc_ValueError, "Row %zu has no diagonal entry.", i_row);
+        return NULL;
+    }
+
+    matrix_lu_decompose(&mat);
+
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(block_system_object_decompose_diagonal_docstring,
+             "decompose_diagonal(idx: int) -> None\n"
+             "Decomposes the diagonal block using LU decomposition.\n"
+             "\n"
+             "Performs unpivoted LU decomposition on the block ``(idx, idx)``. This\n"
+             "is done in preparation to a call to ``solve_diagonal``.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "idx : int\n"
+             "    Index of the block to decompose.\n");
+
+static PyObject *block_system_object_solve_diagonal(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                                    const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+    Py_ssize_t i_block;
+    PyObject *val;
+    PyArrayObject *out = NULL;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_block, .kwname = "idx"},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &val, .kwname = "val"},
+                {
+                    .type = CPYARG_TYPE_PYTHON,
+                    .p_val = &out,
+                    .kwname = "out",
+                    .type_check = &PyArray_Type,
+                    .optional = 1,
+                },
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (check_block_indices(this->system.n, i_block, "Block index") < 0)
+        return NULL;
+
+    matrix_t mat_block;
+    if (block_system_get_block(&this->system, i_block, i_block, &mat_block) != RESULT_SUCCESS)
+    {
+        PyErr_Format(PyExc_ValueError, "Row %zu has no diagonal entry.", i_block);
+        return NULL;
+    }
+
+    // Convert the input into an array
+    PyArrayObject *const arr =
+        (PyArrayObject *)PyArray_FROMANY(val, NPY_DOUBLE, 1, 2, NPY_ARRAY_ALIGNED | NPY_ARRAY_C_CONTIGUOUS);
+    if (!arr)
+        return NULL;
+    const matrix_t mat_in = matrix_from_array(arr);
+
+    // Deal with output
+    if (out)
+    {
+        // It was given, so check it!
+        if (check_input_array(out, PyArray_NDIM(arr), PyArray_DIMS(arr), NPY_DOUBLE,
+                              NPY_ARRAY_ALIGNED | NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_WRITEABLE, "out") < 0)
+        {
+            Py_DECREF(arr);
+            return NULL;
+        }
+        Py_INCREF(out);
+    }
+    else
+    {
+        out = (PyArrayObject *)PyArray_SimpleNew(2, PyArray_DIMS(arr), NPY_DOUBLE);
+        if (!out)
+        {
+            Py_DECREF(arr);
+            return NULL;
+        }
+    }
+    const matrix_t mat_out = matrix_from_array(out);
+
+    // Solve and store the output.
+    matrix_lu_solve(&mat_block, &mat_in, &mat_out);
+
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(block_system_object_solve_diagonal_docstring,
+             "solve_diagonal(idx: int, val: numpy.tying.ArrayLike, out: numpy.typing.NDArray[numpy.double] | None = "
+             "None) -> numpy.tying.NDArray[numpy.double]\n"
+             "Use the previously decomposed diagonal to solve the linear system.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "idx : int\n"
+             "    Index of the diagonal to use. For this method to make any sense, a call to\n"
+             "    :meth:`BlockSystem.decompose_diagonal` should have been made for the same\n"
+             "    block ``idx``.\n"
+             "\n"
+             "val : array_like\n"
+             "    Value to use as the right side of the matrix.\n"
+             "\n"
+             "out : array, optional\n"
+             "    Array to write the result to. If not given (or none), a new array\n"
+             "    is created.\n"
+             "\n"
+             "Returns\n"
+             "-------\n"
+             "array\n"
+             "    Result, which if ``out`` was ``None`` will be in a new array, otherwise\n"
+             "    another reference to ``out`` is returned.\n");
+
+static PyObject *block_system_object_row_apply_decomposition(PyObject *self, PyTypeObject *defining_class,
+                                                             PyObject *const *args, const Py_ssize_t nargs,
+                                                             const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    Py_ssize_t i_row;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_row, .kwname = "row"},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (check_block_indices(this->system.n, i_row, "Row index") < 0)
+        return NULL;
+
+    const sys_row_t *const row = this->system.rows + i_row;
+    if (row->count == 0)
+    {
+        PyErr_Format(PyExc_ValueError, "Row %zu has no entries.", i_row);
+        return NULL;
+    }
+    const u64 diagonal_idx = row_array_find_first_geq(row->count, (const row_entry_t *const *)row->entries, i_row);
+
+    if (diagonal_idx == row->count || row->entries[diagonal_idx]->col != (u64)i_row)
+    {
+        PyErr_Format(PyExc_ValueError, "Row %zu has no diagonal entry.", i_row);
+        return NULL;
+    }
+
+    const u64 block_rows = this->system.block_sizes[i_row];
+    const matrix_t mat_block =
+        (matrix_t){.rows = block_rows, .cols = block_rows, .data = row->entries[diagonal_idx]->vals};
+    for (u64 i = diagonal_idx + 1; i < row->count; ++i)
+    {
+        row_entry_t *const entry = row->entries[i];
+        const matrix_t mat_entry =
+            (matrix_t){.rows = block_rows, .cols = this->system.block_sizes[entry->col], .data = entry->vals};
+        matrix_lu_solve(&mat_block, &mat_entry, &mat_entry);
+    }
+
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(block_system_object_row_apply_decomposition_docstring,
+             "row_apply_decomposition(row: int) -> None\n"
+             "Apply the decomposition of the diagonal block to the rest of the same row.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "row : int\n"
+             "    Index of the row to perform this on. This row must have had its diagonal\n"
+             "    block decomposed by a call to :meth:`BlockSystem.decompose_diagonal` with\n"
+             "    ``row`` passed to it before.\n");
+
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
     const block_system_object *this = (block_system_object *)self;
@@ -999,6 +1201,24 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_get_next_column_index,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_get_next_column_index_docstring,
+                 },
+                 {
+                     .ml_name = "decompose_diagonal",
+                     .ml_meth = (void *)block_system_object_decompose_diagonal,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_decompose_diagonal_docstring,
+                 },
+                 {
+                     .ml_name = "solve_diagonal",
+                     .ml_meth = (void *)block_system_object_solve_diagonal,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_solve_diagonal_docstring,
+                 },
+                 {
+                     .ml_name = "row_apply_decomposition",
+                     .ml_meth = (void *)block_system_object_row_apply_decomposition,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_row_apply_decomposition_docstring,
                  },
                  {},
              }},

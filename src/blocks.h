@@ -52,3 +52,9 @@ void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out);
 
 MODULE_INTERNAL
 void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b);
+
+MODULE_INTERNAL
+void matrix_lu_decompose(const matrix_t *m);
+
+MODULE_INTERNAL
+void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out);

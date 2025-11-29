@@ -182,11 +182,16 @@ PyArrayObject *matrix_to_array(const matrix_t *mat)
 }
 matrix_t matrix_from_array(const PyArrayObject *arr)
 {
-    CPYUTL_ASSERT(PyArray_NDIM(arr) == 2, "Expected a 2D array, got a %dD array.", PyArray_NDIM(arr));
+    const int ndim = PyArray_NDIM(arr);
+    CPYUTL_ASSERT(ndim <= 2, "Expected a 1D or 2D array, got a %dD array.", ndim);
     CPYUTL_ASSERT(check_input_array(arr, 0, (const npy_intp[]){}, NPY_DOUBLE,
                                     NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "matrix") == 0,
                   "Array did not have correct dtype and/or flags!");
-    return (matrix_t){.rows = (u64)PyArray_DIM(arr, 0), .cols = (u64)PyArray_DIM(arr, 1), .data = PyArray_DATA(arr)};
+    return (matrix_t){
+        .rows = (u64)PyArray_DIM(arr, 0),
+        .cols = ndim == 2 ? (u64)PyArray_DIM(arr, 1) : 1,
+        .data = PyArray_DATA(arr),
+    };
 }
 
 void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out)
@@ -214,4 +219,64 @@ void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b)
     CPYUTL_ASSERT(a->rows == b->rows && a->cols == b->cols, "Matrices have different dimensions.");
     for (u64 i = 0; i < a->rows * a->cols; ++i)
         a->data[i] -= b->data[i];
+}
+
+void matrix_lu_decompose(const matrix_t *m)
+{
+    CPYUTL_ASSERT(m->rows == m->cols, "Matrix must be square.");
+    for (u64 i = 0; i < m->rows; ++i)
+    {
+        // Compute a row of U
+        for (u64 j = i; j < m->rows; ++j)
+        {
+            f64 u_ij = m->data[i * m->cols + j];
+            for (u64 k = 0; k < i; ++k)
+            {
+                u_ij -= m->data[i * m->cols + k] * m->data[k * m->cols + j];
+            }
+            m->data[i * m->cols + j] = u_ij;
+        }
+
+        // Compute a column of L (the first element is always implicitly 1, so skip it
+        for (u64 j = i + 1; j < m->cols; ++j)
+        {
+            f64 l_ij = m->data[j * m->cols + i];
+            for (u64 k = 0; k < i; ++k)
+            {
+                l_ij -= m->data[k * m->cols + i] * m->data[j * m->cols + k];
+            }
+            m->data[j * m->cols + i] = l_ij / m->data[i * m->cols + i];
+        }
+    }
+}
+
+void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out)
+{
+    CPYUTL_ASSERT(m->rows == m->cols && m->rows == b->rows, "Matrix must be square and have the same dimensions as b.");
+    CPYUTL_ASSERT(b->rows == out->rows && b->cols == out->cols, "Output matrix has incorrect dimensions.");
+    // Have to deal with every column in the same way
+    for (u64 i_col = 0; i_col < b->cols; ++i_col)
+    {
+        // Forward substitution to solve the L part (diagonal is 1)
+        for (u64 i = 0; i < m->rows; ++i)
+        {
+            f64 v = b->data[i * b->cols + i_col];
+            for (u64 j = 0; j < i; ++j)
+            {
+                v -= m->data[i * m->cols + j] * out->data[j * out->cols + i_col];
+            }
+            out->data[i * out->cols + i_col] = v;
+        }
+
+        // Backward substitution to solve the U part
+        for (u64 i = m->rows; i > 0; --i)
+        {
+            f64 v = out->data[(i - 1) * out->cols + i_col];
+            for (u64 j = i; j < m->rows; ++j)
+            {
+                v -= m->data[(i - 1) * m->cols + j] * out->data[j * out->cols + i_col];
+            }
+            out->data[(i - 1) * out->cols + i_col] = v / m->data[(i - 1) * m->cols + (i - 1)];
+        }
+    }
 }

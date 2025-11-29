@@ -13,22 +13,18 @@ from hybsol._mod import BlockSystem
 class ScaleOperation:
     """Type to define a scale operation.
 
-    This operation scales a block by a given factor.
+    This applies LU decomposition of the diagonal entry.
 
     Parameters
     ----------
     block_index : int
         The index of the block to scale.
-    scale : array
-        The scale matrix to apply to the block.
     """
 
     block_index: int
-    scale: npt.NDArray[np.float64]
 
-    def __init__(self, block_index: int, scale: npt.ArrayLike) -> None:
+    def __init__(self, block_index: int) -> None:
         object.__setattr__(self, "block_index", int(block_index))
-        object.__setattr__(self, "scale", np.asarray(scale, np.float64, copy=None))
 
 
 @dataclass(frozen=True)
@@ -103,10 +99,10 @@ def decompose_block_system_c(
         if not is_free:
             rows_tgt.append(TargetRow(i_row, system.first_column(i_row)))
         else:
-            inv = np.linalg.inv(system.get_block(i_row, i_row))
-            operations.append(ScaleOperation(i_row, inv))
-            if i_row + 1 != system.n_blocks:
-                system.multiply_row(i_row, inv, start=i_row + 1)
+            # inv = np.linalg.inv(system.get_block(i_row, i_row))
+            system.decompose_diagonal(i_row)
+            system.row_apply_decomposition(i_row)
+            operations.append(ScaleOperation(i_row))
             rows_src.append(i_row)
 
     while rows_tgt:
@@ -148,11 +144,9 @@ def decompose_block_system_c(
 
             if first_idx == i_tgt:
                 # Scale by the first block
-                inv = np.linalg.inv(system.get_block(i_tgt, i_tgt))
-                if i_tgt + 1 != system.n_blocks:
-                    system.multiply_row(i_tgt, inv, start=i_tgt + 1)
-
-                operations.append(ScaleOperation(i_tgt, inv))
+                system.decompose_diagonal(i_tgt)
+                system.row_apply_decomposition(i_tgt)
+                operations.append(ScaleOperation(i_tgt))
                 rows_src.append(i_tgt)
             else:
                 rows_tgt.append(TargetRow(i_tgt, first_idx))
@@ -176,7 +170,10 @@ def solve_decomposed_c(
     for op in operations:
         match op:
             case ScaleOperation() as scal:
-                vec[scal.block_index] = scal.scale @ vec[scal.block_index]
+                decomposed.solve_diagonal(
+                    scal.block_index, vec[scal.block_index], vec[scal.block_index]
+                )
+                # vec[scal.block_index] = scal.scale @ vec[scal.block_index]
 
             case EliminationOperation() as elim:
                 multiplier = decomposed.get_block(
