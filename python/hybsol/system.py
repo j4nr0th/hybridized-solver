@@ -10,15 +10,15 @@ from hybsol._mod import BlockSystem
 
 
 @dataclass(frozen=True)
-class ScaleOperation:
-    """Type to define a scale operation.
+class OperationInvDiag:
+    """Type which represents applying an inverse of the diagonal block.
 
     This applies LU decomposition of the diagonal entry.
 
     Parameters
     ----------
     block_index : int
-        The index of the block to scale.
+        The index of the row to use.
     """
 
     block_index: int
@@ -28,7 +28,7 @@ class ScaleOperation:
 
 
 @dataclass(frozen=True)
-class EliminationOperation:
+class OperationEliminate:
     """Type to define an elimination operation.
 
     This operation eliminates a block by subtracting a multiple of another block.
@@ -55,7 +55,7 @@ class EliminationOperation:
         object.__setattr__(self, "source_block_index", int(source_block_index))
 
 
-_Operation = ScaleOperation | EliminationOperation
+_Operation = OperationInvDiag | OperationEliminate
 
 
 @dataclass(frozen=True)
@@ -102,18 +102,18 @@ def decompose_block_system_c(
             # inv = np.linalg.inv(system.get_block(i_row, i_row))
             system.decompose_diagonal(i_row)
             system.row_apply_decomposition(i_row)
-            operations.append(ScaleOperation(i_row))
+            operations.append(OperationInvDiag(i_row))
             rows_src.append(i_row)
 
     while rows_tgt:
-        possible_eliminations: list[EliminationOperation] = list()
+        possible_eliminations: list[OperationEliminate] = list()
         remaining_targets: list[TargetRow] = list()
 
         while rows_tgt:
             tgt_row = rows_tgt.pop()
             if tgt_row.first_entry in rows_src:
                 possible_eliminations.append(
-                    EliminationOperation(
+                    OperationEliminate(
                         tgt_row.index,
                         tgt_row.first_entry,
                     )
@@ -146,7 +146,7 @@ def decompose_block_system_c(
                 # Scale by the first block
                 system.decompose_diagonal(i_tgt)
                 system.row_apply_decomposition(i_tgt)
-                operations.append(ScaleOperation(i_tgt))
+                operations.append(OperationInvDiag(i_tgt))
                 rows_src.append(i_tgt)
             else:
                 rows_tgt.append(TargetRow(i_tgt, first_idx))
@@ -169,13 +169,13 @@ def solve_decomposed_c(
     # First step is to apply operations to simulate L^{-1}
     for op in operations:
         match op:
-            case ScaleOperation() as scal:
+            case OperationInvDiag() as scal:
                 decomposed.solve_diagonal(
                     scal.block_index, vec[scal.block_index], vec[scal.block_index]
                 )
                 # vec[scal.block_index] = scal.scale @ vec[scal.block_index]
 
-            case EliminationOperation() as elim:
+            case OperationEliminate() as elim:
                 multiplier = decomposed.get_block(
                     elim.target_block_index, elim.source_block_index
                 )

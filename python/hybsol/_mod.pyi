@@ -208,3 +208,22 @@ class BlockSystem:
             ``row`` passed to it before.
         """
         ...
+
+class BlockDecomposition:
+    """Type holding the decomposition of a block system."""
+
+    def __new__(cls, system: BlockSystem) -> Self: ...
+    @property
+    def system(self) -> BlockSystem:
+        """System decomposition was made with."""
+        ...
+
+    def solve(
+        self, val: npt.ArrayLike, out: npt.NDArray[np.double] | None = None
+    ) -> npt.NDArray[np.double]:
+        """Solve the system for the given rhs."""
+        ...
+
+    def operations(self) -> tuple[tuple[int, int] | tuple[int]]:
+        """Get operations as tuples of one or two ints."""
+        ...

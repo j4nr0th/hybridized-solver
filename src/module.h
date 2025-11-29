@@ -37,6 +37,7 @@ typedef struct
 {
     PyTypeObject *type_block_info;
     PyTypeObject *type_block_system;
+    PyTypeObject *type_block_decomposition;
 } module_state_t;
 
 MODULE_INTERNAL
@@ -58,6 +59,7 @@ int heap_type_traverse_type(PyObject *self, visitproc visit, void *arg);
 typedef uint64_t u64;
 typedef double_t f64;
 typedef uint32_t uint;
+typedef uint8_t u8;
 
 #ifndef MODULE_TYPE_NAME
 #define MODULE_TYPE_NAME(name) ("hybsol._mod." #name)
@@ -67,4 +69,5 @@ typedef enum
 {
     RESULT_SUCCESS,
     RESULT_BLOCK_NOT_IN_SYSTEM,
+    RESULT_FAILED_ALLOC,
 } result_t;

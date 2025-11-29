@@ -20,6 +20,7 @@ Python_add_library(_mod MODULE
         src/blocks.c
         src/block_info.c
         src/block_system.c
+        src/block_operation.c
         WITH_SOABI)
 
 add_subdirectory(cpyutl)

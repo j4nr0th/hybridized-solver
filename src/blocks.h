@@ -29,6 +29,32 @@ typedef struct
     sys_row_t *rows;  // Array of actual rows (length n)
 } block_system_t;
 
+typedef enum
+{
+    OPERATION_INVDIA,
+    OPERATION_ELIMIN,
+} operation_type_t;
+
+typedef struct
+{
+    u64 idx;
+} operation_invdia_t;
+
+typedef struct
+{
+    u64 idx_row;
+    u64 idx_col;
+} operation_elimin_t;
+
+typedef struct
+{
+    operation_type_t type;
+    union {
+        operation_invdia_t invdia;
+        operation_elimin_t elimin;
+    };
+} operation_t;
+
 MODULE_INTERNAL
 int block_system_add_block(const block_system_t *this, u64 idx_row, u64 idx_col, u64 nv, const f64 vals[static nv]);
 
@@ -58,3 +84,15 @@ void matrix_lu_decompose(const matrix_t *m);
 
 MODULE_INTERNAL
 void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out);
+
+MODULE_INTERNAL
+result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operation_t **pp_ops);
+
+MODULE_INTERNAL
+void block_system_apply_diagonal_inverse(const block_system_t *this, u64 idx_row);
+
+MODULE_INTERNAL
+void block_system_decompose_diagonal(const block_system_t *this, u64 idx_row);
+
+MODULE_INTERNAL
+result_t block_system_eliminate_row(const block_system_t *this, u64 idx_tgt, u64 idx_src);

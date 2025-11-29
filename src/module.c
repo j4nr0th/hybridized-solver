@@ -3,6 +3,7 @@
 
 //  Numpy
 #include "block_info.h"
+#include "block_operation.h"
 #include "block_system.h"
 
 #include <numpy/npy_no_deprecated_api.h>
@@ -32,7 +33,9 @@ static int module_exec(PyObject *mod)
         (module_state->type_block_info = cpyutl_add_type_from_spec_to_module(mod, &block_info_type_spec, NULL)) ==
             NULL ||
         (module_state->type_block_system = cpyutl_add_type_from_spec_to_module(mod, &block_system_type_spec, NULL)) ==
-            NULL)
+            NULL ||
+        (module_state->type_block_decomposition =
+             cpyutl_add_type_from_spec_to_module(mod, &block_decomposition_type_spec, NULL)) == NULL)
     {
         return -1;
     }
