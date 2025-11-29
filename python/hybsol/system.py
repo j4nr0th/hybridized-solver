@@ -1,115 +1,12 @@
 """Types to define system information."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
 import numpy.typing as npt
 
-from hybsol._mod import BlockSystem as CBlockSystem
-
-
-class BlockSystem:
-    """Type to define a block system."""
-
-    block_sizes: tuple[int, ...]
-    rows: tuple[list[tuple[int, npt.NDArray[np.float64]]], ...]
-
-    def __init__(self, *block_sizes: int) -> None:
-        """Initialize a block system.
-
-        Args:
-            block_sizes: The sizes of each block in the system.
-        """
-        self.block_sizes = tuple(int(v) for v in block_sizes)
-        self.rows = tuple([] for _ in block_sizes)
-
-    def add_block(
-        self,
-        row: int,
-        col: int,
-        val: npt.ArrayLike,
-    ) -> None:
-        """Add a block to the system.
-
-        Paramters
-        ---------
-        row : int
-            The row index of the block.
-        col : int
-            The column index of the block.
-        val : array_like
-            The block to add.
-        """
-        block = np.asarray(val, np.float64, copy=None)
-        expected_shape = (self.block_sizes[row], self.block_sizes[col])
-        if block.shape != expected_shape:
-            raise ValueError(
-                f"Block shape {block.shape} does not match expected shape"
-                f" {expected_shape}."
-            )
-        row_l = self.rows[row]
-        v: npt.NDArray[np.float64]
-        for c, v in row_l:
-            if col == c:
-                v[:] += block
-        row_l.append((col, block))
-        row_l.sort(key=lambda x: x[0])
-
-    def is_valid(self) -> bool:
-        """Check if the block system is valid.
-
-        Returns
-        -------
-        bool
-            True if the block system is valid, False otherwise.
-        """
-        # The system must be symmetric (a block at (i, j) means a block at (j, i))
-        # and have all diagonal blocks.
-        for i, row in enumerate(self.rows):
-            has_diagonal = False
-            for j, _ in row:
-                if i == j:
-                    has_diagonal = True
-                    continue
-                col_row = self.rows[j]
-                if not any(c == i for c, _ in col_row):
-                    return False
-
-            if not has_diagonal:
-                return False
-
-        return True
-
-    def copy(self) -> BlockSystem:
-        """Create a copy of the system."""
-        sys = BlockSystem(*self.block_sizes)
-        for row_in, row_out in zip(self.rows, sys.rows):
-            for i, v in row_in:
-                row_out.append((i, np.array(v, copy=True)))
-
-        return sys
-
-    def as_array(self) -> npt.NDArray[np.float64]:
-        """Convert the system to an array."""
-        offsets = np.pad(np.cumsum(self.block_sizes), (1, 0))
-        out = np.zeros((offsets[-1], offsets[-1]))
-        for i, row in enumerate(self.rows):
-            for j, block in row:
-                out[offsets[i] : offsets[i + 1], offsets[j] : offsets[j + 1]] = block
-
-        return out
-
-    def as_c_sys(self) -> CBlockSystem:
-        """Create a copy of the system."""
-        sys = CBlockSystem(*self.block_sizes)
-        for i_row, row_in in enumerate(self.rows):
-            for i_col, v in row_in:
-                sys.add_block(i_row, i_col, v)
-
-        return sys
+from hybsol._mod import BlockSystem
 
 
 @dataclass(frozen=True)
@@ -152,19 +49,14 @@ class EliminationOperation:
 
     target_block_index: int
     source_block_index: int
-    multiplier: npt.NDArray[np.float64]
 
     def __init__(
         self,
         target_block_index: int,
         source_block_index: int,
-        multiplier: npt.ArrayLike,
     ) -> None:
         object.__setattr__(self, "target_block_index", int(target_block_index))
         object.__setattr__(self, "source_block_index", int(source_block_index))
-        object.__setattr__(
-            self, "multiplier", np.asarray(multiplier, np.float64, copy=True)
-        )
 
 
 _Operation = ScaleOperation | EliminationOperation
@@ -179,147 +71,6 @@ class TargetRow:
 
 
 def decompose_block_system_c(
-    system: BlockSystem,
-) -> tuple[tuple[_Operation, ...], CBlockSystem]:
-    """Create an LU decomposition of a block system.
-
-    Parameters
-    ----------
-    system : BlockSystem
-        The block system to decompose.
-
-    Returns
-    -------
-    tuple of _Operation
-        Operations, which when applied to the original system yield the upper triangular
-        block system. As such, it is equivalent to the lower triangular block system's
-        inverse.
-
-    BlockSystem
-        The upper triangular block system.
-    """
-    if not system.is_valid():
-        raise ValueError("Block system is not valid.")
-
-    sys = system.as_c_sys()
-    del system
-
-    operations: list[_Operation] = list()
-
-    # Divide rows between the source and target rows
-    rows_src: list[int] = list()
-    rows_tgt: list[TargetRow] = list()
-
-    for i_row, is_free in enumerate(sys.no_lower_connections()):
-        if not is_free:
-            rows_tgt.append(TargetRow(i_row, sys.first_column(i_row)))
-        else:
-            inv = np.linalg.inv(sys.get_block(i_row, i_row))
-            operations.append(ScaleOperation(i_row, inv))
-            if i_row + 1 != sys.n_blocks:
-                sys.multiply_row(i_row, inv, start=i_row + 1)
-            rows_src.append(i_row)
-
-    while rows_tgt:
-        possible_eliminations: list[EliminationOperation] = list()
-        remaining_targets: list[TargetRow] = list()
-
-        while rows_tgt:
-            tgt_row = rows_tgt.pop()
-            if tgt_row.first_entry in rows_src:
-                possible_eliminations.append(
-                    EliminationOperation(
-                        tgt_row.index,
-                        tgt_row.first_entry,
-                        sys.get_block(
-                            tgt_row.index, tgt_row.first_entry
-                        ),  # rows[tgt_row.index][0][1]
-                    )
-                )
-            else:
-                remaining_targets.append(tgt_row)
-
-        rows_tgt = remaining_targets
-
-        assert possible_eliminations, (
-            "There have to be SOME elimination we can do, right?"
-        )
-
-        # Apply the elimination operations
-        for elim in possible_eliminations:
-            # Add the elimination under performed operations
-            operations.append(elim)
-
-            # Get source, target, and multiplier
-            mul, i_src, i_tgt = (
-                elim.multiplier,
-                elim.source_block_index,
-                elim.target_block_index,
-            )
-
-            # Subtract the source from target after scaling
-            sys.eliminate_row(i_src, i_tgt, mul)
-
-            # Check if it can now be used as a source, otherwise re-list
-            # the target
-            first_idx = sys.get_next_column_index(i_tgt, i_src)
-
-            if first_idx == i_tgt:
-                # Scale by the first block
-                inv = np.linalg.inv(sys.get_block(i_tgt, i_tgt))
-                if i_tgt + 1 != sys.n_blocks:
-                    sys.multiply_row(i_tgt, inv, start=i_tgt + 1)
-
-                operations.append(ScaleOperation(i_tgt, inv))
-                rows_src.append(i_tgt)
-            else:
-                rows_tgt.append(TargetRow(i_tgt, first_idx))
-
-    return tuple(operations), sys
-
-
-def solve_decomposed_c(
-    decomposed: CBlockSystem, operations: Sequence[_Operation], forcing: npt.ArrayLike
-) -> npt.NDArray[np.float64]:
-    """Solve the system using its decomposition."""
-    y = np.asarray(forcing, np.float64, copy=True)
-    offsets = np.pad(np.cumsum(decomposed.block_sizes), (1, 0))
-
-    # Split the RHS up into blocks as well
-    vec: list[npt.NDArray[np.float64]] = list()
-    for i in range(len(decomposed.block_sizes)):
-        vec.append(y[offsets[i] : offsets[i + 1]])
-
-    # First step is to apply operations to simulate L^{-1}
-    for op in operations:
-        match op:
-            case ScaleOperation() as scal:
-                vec[scal.block_index] = scal.scale @ vec[scal.block_index]
-
-            case EliminationOperation() as elim:
-                vec[elim.target_block_index] -= (
-                    elim.multiplier @ vec[elim.source_block_index]
-                )
-
-            case _:
-                raise TypeError(f"Invalid operation type {type(op)}")
-
-    # Next step is to do the back substitution
-    for i_row in reversed(range(decomposed.n_blocks - 1)):
-        v = vec[i_row]
-
-        indices = decomposed.get_row_block_indices(i_row)
-        for i_col in reversed(indices):
-            if i_col == i_row:
-                break
-            u = decomposed.get_block(i_row, i_col)
-            v[:] -= u @ vec[i_col]
-        vec[i_row] = v
-
-    return np.concatenate(vec)
-
-
-def decompose_block_system(
     system: BlockSystem,
 ) -> tuple[tuple[_Operation, ...], BlockSystem]:
     """Create an LU decomposition of a block system.
@@ -342,26 +93,21 @@ def decompose_block_system(
     if not system.is_valid():
         raise ValueError("Block system is not valid.")
 
-    sys = system.copy()
-    del system
-
     operations: list[_Operation] = list()
 
     # Divide rows between the source and target rows
     rows_src: list[int] = list()
     rows_tgt: list[TargetRow] = list()
-    rows = list(sys.rows)
 
-    for i, row in enumerate(rows):
-        j, v = row[0]
-        if i != j:
-            rows_tgt.append(TargetRow(i, j))
+    for i_row, is_free in enumerate(system.no_lower_connections()):
+        if not is_free:
+            rows_tgt.append(TargetRow(i_row, system.first_column(i_row)))
         else:
-            inv = np.linalg.inv(v)
-            operations.append(ScaleOperation(i, inv))
-            for _, u in row:
-                u[:] = inv @ u
-            rows_src.append(i)
+            inv = np.linalg.inv(system.get_block(i_row, i_row))
+            operations.append(ScaleOperation(i_row, inv))
+            if i_row + 1 != system.n_blocks:
+                system.multiply_row(i_row, inv, start=i_row + 1)
+            rows_src.append(i_row)
 
     while rows_tgt:
         possible_eliminations: list[EliminationOperation] = list()
@@ -372,7 +118,8 @@ def decompose_block_system(
             if tgt_row.first_entry in rows_src:
                 possible_eliminations.append(
                     EliminationOperation(
-                        tgt_row.index, tgt_row.first_entry, rows[tgt_row.index][0][1]
+                        tgt_row.index,
+                        tgt_row.first_entry,
                     )
                 )
             else:
@@ -390,60 +137,30 @@ def decompose_block_system(
             operations.append(elim)
 
             # Get source, target, and multiplier
-            mul, i_src, i_tgt = (
-                elim.multiplier,
-                elim.source_block_index,
-                elim.target_block_index,
-            )
-
-            # Get the rows (skip first element, since it is eliminated).
-            src = rows[i_src][1:]
-            tgt = rows[i_tgt][1:]
+            i_src, i_tgt = elim.source_block_index, elim.target_block_index
 
             # Subtract the source from target after scaling
-            for i, v in src:
-                found = False
-                for idx, (j, u) in enumerate(tgt):
-                    if i == j:
-                        u[:] -= mul @ v
-                        if np.allclose(u, 0):
-                            if j == i:
-                                raise ValueError(
-                                    "Diagonal block was eliminated as a side-effect."
-                                )
-                            del tgt[idx]
-                        found = True
-                        break
-                if found:
-                    continue
-                tgt.append((i, -mul @ v))
-
-            # Re-sort the target
-            tgt.sort(key=lambda key: key[0])
-
-            # Update the row
-            rows[i_tgt] = tgt
+            system.eliminate_row(i_src, i_tgt, system.get_block(i_tgt, i_src))
 
             # Check if it can now be used as a source, otherwise re-list
             # the target
-            first_idx = tgt[0][0]
+            first_idx = system.get_next_column_index(i_tgt, i_src)
+
             if first_idx == i_tgt:
                 # Scale by the first block
-                inv = np.linalg.inv(tgt[0][1])
-                for _, u in tgt:
-                    u[:] = inv @ u
+                inv = np.linalg.inv(system.get_block(i_tgt, i_tgt))
+                if i_tgt + 1 != system.n_blocks:
+                    system.multiply_row(i_tgt, inv, start=i_tgt + 1)
+
                 operations.append(ScaleOperation(i_tgt, inv))
                 rows_src.append(i_tgt)
             else:
                 rows_tgt.append(TargetRow(i_tgt, first_idx))
 
-    # Update the system rows
-    sys.rows = tuple(rows)
-
-    return tuple(operations), sys
+    return tuple(operations), system
 
 
-def solve_decomposed(
+def solve_decomposed_c(
     decomposed: BlockSystem, operations: Sequence[_Operation], forcing: npt.ArrayLike
 ) -> npt.NDArray[np.float64]:
     """Solve the system using its decomposition."""
@@ -462,19 +179,24 @@ def solve_decomposed(
                 vec[scal.block_index] = scal.scale @ vec[scal.block_index]
 
             case EliminationOperation() as elim:
-                vec[elim.target_block_index] -= (
-                    elim.multiplier @ vec[elim.source_block_index]
+                multiplier = decomposed.get_block(
+                    elim.target_block_index, elim.source_block_index
                 )
+                vec[elim.target_block_index] -= multiplier @ vec[elim.source_block_index]
 
             case _:
                 raise TypeError(f"Invalid operation type {type(op)}")
 
     # Next step is to do the back substitution
-    for i, row in reversed(list(enumerate(decomposed.rows))):
-        v = vec[i]
-        assert np.allclose(row[0][1], np.eye(len(v)))
-        for j, u in row[1:]:
-            v[:] -= u @ vec[j]
-        vec[i] = v
+    for i_row in reversed(range(decomposed.n_blocks - 1)):
+        v = vec[i_row]
+
+        indices = decomposed.get_row_block_indices(i_row)
+        for i_col in reversed(indices):
+            if i_col == i_row:
+                break
+            u = decomposed.get_block(i_row, i_col)
+            v[:] -= u @ vec[i_col]
+        vec[i_row] = v
 
     return np.concatenate(vec)
