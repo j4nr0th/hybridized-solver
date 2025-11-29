@@ -21,6 +21,7 @@ static void block_system_dealloc(block_system_object *self)
             row->count = 0;
             row->entries = NULL;
         }
+
         PyMem_Free(self->system.rows);
         self->system.rows = NULL;
     }
@@ -534,38 +535,17 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
         return NULL;
     }
 
-    // Make it an array
-    PyArrayObject *const arr =
-        (PyArrayObject *)PyArray_FROMANY(py_val, NPY_DOUBLE, 2, 2, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
-    if (!arr)
-        return NULL;
-
     // Check the array has correct dimensions
     const u64 size_tgt = this->system.block_sizes[i_row_tgt];
     const u64 size_src = this->system.block_sizes[i_row_src];
-    if (check_input_array(arr, 2, (const npy_intp[2]){(npy_intp)size_tgt, (npy_intp)size_src}, NPY_DOUBLE,
-                          NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "val") < 0)
-    {
-        Py_DECREF(arr);
-        return NULL;
-    }
-    const matrix_t mat = matrix_from_array(arr);
 
-    // Find what size the buffer should be to hold all intermediate results
-    u64 max_cols = 0;
     sys_row_t *const row_tgt = this->system.rows + i_row_tgt;
     const sys_row_t *const row_src = this->system.rows + i_row_src;
-    for (u64 i = 0; i < row_tgt->count; ++i)
-    {
-        const u64 block_size = this->system.block_sizes[row_tgt->entries[i]->col];
-        if (block_size > max_cols)
-        {
-            max_cols = block_size;
-        }
-    }
 
-    // Compute how many entries we will have after this is done
+    // Find what size the buffer should be to hold all intermediate results and
+    // how many entries we will have after this is done.
     u64 unique_cols = 0, pos_tgt, pos_src;
+    u64 max_cols = 0;
     for (pos_tgt = row_tgt->count, pos_src = row_src->count;; ++unique_cols)
     {
         const u64 entry_tgt = row_tgt->entries[pos_tgt - 1]->col;
@@ -575,42 +555,68 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
         {
             break;
         }
+
+        u64 block_size;
         if (entry_tgt == entry_src)
         {
             pos_tgt -= 1;
             pos_src -= 1;
+            block_size = this->system.block_sizes[entry_tgt];
         }
         else if (entry_src > entry_tgt)
         {
             pos_src -= 1;
+            block_size = this->system.block_sizes[entry_src];
         }
         else // if (entry_src < entry_tgt)
         {
             pos_tgt -= 1;
+            block_size = this->system.block_sizes[entry_tgt];
         }
+        max_cols = max_cols < block_size ? block_size : max_cols;
+    }
+    if (row_tgt->entries[pos_tgt - 1]->col != (u64)i_row_src && row_src->entries[pos_src - 1]->col != (u64)i_row_src)
+    {
+        PyErr_Format(PyExc_ValueError, "Source and target blocks must both contain the diagonal block for the row %zu.",
+                     i_row_src);
+        return NULL;
     }
     const u64 needed_size = unique_cols + pos_tgt;
-    // printf("Need %zu cols (%zu unique new, %zu left over)\n", needed_size, unique_cols, pos_tgt);
+
+    // Make it an array
+    PyArrayObject *const arr =
+        (PyArrayObject *)PyArray_FROMANY(py_val, NPY_DOUBLE, 2, 2, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (!arr)
+        return NULL;
+    if (check_input_array(arr, 2, (const npy_intp[2]){(npy_intp)size_tgt, (npy_intp)size_src}, NPY_DOUBLE,
+                          NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "val") < 0)
+    {
+        Py_DECREF(arr);
+        return NULL;
+    }
+    const matrix_t mat = matrix_from_array(arr);
+
     // Increase the capacity for the receiving row
     if (row_tgt->capacity < needed_size)
     {
         row_entry_t **const new_entries =
-            (row_entry_t **)PyMem_RawRealloc((void *)row_tgt->entries, sizeof(row_entry_t *) * needed_size);
+            (row_entry_t **)PyMem_Realloc((void *)row_tgt->entries, sizeof(*new_entries) * needed_size);
         if (!new_entries)
         {
             Py_DECREF(arr);
             return NULL;
         }
+
+        row_tgt->entries = new_entries;
+        row_tgt->capacity = needed_size;
         // Pre-emptively zero it
         for (u64 i = row_tgt->count; i < needed_size; ++i)
         {
             row_tgt->entries[i] = NULL;
         }
-        row_tgt->entries = new_entries;
-        row_tgt->capacity = unique_cols;
     }
 
-    f64 *const buffer = PyMem_RawMalloc(sizeof(f64) * max_cols * size_tgt);
+    f64 *const buffer = PyMem_RawMalloc(sizeof(*buffer) * max_cols * size_tgt);
     if (!buffer)
     {
         Py_DECREF(arr);
@@ -638,22 +644,27 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
         const matrix_t mat_tgt = {
             .rows = size_tgt, .cols = this->system.block_sizes[col_tgt], .data = (f64 *)entry_tgt->vals};
 
+        CPYUTL_ASSERT(pos_tgt == k || row_tgt->entries[k - 1] == NULL,
+                      "Destination at index %zu was non-null and contained entry for column %zu!", k - 1, col_tgt);
+
         if (col_tgt == col_src)
         {
             // Scale src and subtract output
             matrix_multiply(&mat, &mat_src, &out);
             matrix_subtract_inplace(&mat_tgt, &out);
-            // printf("Both present for column %zu, storing result in position %zu\n", col_src, k - 1);
+
+            row_tgt->entries[pos_tgt - 1] = NULL;
             row_tgt->entries[k - 1] = entry_tgt;
             pos_tgt -= 1;
             pos_src -= 1;
         }
-        else if (entry_src > entry_tgt)
+        else if (col_src > col_tgt)
         {
             // Add the new entry
             matrix_multiply(&mat, &mat_src, &out);
             row_entry_t *const new_entry =
-                (row_entry_t *)PyMem_RawMalloc(sizeof(row_entry_t) + sizeof(f64) * out.rows * out.cols);
+                (row_entry_t *)PyMem_Malloc(sizeof(*new_entry) + sizeof(*new_entry->vals) * out.rows * out.cols);
+
             if (!new_entry)
             {
                 // Just try and salvage what is left, but the system will be ruined.
@@ -674,21 +685,34 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
             }
             new_entry->col = col_src;
             for (u64 j = 0; j < out.rows * out.cols; ++j)
-                new_entry->vals[j] = out.data[j];
+                new_entry->vals[j] = -out.data[j];
 
             row_tgt->entries[k - 1] = new_entry;
 
             pos_src -= 1;
         }
-        else // if (entry_src < entry_tgt)
+        else // if (col_src < col_tgt)
         {
             // we don't do anything here
+            row_tgt->entries[pos_tgt - 1] = NULL;
             row_tgt->entries[k - 1] = entry_tgt;
             pos_tgt -= 1;
         }
     }
 
     row_tgt->count = needed_size;
+
+#ifdef CPYUTL_ENABLE_ASSERTS
+    for (i = 0; i < row_tgt->count; ++i)
+    {
+        const row_entry_t *const entry = row_tgt->entries[i];
+        CPYUTL_ASSERT(entry != NULL, "Entry %zu was NULL!", i);
+        if (i > 0)
+        {
+            CPYUTL_ASSERT(entry->col > row_tgt->entries[i - 1]->col, "Entries %zu and %zu were not sorted!", i - 1, i);
+        }
+    }
+#endif
 
     PyMem_RawFree(buffer);
     Py_DECREF(arr);
@@ -720,6 +744,43 @@ PyDoc_STRVAR(block_system_object_eliminate_row_docstring,
              "\n"
              "val : array_like\n"
              "    Matrix used to scale the target row.\n");
+
+static PyObject *block_system_object_has_block(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                               const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    Py_ssize_t i_row, i_col;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_row, .kwname = "row"},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &i_col, .kwname = "col"},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (check_block_indices(this->system.n, i_row, "Row index") < 0 ||
+        check_block_indices(this->system.n, i_col, "Column index") < 0)
+    {
+        return NULL;
+    }
+
+    const sys_row_t *const row = this->system.rows + i_row;
+    const u64 idx = row_array_find_first_geq(row->count, (const row_entry_t *const *)row->entries, i_col);
+    if (idx == row->count || row->entries[idx]->col != (u64)i_col)
+    {
+        Py_RETURN_FALSE;
+    }
+    Py_RETURN_TRUE;
+}
+
+PyDoc_STRVAR(block_system_object_has_block_docstring,
+             "has_block(row: int, col: int) -> bool\n"
+             "Check if the block at row ``row`` and column ``col`` is present.\n");
 
 PyType_Spec block_system_type_spec = {
     .name = MODULE_TYPE_NAME(BlockSystem),
@@ -781,6 +842,12 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_eliminate_row,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_eliminate_row_docstring,
+                 },
+                 {
+                     .ml_name = "has_block",
+                     .ml_meth = (void *)block_system_object_has_block,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_has_block_docstring,
                  },
                  {},
              }},

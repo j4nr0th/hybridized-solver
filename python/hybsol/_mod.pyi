@@ -127,3 +127,7 @@ class BlockSystem:
             Matrix used to scale the target row.
         """
         ...
+
+    def has_block(self, row: int, col: int) -> bool:
+        """Check if the block at row ``row`` and column ``col`` is present."""
+        ...

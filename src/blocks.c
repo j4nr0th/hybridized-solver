@@ -19,6 +19,11 @@ int block_system_add_block(const block_system_t *this, const u64 idx_row, const 
         row_entry_t **const ptr = (row_entry_t **)PyMem_Realloc(row->entries, new_capacity * sizeof(*row->entries));
         if (!ptr)
             return -1;
+        // Zero init
+        for (u64 i = row->capacity; i < new_capacity; ++i)
+        {
+            ptr[i] = NULL;
+        }
         row->entries = ptr;
         row->capacity = new_capacity;
     }
