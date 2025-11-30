@@ -1446,6 +1446,216 @@ static PyObject *block_system_object_copy(PyObject *self, PyTypeObject *defining
 PyDoc_STRVAR(block_system_object_copy_docstring, "copy() -> BlockSystem\n"
                                                  "Create a copy of the system.\n");
 
+static PyObject *block_system_object_reorder_blocks(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                                    const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_not_decomposed(this) < 0)
+        return NULL;
+
+    PyObject *py_order;
+    Py_ssize_t n_threads = 0;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_order, .kwname = "new_order"},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (n_threads < 0)
+    {
+        PyErr_SetString(PyExc_ValueError, "Number of threads must be non-negative.");
+        return NULL;
+    }
+
+    PyArrayObject *const arr =
+        (PyArrayObject *)PyArray_FROMANY(py_order, NPY_UINT64, 1, 1, NPY_ARRAY_ALIGNED | NPY_ARRAY_C_CONTIGUOUS);
+    if (!arr)
+        return NULL;
+
+    if (check_input_array(arr, 1, (const npy_intp[]){(npy_intp)this->system.n}, NPY_UINT64,
+                          NPY_ARRAY_ALIGNED | NPY_ARRAY_C_CONTIGUOUS, "new_order") < 0)
+        return NULL;
+
+    // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+
+    const npy_uint64 *const order = (const npy_uint64 *)PyArray_DATA(arr);
+    const u64 size_new_blocks = sizeof(u64) * this->system.n;
+    const u64 size_new_rows = sizeof(sys_row_t) * this->system.n;
+    // Allocate buffer to use for holding the block sizes and rows
+    void *buffer_mem = PyMem_RawMalloc(size_new_blocks > size_new_rows ? size_new_blocks : size_new_rows);
+    if (!buffer_mem)
+    {
+        Py_DECREF(arr);
+        return NULL;
+    }
+    // Check for duplicated order indices
+    {
+        u8 *const order_encountered = (u8 *)buffer_mem;
+        // Zero it
+        for (u64 i = 0; i < this->system.n; ++i)
+        {
+            order_encountered[i] = 0;
+        }
+        for (u64 i = 0; i < this->system.n; ++i)
+        {
+            if (order_encountered[order[i]] == 1)
+            {
+                PyErr_Format(PyExc_ValueError, "Duplicate order index %" PRIu64 ".", (u64)order[i]);
+                PyMem_RawFree(buffer_mem);
+                Py_DECREF(arr);
+                return NULL;
+            }
+            order_encountered[order[i]] = 1;
+        }
+    }
+    // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+
+    u64 *const new_block_sizes = buffer_mem;
+
+    Py_BEGIN_ALLOW_THREADS;
+    // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+
+    u64 max_entries = 0;
+#pragma omp parallel for default(none) shared(this) reduction(max : max_entries) if (n_threads > 1)                    \
+    num_threads(n_threads)
+    for (u64 i = 0; i < this->system.n; ++i)
+    {
+        const sys_row_t *const row = this->system.rows + i;
+        max_entries = row->count > max_entries ? row->count : max_entries;
+    }
+
+    // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+    int failed_allocation = 0;
+#pragma omp parallel default(none) shared(this, order, failed_allocation, buffer_mem, new_block_sizes,                 \
+                                              max_entries) if (n_threads > 1) num_threads(n_threads)
+    {
+        row_entry_t **const entry_buffer = PyMem_RawMalloc(sizeof(row_entry_t *) * max_entries);
+#pragma omp atomic update
+        failed_allocation += entry_buffer == NULL;
+#pragma omp barrier
+        if (failed_allocation == 0)
+        {
+            // We all allocated buffers, so we can work as a team
+
+            // Reorder columns in rows and re-order them
+            // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+#pragma omp for schedule(dynamic, 1)
+            for (u64 idx_row = 0; idx_row < this->system.n; ++idx_row)
+            {
+                const sys_row_t *const row = this->system.rows + idx_row;
+
+                // Copy all entries to the buffer and change their columns to the new order
+                for (u64 j = 0; j < row->count; ++j)
+                {
+                    row_entry_t *const entry = row->entries[j];
+                    entry_buffer[j] = entry;
+
+                    // const u64 old_idx = entry->col;
+                    // const u64 new_idx = order[entry->col];
+                    entry->col = order[entry->col];
+                }
+
+                // Insertion sort to put entries back into the row
+                // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+                u64 inserted = 0;
+                while (inserted < row->count)
+                {
+                    row_entry_t *e = NULL;
+                    for (u64 j = 0; j < row->count; ++j)
+                    {
+                        row_entry_t *const entry = entry_buffer[j];
+                        if (entry && (e == NULL || e->col > entry->col))
+                        {
+                            entry_buffer[j] = e;
+                            e = entry;
+                        }
+                    }
+                    CPYUTL_ASSERT(e != NULL, "There should be at least one more in the array.");
+                    row->entries[inserted] = e;
+                    inserted += 1;
+                    // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+                }
+#ifdef CPYUTL_ENABLE_ASSERTS
+                for (u64 j = 1; j < row->count; ++j)
+                {
+                    CPYUTL_ASSERT(row->entries[j - 1]->col < row->entries[j]->col,
+                                  "Entries should be sorted by column, but in row %zu entries %zu and %zu had column "
+                                  "indices %zu and %zu.",
+                                  idx_row, j - 1, j, row->entries[j - 1]->col, row->entries[j]->col);
+                }
+#endif
+            }
+
+            // Reorder rows
+            // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+            sys_row_t *const new_rows = (sys_row_t *)buffer_mem;
+#pragma omp for schedule(static)
+            for (u64 i = 0; i < this->system.n; ++i)
+            {
+                const u64 old_idx = i;
+                const u64 new_idx = order[i];
+                new_rows[new_idx] = this->system.rows[old_idx];
+            }
+
+            // Copy them back
+            // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+#pragma omp for schedule(static)
+            for (u64 i = 0; i < this->system.n; ++i)
+            {
+                this->system.rows[i] = new_rows[i];
+            }
+            // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+        }
+        // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+        PyMem_RawFree(entry_buffer);
+        // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+
+        // Rows are done, now we can re-compute block sizes (and reorder them)
+#pragma omp for schedule(static)
+        for (u64 i = 0; i < this->system.n; ++i)
+        {
+            const u64 old_idx = i;
+            const u64 new_idx = order[i];
+            new_block_sizes[new_idx] = block_system_get_block_size(&this->system, old_idx);
+        }
+
+        // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+    }
+
+    // Convert these sizes into offsets
+    this->system.block_offsets[0] = 0;
+    for (u64 i = 0; i < this->system.n; ++i)
+    {
+        this->system.block_offsets[i + 1] = this->system.block_offsets[i] + new_block_sizes[i];
+    }
+    Py_END_ALLOW_THREADS;
+
+    PyMem_RawFree(buffer_mem);
+    Py_DECREF(arr);
+    // printf("%s:%d: %s\n", __FILE__, __LINE__, __func__);
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(block_system_object_reorder_blocks_docstring,
+             "reorder_blocks(new_order: numpy.typing.ArrayLike, n_threads: int = 0)\n"
+             "Reorders blocks of the system to follow the newly specified ordering.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "new_order : array_like\n"
+             "    Array of indices specifying where the old values should be moved to.\n"
+             "\n"
+             "n_threads : int, default: 0\n"
+             "    Number of OpenMP threads to use for reordering. Specifiny 0 or 1 means\n"
+             "    that it is done in series.\n");
+
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
     const block_system_object *this = (block_system_object *)self;
@@ -1593,6 +1803,12 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_copy,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_copy_docstring,
+                 },
+                 {
+                     .ml_name = "reorder_blocks",
+                     .ml_meth = (void *)block_system_object_reorder_blocks,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_reorder_blocks_docstring,
                  },
                  {},
              }},

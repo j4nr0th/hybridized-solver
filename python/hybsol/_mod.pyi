@@ -249,3 +249,17 @@ class BlockSystem:
     def copy(self) -> BlockSystem:
         """Create a copy of the system."""
         ...
+
+    def reorder_blocks(self, new_order: npt.ArrayLike, n_threads: int = 0) -> None:
+        """Reorders blocks of the system to follow the newly specified ordering.
+
+        Parameters
+        ----------
+        new_order : array_like
+            Array of indices specifying where the old values should be moved to.
+
+        n_threads : int, default: 0
+            Number of OpenMP threads to use for reordering. Specifiny 0 or 1 means
+            that it is done in series.
+        """
+        ...
