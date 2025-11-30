@@ -4,8 +4,8 @@ static void block_system_dealloc(block_system_object *self)
 {
     PyObject_GC_UnTrack(self);
     PyTypeObject *const type = Py_TYPE(self);
-    PyMem_Free(self->system.block_sizes);
-    self->system.block_sizes = NULL;
+    PyMem_Free(self->system.block_offsets);
+    self->system.block_offsets = NULL;
     if (self->system.rows)
     {
         for (u64 i = 0; i < self->system.n; ++i)
@@ -56,14 +56,16 @@ static PyObject *block_system_new(PyTypeObject *subtype, PyObject *args, const P
     self->system.n = n_blocks;
     // Zero-initialize
     self->system.rows = NULL;
-    self->system.block_sizes = PyMem_Malloc(n_blocks * sizeof(*self->system.block_sizes));
-    if (!self->system.block_sizes)
+    self->system.block_offsets = PyMem_Malloc((n_blocks + 1) * sizeof(*self->system.block_offsets));
+    if (!self->system.block_offsets)
     {
         Py_DECREF(self);
         return NULL;
     }
 
     // Get these sizes
+    u64 total_size = 0;
+    self->system.block_offsets[0] = 0;
     for (u64 i = 0; i < n_blocks; ++i)
     {
         PyObject *const block_size = PyTuple_GET_ITEM(args, i);
@@ -79,7 +81,7 @@ static PyObject *block_system_new(PyTypeObject *subtype, PyObject *args, const P
             Py_DECREF(self);
             return NULL;
         }
-        self->system.block_sizes[i] = (u64)size;
+        self->system.block_offsets[i + 1] = (total_size += (u64)size);
     }
 
     // Allocate rows
@@ -169,8 +171,8 @@ static PyObject *block_system_object_add_block(PyObject *self, PyTypeObject *def
 
     // Check the dimensions of the array
     if (check_input_array(arr, 2,
-                          (const npy_intp[2]){(npy_intp)this->system.block_sizes[row_idx],
-                                              (npy_intp)this->system.block_sizes[col_idx]},
+                          (const npy_intp[2]){(npy_intp)block_system_get_block_size(&this->system, row_idx),
+                                              (npy_intp)block_system_get_block_size(&this->system, col_idx)},
                           NPY_DOUBLE, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "val") < 0)
     {
         Py_DECREF(arr);
@@ -235,11 +237,7 @@ static PyObject *block_system_object_as_array(PyObject *self, PyTypeObject *defi
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
         return NULL;
 
-    u64 total_size = 0;
-    for (u64 i = 0; i < this->system.n; ++i)
-    {
-        total_size += this->system.block_sizes[i];
-    }
+    const u64 total_size = this->system.block_offsets[this->system.n];
     const npy_intp dims[2] = {(npy_intp)total_size, (npy_intp)total_size};
     PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
     if (!arr)
@@ -251,16 +249,17 @@ static PyObject *block_system_object_as_array(PyObject *self, PyTypeObject *defi
     for (u64 i = 0; i < this->system.n; ++i)
     {
         const sys_row_t *const row = this->system.rows + i;
-        const u64 n1 = this->system.block_sizes[i];
+        const u64 n1 = block_system_get_block_size(&this->system, i);
         u64 offset_col = 0, i_col = 0;
         for (u64 j = 0; j < row->count; ++j)
         {
             const row_entry_t *const entry = row->entries[j];
             while (i_col < entry->col)
             {
-                offset_col += this->system.block_sizes[i_col++];
+                offset_col += block_system_get_block_size(&this->system, i_col);
+                i_col += 1;
             }
-            const u64 n2 = this->system.block_sizes[entry->col];
+            const u64 n2 = block_system_get_block_size(&this->system, entry->col);
             for (u64 k1 = 0; k1 < n1; ++k1)
             {
                 for (u64 k2 = 0; k2 < n2; ++k2)
@@ -403,18 +402,18 @@ static PyObject *block_system_object_get_block_size(PyObject *self, PyTypeObject
         return NULL;
     }
 
-    return cpyutl_output_create_check(CPYOUT_TYPE_TUPLE,
-                                      (const cpyutl_output_t[]){
-                                          {
-                                              .type = CPYOUT_TYPE_PYINT,
-                                              .value_int = (Py_ssize_t)this->system.block_sizes[row_idx],
-                                          },
-                                          {
-                                              .type = CPYOUT_TYPE_PYINT,
-                                              .value_int = (Py_ssize_t)this->system.block_sizes[col_idx],
-                                          },
-                                          {},
-                                      });
+    return cpyutl_output_create_check(
+        CPYOUT_TYPE_TUPLE, (const cpyutl_output_t[]){
+                               {
+                                   .type = CPYOUT_TYPE_PYINT,
+                                   .value_int = (Py_ssize_t)block_system_get_block_size(&this->system, row_idx),
+                               },
+                               {
+                                   .type = CPYOUT_TYPE_PYINT,
+                                   .value_int = (Py_ssize_t)block_system_get_block_size(&this->system, col_idx),
+                               },
+                               {},
+                           });
 }
 
 PyDoc_STRVAR(block_system_object_get_block_size_docstring, "get_block_size(row: int, col: int) -> tuple[int, int]\n"
@@ -452,7 +451,7 @@ static PyObject *block_system_object_multiply_row(PyObject *self, PyTypeObject *
         return NULL;
 
     const matrix_t mat = matrix_from_array(arr);
-    const u64 rows = this->system.block_sizes[row_idx];
+    const u64 rows = block_system_get_block_size(&this->system, row_idx);
     if (mat.rows != mat.cols || mat.rows != rows)
     {
         PyErr_Format(PyExc_ValueError, "Value must be a square matrix of size %zd.", rows);
@@ -464,7 +463,7 @@ static PyObject *block_system_object_multiply_row(PyObject *self, PyTypeObject *
     u64 max_cols = 0;
     for (u64 i = 0; i < row->count; ++i)
     {
-        const u64 block_size = this->system.block_sizes[row->entries[i]->col];
+        const u64 block_size = block_system_get_block_size(&this->system, row->entries[i]->col);
         if (block_size > max_cols)
         {
             max_cols = block_size;
@@ -486,7 +485,8 @@ static PyObject *block_system_object_multiply_row(PyObject *self, PyTypeObject *
         if (entry->col < (u64)start_idx)
             continue;
 
-        const matrix_t block = {.rows = rows, .cols = this->system.block_sizes[entry->col], .data = entry->vals};
+        const matrix_t block = {
+            .rows = rows, .cols = block_system_get_block_size(&this->system, entry->col), .data = entry->vals};
         const matrix_t out = {.rows = block.rows, .cols = block.cols, .data = buffer};
 
         // Multiply
@@ -541,8 +541,8 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
     }
 
     // Check the array has correct dimensions
-    const u64 size_tgt = this->system.block_sizes[i_row_tgt];
-    const u64 size_src = this->system.block_sizes[i_row_src];
+    const u64 size_tgt = block_system_get_block_size(&this->system, i_row_tgt);
+    const u64 size_src = block_system_get_block_size(&this->system, i_row_src);
 
     sys_row_t *const row_tgt = this->system.rows + i_row_tgt;
     const sys_row_t *const row_src = this->system.rows + i_row_src;
@@ -566,17 +566,17 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
         {
             pos_tgt -= 1;
             pos_src -= 1;
-            block_size = this->system.block_sizes[entry_tgt];
+            block_size = block_system_get_block_size(&this->system, entry_tgt);
         }
         else if (entry_src > entry_tgt)
         {
             pos_src -= 1;
-            block_size = this->system.block_sizes[entry_src];
+            block_size = block_system_get_block_size(&this->system, entry_src);
         }
         else // if (entry_src < entry_tgt)
         {
             pos_tgt -= 1;
-            block_size = this->system.block_sizes[entry_tgt];
+            block_size = block_system_get_block_size(&this->system, entry_tgt);
         }
         max_cols = max_cols < block_size ? block_size : max_cols;
     }
@@ -643,11 +643,14 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
         const u64 col_src = entry_src->col;
         const u64 col_tgt = entry_tgt->col;
 
-        const matrix_t out = (matrix_t){.rows = size_tgt, .cols = this->system.block_sizes[col_src], .data = buffer};
-        const matrix_t mat_src = {
-            .rows = size_src, .cols = this->system.block_sizes[col_src], .data = (f64 *)entry_src->vals};
-        const matrix_t mat_tgt = {
-            .rows = size_tgt, .cols = this->system.block_sizes[col_tgt], .data = (f64 *)entry_tgt->vals};
+        const matrix_t out =
+            (matrix_t){.rows = size_tgt, .cols = block_system_get_block_size(&this->system, col_src), .data = buffer};
+        const matrix_t mat_src = {.rows = size_src,
+                                  .cols = block_system_get_block_size(&this->system, col_src),
+                                  .data = (f64 *)entry_src->vals};
+        const matrix_t mat_tgt = {.rows = size_tgt,
+                                  .cols = block_system_get_block_size(&this->system, col_tgt),
+                                  .data = (f64 *)entry_tgt->vals};
 
         CPYUTL_ASSERT(pos_tgt == k || row_tgt->entries[k - 1] == NULL,
                       "Destination at index %zu was non-null and contained entry for column %zu!", k - 1, col_tgt);
@@ -1071,14 +1074,14 @@ static PyObject *block_system_object_row_apply_decomposition(PyObject *self, PyT
         return NULL;
     }
 
-    const u64 block_rows = this->system.block_sizes[i_row];
+    const u64 block_rows = block_system_get_block_size(&this->system, i_row);
     const matrix_t mat_block =
         (matrix_t){.rows = block_rows, .cols = block_rows, .data = row->entries[diagonal_idx]->vals};
     for (u64 i = diagonal_idx + 1; i < row->count; ++i)
     {
         row_entry_t *const entry = row->entries[i];
-        const matrix_t mat_entry =
-            (matrix_t){.rows = block_rows, .cols = this->system.block_sizes[entry->col], .data = entry->vals};
+        const matrix_t mat_entry = (matrix_t){
+            .rows = block_rows, .cols = block_system_get_block_size(&this->system, entry->col), .data = entry->vals};
         matrix_lu_solve(&mat_block, &mat_entry, &mat_entry);
     }
 
@@ -1112,7 +1115,7 @@ static PyObject *block_system_object_get_block_sizes(PyObject *self, void *Py_UN
     npy_uint64 *const out = (npy_uint64 *)PyArray_DATA(arr);
     for (u64 i = 0; i < this->system.n; ++i)
     {
-        out[i] = this->system.block_sizes[i];
+        out[i] = block_system_get_block_size(&this->system, i);
     }
     return (PyObject *)arr;
 }

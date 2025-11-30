@@ -6,9 +6,9 @@ int block_system_add_block(const block_system_t *this, const u64 idx_row, const 
     CPYUTL_ASSERT(idx_row < this->n && idx_col < this->n,
                   "Row and/or column index was out of bounds (indices: (%zu, %zu) but the limits are [0, %u)).",
                   idx_row, idx_col, this->n);
-    CPYUTL_ASSERT(nv == this->block_sizes[idx_row] * this->block_sizes[idx_col],
+    CPYUTL_ASSERT(nv == block_system_get_block_size(this, idx_row) * block_system_get_block_size(this, idx_col),
                   "Number of values does not match block size (expected %zu x %zu, got %zu).",
-                  this->block_sizes[idx_row], this->block_sizes[idx_col], nv);
+                  block_system_get_block_size(this, idx_row), block_system_get_block_size(this, idx_col), nv);
 
     sys_row_t *const row = this->rows + idx_row;
 
@@ -166,8 +166,9 @@ result_t block_system_get_block(const block_system_t *this, const u64 idx_row, c
         // No block
         return RESULT_BLOCK_NOT_IN_SYSTEM;
     }
-    *out = (matrix_t){
-        .rows = this->block_sizes[idx_row], .cols = this->block_sizes[idx_col], .data = row->entries[idx]->vals};
+    *out = (matrix_t){.rows = block_system_get_block_size(this, idx_row),
+                      .cols = block_system_get_block_size(this, idx_col),
+                      .data = row->entries[idx]->vals};
 
     return RESULT_SUCCESS;
 }
@@ -427,7 +428,7 @@ void block_system_apply_diagonal_inverse(const block_system_t *this, const u64 i
     CPYUTL_ASSERT(i_diag != row->count, "Row %zu does not have a diagonal block.", idx_row);
     row_entry_t *const diag = row->entries[i_diag];
     CPYUTL_ASSERT(diag->col == idx_row, "Row %zu does not have a diagonal block at the correct position.", idx_row);
-    const u64 block_rows = this->block_sizes[idx_row];
+    const u64 block_rows = block_system_get_block_size(this, idx_row);
     const matrix_t mat_diag = (matrix_t){
         .rows = block_rows,
         .cols = block_rows,
@@ -438,7 +439,7 @@ void block_system_apply_diagonal_inverse(const block_system_t *this, const u64 i
         row_entry_t *const entry = row->entries[i];
         const matrix_t mat_entry = (matrix_t){
             .rows = block_rows,
-            .cols = this->block_sizes[entry->col],
+            .cols = block_system_get_block_size(this, entry->col),
             .data = entry->vals,
         };
         matrix_lu_solve(&mat_diag, &mat_entry, &mat_entry);
@@ -452,7 +453,7 @@ void block_system_decompose_diagonal(const block_system_t *this, const u64 idx_r
     CPYUTL_ASSERT(i_diag != row->count, "Row %zu does not have a diagonal block.", idx_row);
     row_entry_t *const diag = row->entries[i_diag];
     CPYUTL_ASSERT(diag->col == idx_row, "Row %zu does not have a diagonal block at the correct position.", idx_row);
-    const u64 block_rows = this->block_sizes[idx_row];
+    const u64 block_rows = block_system_get_block_size(this, idx_row);
     const matrix_t mat_diag = (matrix_t){
         .rows = block_rows,
         .cols = block_rows,
@@ -464,8 +465,8 @@ void block_system_decompose_diagonal(const block_system_t *this, const u64 idx_r
 result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tgt, const u64 idx_src)
 {
     // Check the array has correct dimensions
-    const u64 size_tgt = this->block_sizes[idx_tgt];
-    const u64 size_src = this->block_sizes[idx_src];
+    const u64 size_tgt = block_system_get_block_size(this, idx_tgt);
+    const u64 size_src = block_system_get_block_size(this, idx_src);
 
     sys_row_t *const row_tgt = this->rows + idx_tgt;
     const sys_row_t *const row_src = this->rows + idx_src;
@@ -494,17 +495,17 @@ result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tg
         {
             pos_tgt -= 1;
             pos_src -= 1;
-            block_size = this->block_sizes[entry_tgt];
+            block_size = block_system_get_block_size(this, entry_tgt);
         }
         else if (entry_src > entry_tgt)
         {
             pos_src -= 1;
-            block_size = this->block_sizes[entry_src];
+            block_size = block_system_get_block_size(this, entry_src);
         }
         else // if (entry_src < entry_tgt)
         {
             pos_tgt -= 1;
-            block_size = this->block_sizes[entry_tgt];
+            block_size = block_system_get_block_size(this, entry_tgt);
         }
         max_cols = max_cols < block_size ? block_size : max_cols;
     }
@@ -554,9 +555,12 @@ result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tg
         const u64 col_src = entry_src->col;
         const u64 col_tgt = entry_tgt->col;
 
-        const matrix_t out = (matrix_t){.rows = size_tgt, .cols = this->block_sizes[col_src], .data = buffer};
-        const matrix_t mat_src = {.rows = size_src, .cols = this->block_sizes[col_src], .data = (f64 *)entry_src->vals};
-        const matrix_t mat_tgt = {.rows = size_tgt, .cols = this->block_sizes[col_tgt], .data = (f64 *)entry_tgt->vals};
+        const matrix_t out =
+            (matrix_t){.rows = size_tgt, .cols = block_system_get_block_size(this, col_src), .data = buffer};
+        const matrix_t mat_src = {
+            .rows = size_src, .cols = block_system_get_block_size(this, col_src), .data = (f64 *)entry_src->vals};
+        const matrix_t mat_tgt = {
+            .rows = size_tgt, .cols = block_system_get_block_size(this, col_tgt), .data = (f64 *)entry_tgt->vals};
 
         CPYUTL_ASSERT(pos_tgt == k || row_tgt->entries[k - 1] == NULL,
                       "Destination at index %zu was non-null and contained entry for column %zu!", k - 1, col_tgt);

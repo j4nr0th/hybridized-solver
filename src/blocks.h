@@ -24,9 +24,9 @@ typedef struct
 
 typedef struct
 {
-    uint n;           // Number of blocks (rows and cols)
-    u64 *block_sizes; // Array of block sizes (length n)
-    sys_row_t *rows;  // Array of actual rows (length n)
+    uint n;             // Number of blocks (rows and cols)
+    u64 *block_offsets; // Array of block sizes (length n + 1)
+    sys_row_t *rows;    // Array of actual rows (length n)
 } block_system_t;
 
 typedef enum
@@ -96,3 +96,8 @@ void block_system_decompose_diagonal(const block_system_t *this, u64 idx_row);
 
 MODULE_INTERNAL
 result_t block_system_eliminate_row(const block_system_t *this, u64 idx_tgt, u64 idx_src);
+
+static inline u64 block_system_get_block_size(const block_system_t *this, const u64 idx_row)
+{
+    return this->block_offsets[idx_row + 1] - this->block_offsets[idx_row];
+}
