@@ -238,3 +238,7 @@ class BlockSystem:
             this is a new array. Otherwise, a reference to ``out`` is returned.
         """
         ...
+
+    def copy(self) -> BlockSystem:
+        """Create a copy of the system."""
+        ...

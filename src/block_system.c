@@ -1326,6 +1326,112 @@ PyDoc_STRVAR(block_system_object_solve_docstring,
 
 );
 
+static PyObject *block_system_object_copy(PyObject *self, PyTypeObject *defining_class,
+                                          PyObject *const *Py_UNUSED(args), const Py_ssize_t nargs,
+                                          const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (nargs != 0 || kwnames != NULL)
+    {
+        PyErr_SetString(PyExc_TypeError, "No arguments accepted.");
+        return NULL;
+    }
+
+    block_system_object *const that =
+        (block_system_object *)state->type_block_system->tp_alloc(state->type_block_system, 0);
+    if (that == NULL)
+        return NULL;
+
+    // Zero initialize it
+    that->system = (block_system_t){};
+    that->nops = 0;
+    that->ops = NULL;
+
+    // Copy block offsets
+    that->system.n = this->system.n;
+    that->system.block_offsets = PyMem_Malloc(sizeof(u64) * (this->system.n + 1));
+    if (that->system.block_offsets == NULL)
+    {
+        Py_DECREF(that);
+        return NULL;
+    }
+    for (u64 i = 0; i <= this->system.n; ++i)
+    {
+        that->system.block_offsets[i] = this->system.block_offsets[i];
+    }
+
+    // Copy the rows
+    that->system.rows = PyMem_Malloc(sizeof(sys_row_t) * this->system.n);
+    if (that->system.rows == NULL)
+    {
+        Py_DECREF(that);
+        return NULL;
+    }
+    // Zero initialize the rows before the copy. This is so that if the copy of
+    // any row fails, the rest have NULL pointers and such.
+    for (u64 i = 0; i < this->system.n; ++i)
+    {
+        that->system.rows[i] = (sys_row_t){};
+    }
+    // Now do the real copy
+    for (u64 i = 0; i < this->system.n; ++i)
+    {
+        const sys_row_t *const row_in = this->system.rows + i;
+        sys_row_t *const row_out = that->system.rows + i;
+
+        row_entry_t **const entries = (row_entry_t **)PyMem_RawMalloc(sizeof(row_entry_t *) * row_in->count);
+        if (!entries)
+        {
+            Py_DECREF(that);
+            return NULL;
+        }
+        // Zero initialize the entry array first
+        for (u64 j = 0; j < row_in->count; ++j)
+        {
+            entries[j] = NULL;
+        }
+        row_out->entries = entries;
+        // Now copy the actual entries
+        for (u64 j = 0; j < row_in->count; ++j)
+        {
+            const row_entry_t *const entry_in = row_in->entries[j];
+            const u64 n_elem = block_system_get_block_size(&this->system, entry_in->col) *
+                               block_system_get_block_size(&this->system, i);
+            entries[j] = PyMem_RawMalloc(sizeof(*entry_in) + sizeof(*entry_in->vals) * n_elem);
+            if (!entries[j])
+            {
+                Py_DECREF(that);
+                return NULL;
+            }
+            entries[j]->col = entry_in->col;
+            memcpy(entries[j]->vals, entry_in->vals, sizeof(*entry_in->vals) * n_elem);
+            row_out->count += 1;
+        }
+    }
+
+    // Copy the operations (if there are any)
+    if (this->ops != NULL)
+    {
+        that->ops = PyMem_RawMalloc(sizeof(operation_t) * this->nops);
+        if (!that->ops)
+        {
+            Py_DECREF(that);
+            return NULL;
+        }
+        that->nops = this->nops;
+        memcpy(that->ops, this->ops, sizeof(operation_t) * this->nops);
+    }
+
+    return (PyObject *)that;
+}
+
+PyDoc_STRVAR(block_system_object_copy_docstring, "copy() -> BlockSystem\n"
+                                                 "Create a copy of the system.\n");
+
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
     const block_system_object *this = (block_system_object *)self;
@@ -1467,6 +1573,12 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_solve,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_solve_docstring,
+                 },
+                 {
+                     .ml_name = "copy",
+                     .ml_meth = (void *)block_system_object_copy,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_copy_docstring,
                  },
                  {},
              }},
