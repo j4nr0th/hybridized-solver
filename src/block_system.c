@@ -14,10 +14,10 @@ static void block_system_dealloc(block_system_object *self)
             row->capacity = 0;
             for (u64 j = 0; j < row->count; ++j)
             {
-                PyMem_Free(row->entries[j]);
+                PyMem_RawFree(row->entries[j]);
                 row->entries[j] = NULL;
             }
-            PyMem_Free(row->entries);
+            PyMem_RawFree(row->entries);
             row->count = 0;
             row->entries = NULL;
         }
@@ -605,7 +605,7 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
     if (row_tgt->capacity < needed_size)
     {
         row_entry_t **const new_entries =
-            (row_entry_t **)PyMem_Realloc((void *)row_tgt->entries, sizeof(*new_entries) * needed_size);
+            (row_entry_t **)PyMem_RawRealloc((void *)row_tgt->entries, sizeof(*new_entries) * needed_size);
         if (!new_entries)
         {
             Py_DECREF(arr);
@@ -671,7 +671,7 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
             // Add the new entry
             matrix_multiply(&mat, &mat_src, &out);
             row_entry_t *const new_entry =
-                (row_entry_t *)PyMem_Malloc(sizeof(*new_entry) + sizeof(*new_entry->vals) * out.rows * out.cols);
+                (row_entry_t *)PyMem_RawMalloc(sizeof(*new_entry) + sizeof(*new_entry->vals) * out.rows * out.cols);
 
             if (!new_entry)
             {

@@ -16,7 +16,7 @@ int block_system_add_block(const block_system_t *this, const u64 idx_row, const 
     if (row->count == row->capacity)
     {
         const u64 new_capacity = row->capacity ? row->capacity * 2 : 8;
-        row_entry_t **const ptr = (row_entry_t **)PyMem_Realloc(row->entries, new_capacity * sizeof(*row->entries));
+        row_entry_t **const ptr = (row_entry_t **)PyMem_RawRealloc(row->entries, new_capacity * sizeof(*row->entries));
         if (!ptr)
             return -1;
         // Zero init
@@ -45,7 +45,7 @@ int block_system_add_block(const block_system_t *this, const u64 idx_row, const 
         }
     }
 
-    row_entry_t *const new_entry = (row_entry_t *)PyMem_Malloc(sizeof(*new_entry) + nv * sizeof(*new_entry->vals));
+    row_entry_t *const new_entry = (row_entry_t *)PyMem_RawMalloc(sizeof(*new_entry) + nv * sizeof(*new_entry->vals));
     if (!new_entry)
         return -1;
     new_entry->col = idx_col;
