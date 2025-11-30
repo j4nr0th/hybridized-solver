@@ -396,9 +396,11 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
             }
         }
         CPYUTL_ASSERT(i_tgt != this->n, "Internal error: no free target row found.");
-
         target_row_t *const status = target_status + i_tgt;
+        // printf("Eliminating row %zu (needs row %zu)\n", i_tgt, status->idx_src_needed);
         res = block_system_eliminate_row(this, i_tgt, status->idx_src_needed);
+        CPYUTL_ASSERT(res == RESULT_SUCCESS, "Failed to eliminate row %zu with row %zu.", i_tgt,
+                      status->idx_src_needed);
         if (res != RESULT_SUCCESS)
             return res;
 
@@ -412,7 +414,8 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
         const sys_row_t *const row = this->rows + i_tgt;
         const u64 new_idx_src_needed =
             row_array_find_first_geq(row->count, (const row_entry_t *const *)row->entries, status->idx_src_needed + 1);
-        if (new_idx_src_needed == i_tgt)
+        const row_entry_t *const entry = row->entries[new_idx_src_needed];
+        if (entry->col == i_tgt)
         {
             // This row is done, just decompose the diagonal and apply that, and we're done!
             block_system_decompose_diagonal(this, i_tgt);
@@ -428,7 +431,7 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
         else
         {
             // This one still needs work
-            status->idx_src_needed = new_idx_src_needed;
+            status->idx_src_needed = entry->col;
             status->status = TARGET_FREE;
         }
     }
@@ -537,7 +540,7 @@ result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tg
     {
         // TODO: change this to use the RAW memory api
         row_entry_t **const new_entries =
-            (row_entry_t **)PyMem_Realloc((void *)row_tgt->entries, sizeof(*new_entries) * needed_size);
+            (row_entry_t **)PyMem_RawRealloc((void *)row_tgt->entries, sizeof(*new_entries) * needed_size);
         if (!new_entries)
         {
             return RESULT_FAILED_ALLOC;
@@ -599,7 +602,7 @@ result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tg
             // Add the new entry
             matrix_multiply(&mat, &mat_src, &out);
             row_entry_t *const new_entry =
-                (row_entry_t *)PyMem_Malloc(sizeof(*new_entry) + sizeof(*new_entry->vals) * out.rows * out.cols);
+                (row_entry_t *)PyMem_RawMalloc(sizeof(*new_entry) + sizeof(*new_entry->vals) * out.rows * out.cols);
 
             if (!new_entry)
             {
