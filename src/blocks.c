@@ -215,6 +215,24 @@ void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out)
         }
     }
 }
+
+void matrix_multiply_sub_inplace(const matrix_t *a, const matrix_t *b, const matrix_t *out)
+{
+    CPYUTL_ASSERT(a->cols == b->rows, "Columns of A must match the rows of B (%zu vs %zu).", a->cols, b->rows);
+    CPYUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
+    // Multiply compute A @ B and subtract the result from whatever is in OUT
+    for (u64 i = 0; i < a->rows; ++i)
+    {
+        for (u64 j = 0; j < b->cols; ++j)
+        {
+            f64 v = 0;
+            for (u64 k = 0; k < a->cols; ++k)
+                v += a->data[i * a->cols + k] * b->data[k * b->cols + j];
+            out->data[i * out->cols + j] -= v;
+        }
+    }
+}
+
 void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b)
 {
     CPYUTL_ASSERT(a->rows == b->rows && a->cols == b->cols, "Matrices have different dimensions.");
@@ -631,4 +649,77 @@ result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tg
     PyMem_RawFree(buffer);
 
     return RESULT_SUCCESS;
+}
+
+void block_system_apply_operations(const block_system_t *const this, const u64 nops,
+                                   const operation_t ops[const static nops], f64 *const vec)
+{
+    for (const operation_t *op = ops; op < ops + nops; ++op)
+    {
+        switch (op->type)
+        {
+        case OPERATION_ELIMIN: {
+            matrix_t block_mat;
+            const u64 idx_tgt = op->elimin.idx_row;
+            const u64 idx_src = op->elimin.idx_col;
+            (void)block_system_get_block(this, idx_tgt, idx_src, &block_mat);
+            const matrix_t in_vec = (matrix_t){
+                .rows = block_system_get_block_size(this, idx_src),
+                .cols = 1,
+                .data = (f64 *)vec + this->block_offsets[idx_src],
+            };
+            const matrix_t out_vec = (matrix_t){
+                .rows = block_system_get_block_size(this, idx_tgt),
+                .cols = 1,
+                .data = (f64 *)vec + this->block_offsets[idx_tgt],
+            };
+            matrix_multiply_sub_inplace(&block_mat, &in_vec, &out_vec);
+        }
+        break;
+
+        case OPERATION_INVDIA: {
+            matrix_t block_mat;
+            const u64 idx_row = op->invdia.idx;
+            (void)block_system_get_block(this, idx_row, idx_row, &block_mat);
+            const matrix_t inout_vec = (matrix_t){
+                .rows = block_system_get_block_size(this, idx_row),
+                .cols = 1,
+                .data = (f64 *)vec + this->block_offsets[idx_row],
+            };
+            matrix_lu_solve(&block_mat, &inout_vec, &inout_vec);
+        }
+        break;
+        }
+    }
+}
+
+void block_system_solve_u(const block_system_t *const this, f64 *const y)
+{
+    // Solve the U x = y system, where the diagonal blocks are identity
+    for (u64 i = this->n; i > 0; --i)
+    {
+        const u64 idx_row = i - 1;
+        const sys_row_t *const row = this->rows + idx_row;
+        const u64 block_size = block_system_get_block_size(this, idx_row);
+        const matrix_t vec = (matrix_t){
+            .rows = block_size,
+            .cols = 1,
+            .data = y + this->block_offsets[idx_row],
+        };
+        for (u64 j = row->count; idx_row < row->entries[j - 1]->col; --j)
+        {
+            row_entry_t *const entry = row->entries[j - 1];
+            const matrix_t mat_entry = (matrix_t){
+                .rows = block_size,
+                .cols = block_system_get_block_size(this, entry->col),
+                .data = entry->vals,
+            };
+            const matrix_t vec_entry = (matrix_t){
+                .rows = block_system_get_block_size(this, entry->col),
+                .cols = 1,
+                .data = y + this->block_offsets[entry->col],
+            };
+            matrix_multiply_sub_inplace(&mat_entry, &vec_entry, &vec);
+        }
+    }
 }

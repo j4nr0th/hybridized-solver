@@ -77,6 +77,9 @@ MODULE_INTERNAL
 void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out);
 
 MODULE_INTERNAL
+void matrix_multiply_sub_inplace(const matrix_t *a, const matrix_t *b, const matrix_t *out);
+
+MODULE_INTERNAL
 void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b);
 
 MODULE_INTERNAL
@@ -96,6 +99,12 @@ void block_system_decompose_diagonal(const block_system_t *this, u64 idx_row);
 
 MODULE_INTERNAL
 result_t block_system_eliminate_row(const block_system_t *this, u64 idx_tgt, u64 idx_src);
+
+MODULE_INTERNAL
+void block_system_apply_operations(const block_system_t *this, u64 nops, const operation_t ops[static nops], f64 *vec);
+
+MODULE_INTERNAL
+void block_system_solve_u(const block_system_t *this, f64 *y);
 
 static inline u64 block_system_get_block_size(const block_system_t *this, const u64 idx_row)
 {

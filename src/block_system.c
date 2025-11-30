@@ -1152,6 +1152,12 @@ static PyObject *block_system_object_decompose(PyObject *self, PyTypeObject *def
     if (block_system_ensure_not_decomposed(this) < 0)
         return NULL;
 
+    if (block_system_is_valid(&this->system) < 0)
+    {
+        PyErr_SetString(PyExc_ValueError, "Block system is not valid.");
+        return NULL;
+    }
+
     if (nargs != 0 || kwnames != NULL)
     {
         PyErr_SetString(PyExc_TypeError, "No arguments accepted.");
@@ -1235,6 +1241,90 @@ static PyObject *block_system_object_operations(PyObject *self, PyTypeObject *de
 
 PyDoc_STRVAR(block_system_object_operations_docstring, "operations() -> tuple[tuple[int, int] | tuple[int]]\n"
                                                        "Get operations as tuples of one or two ints.");
+
+static PyObject *block_system_object_solve(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                           const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_decomposed(this) < 0)
+        return NULL;
+
+    PyObject *val;
+    PyArrayObject *out = NULL;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &val, .kwname = "val"},
+                {
+                    .type = CPYARG_TYPE_PYTHON,
+                    .p_val = &out,
+                    .kwname = "out",
+                    .type_check = &PyArray_Type,
+                    .optional = 1,
+                },
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    // Check the input array has the correct shape
+    PyArrayObject *const arr =
+        (PyArrayObject *)PyArray_FROMANY(val, NPY_DOUBLE, 1, 1, NPY_ARRAY_ALIGNED | NPY_ARRAY_C_CONTIGUOUS);
+    if (!arr)
+        return NULL;
+    if (check_input_array(arr, 1, (const npy_intp[1]){(npy_intp)this->system.block_offsets[this->system.n]}, NPY_DOUBLE,
+                          NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "val") < 0)
+    {
+        Py_DECREF(arr);
+        return NULL;
+    }
+
+    // Deal with output
+    if (out)
+    {
+        // It was given, so check it!
+        if (check_input_array(out, PyArray_NDIM(arr), PyArray_DIMS(arr), NPY_DOUBLE,
+                              NPY_ARRAY_ALIGNED | NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_WRITEABLE, "out") < 0)
+        {
+            Py_DECREF(arr);
+            return NULL;
+        }
+        Py_INCREF(out);
+    }
+    else
+    {
+        out = (PyArrayObject *)PyArray_SimpleNew(1, PyArray_DIMS(arr), NPY_DOUBLE);
+        if (!out)
+        {
+            Py_DECREF(arr);
+            return NULL;
+        }
+    }
+
+    // Do the actual solving
+    Py_BEGIN_ALLOW_THREADS;
+    npy_double *const ptr = PyArray_DATA(out);
+    if (arr != out)
+    {
+        // If input and output params are the same array, do not bother copying
+        memcpy(ptr, PyArray_DATA(arr), PyArray_SIZE(arr) * sizeof(double));
+    }
+    block_system_apply_operations(&this->system, this->nops, this->ops, ptr);
+    block_system_solve_u(&this->system, ptr);
+    Py_END_ALLOW_THREADS;
+
+    Py_DECREF(arr);
+    return (PyObject *)out;
+}
+
+PyDoc_STRVAR(block_system_object_solve_docstring,
+             "solve(val: numpy.typing.ArrayLike, out: numpy.typing.NDArray[numpy.double] | None = None) -> "
+             "numpy.typing.NDArray[numpy.double]\n"
+
+);
 
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
@@ -1371,6 +1461,12 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_operations,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_operations_docstring,
+                 },
+                 {
+                     .ml_name = "solve",
+                     .ml_meth = (void *)block_system_object_solve,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_solve_docstring,
                  },
                  {},
              }},

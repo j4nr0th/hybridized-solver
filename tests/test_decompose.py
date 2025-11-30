@@ -154,7 +154,9 @@ def test_dense_matrix_blocks_with_c(n_blocks: int, block_size: int) -> None:
 
     # Solve
     sol = solve_decomposed_c(decomp, ops, rhs)
+    sol_c = sys_2.solve(rhs)
 
+    assert pytest.approx(sol) == sol_c
     assert pytest.approx(sol) == lhs
 
 

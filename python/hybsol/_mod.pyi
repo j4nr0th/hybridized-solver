@@ -220,5 +220,21 @@ class BlockSystem:
     def solve(
         self, val: npt.ArrayLike, out: npt.NDArray[np.double] | None = None
     ) -> npt.NDArray[np.double]:
-        """Solve the system for the given rhs."""
+        """Solve the system for the given right side.
+
+        Parameters
+        ----------
+        val : array_like
+            Right side "forcing" of the system.
+
+        out : array, optional
+            Array to which the result is written to. Can be the same as ``val``.
+            If left unspecified, a new array is created.
+
+        Returns
+        -------
+        array
+            Array with the result of the solve operation. If ``out`` was not specified,
+            this is a new array. Otherwise, a reference to ``out`` is returned.
+        """
         ...
