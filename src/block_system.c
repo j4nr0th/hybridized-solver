@@ -1140,9 +1140,8 @@ PyDoc_STRVAR(block_system_object_row_apply_decomposition_docstring,
              "    block decomposed by a call to :meth:`BlockSystem.decompose_diagonal` with\n"
              "    ``row`` passed to it before.\n");
 
-static PyObject *block_system_object_decompose(PyObject *self, PyTypeObject *defining_class,
-                                               PyObject *const *Py_UNUSED(args), const Py_ssize_t nargs,
-                                               const PyObject *kwnames)
+static PyObject *block_system_object_decompose(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                               const Py_ssize_t nargs, const PyObject *kwnames)
 {
     const module_state_t *state;
     block_system_object *this;
@@ -1158,15 +1157,24 @@ static PyObject *block_system_object_decompose(PyObject *self, PyTypeObject *def
         return NULL;
     }
 
-    if (nargs != 0 || kwnames != NULL)
+    Py_ssize_t n_threads = 0;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (n_threads < 0)
     {
-        PyErr_SetString(PyExc_TypeError, "No arguments accepted.");
+        PyErr_SetString(PyExc_ValueError, "Number of threads must be non-negative.");
         return NULL;
     }
 
     result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = block_system_decompose(&this->system, &this->nops, &this->ops);
+    res = block_system_decompose(&this->system, &this->nops, &this->ops, (u64)n_threads);
     Py_END_ALLOW_THREADS;
 
     if (res != RESULT_SUCCESS)
@@ -1178,8 +1186,14 @@ static PyObject *block_system_object_decompose(PyObject *self, PyTypeObject *def
     Py_RETURN_NONE;
 }
 
-PyDoc_STRVAR(block_system_object_decompose_docstring, "decompose() -> None\n"
-                                                      "Decompose the block system.\n");
+PyDoc_STRVAR(block_system_object_decompose_docstring, "decompose(n_threads: int) -> None\n"
+                                                      "Decompose the block system.\n"
+                                                      "\n"
+                                                      "Parameters\n"
+                                                      "----------\n"
+                                                      "n_threads : int, default: 0\n"
+                                                      "    Number of OpenMP threads to use. When 0 or 1 is used,\n"
+                                                      "    the decomposition is serial.\n");
 
 static PyObject *block_system_object_operations(PyObject *self, PyTypeObject *defining_class,
                                                 PyObject *const *Py_UNUSED(args), const Py_ssize_t nargs,

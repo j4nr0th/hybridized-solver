@@ -166,9 +166,11 @@ result_t block_system_get_block(const block_system_t *this, const u64 idx_row, c
         // No block
         return RESULT_BLOCK_NOT_IN_SYSTEM;
     }
-    *out = (matrix_t){.rows = block_system_get_block_size(this, idx_row),
-                      .cols = block_system_get_block_size(this, idx_col),
-                      .data = row->entries[idx]->vals};
+    *out = (matrix_t){
+        .rows = block_system_get_block_size(this, idx_row),
+        .cols = block_system_get_block_size(this, idx_col),
+        .data = row->entries[idx]->vals,
+    };
 
     return RESULT_SUCCESS;
 }
@@ -201,17 +203,20 @@ void matrix_multiply(const matrix_t *a, const matrix_t *b, const matrix_t *out)
                   "Matrix multiplication: number of columns of A (%zu) does not match number of rows of B (%zu).",
                   a->cols, b->rows);
     CPYUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
-
+    const f64 *const restrict ptr_a = a->data;
+    const f64 *const restrict ptr_b = b->data;
+    f64 *const restrict ptr_out = out->data;
     for (u64 i = 0; i < a->rows; ++i)
     {
+#pragma omp simd
         for (u64 j = 0; j < b->cols; ++j)
         {
             f64 v = 0;
 
             for (u64 k = 0; k < a->cols; ++k)
-                v += a->data[i * a->cols + k] * b->data[k * b->cols + j];
+                v += ptr_a[i * a->cols + k] * ptr_b[k * b->cols + j];
 
-            out->data[i * out->cols + j] = v;
+            ptr_out[i * out->cols + j] = v;
         }
     }
 }
@@ -221,14 +226,19 @@ void matrix_multiply_sub_inplace(const matrix_t *a, const matrix_t *b, const mat
     CPYUTL_ASSERT(a->cols == b->rows, "Columns of A must match the rows of B (%zu vs %zu).", a->cols, b->rows);
     CPYUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
     // Multiply compute A @ B and subtract the result from whatever is in OUT
+    const f64 *const restrict ptr_a = a->data;
+    const f64 *const restrict ptr_b = b->data;
+    f64 *const restrict ptr_out = out->data;
     for (u64 i = 0; i < a->rows; ++i)
     {
+#pragma omp simd
         for (u64 j = 0; j < b->cols; ++j)
         {
             f64 v = 0;
             for (u64 k = 0; k < a->cols; ++k)
-                v += a->data[i * a->cols + k] * b->data[k * b->cols + j];
-            out->data[i * out->cols + j] -= v;
+                v += ptr_a[i * a->cols + k] * ptr_b[k * b->cols + j];
+
+            ptr_out[i * out->cols + j] -= v;
         }
     }
 }
@@ -236,6 +246,7 @@ void matrix_multiply_sub_inplace(const matrix_t *a, const matrix_t *b, const mat
 void matrix_subtract_inplace(const matrix_t *a, const matrix_t *b)
 {
     CPYUTL_ASSERT(a->rows == b->rows && a->cols == b->cols, "Matrices have different dimensions.");
+#pragma omp simd
     for (u64 i = 0; i < a->rows * a->cols; ++i)
         a->data[i] -= b->data[i];
 }
@@ -249,6 +260,7 @@ void matrix_lu_decompose(const matrix_t *m)
         for (u64 j = i; j < m->rows; ++j)
         {
             f64 u_ij = m->data[i * m->cols + j];
+#pragma omp simd
             for (u64 k = 0; k < i; ++k)
             {
                 u_ij -= m->data[i * m->cols + k] * m->data[k * m->cols + j];
@@ -260,6 +272,7 @@ void matrix_lu_decompose(const matrix_t *m)
         for (u64 j = i + 1; j < m->cols; ++j)
         {
             f64 l_ij = m->data[j * m->cols + i];
+#pragma omp simd
             for (u64 k = 0; k < i; ++k)
             {
                 l_ij -= m->data[k * m->cols + i] * m->data[j * m->cols + k];
@@ -280,6 +293,7 @@ void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out)
         for (u64 i = 0; i < m->rows; ++i)
         {
             f64 v = b->data[i * b->cols + i_col];
+#pragma omp simd
             for (u64 j = 0; j < i; ++j)
             {
                 v -= m->data[i * m->cols + j] * out->data[j * out->cols + i_col];
@@ -291,6 +305,7 @@ void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out)
         for (u64 i = m->rows; i > 0; --i)
         {
             f64 v = out->data[(i - 1) * out->cols + i_col];
+#pragma omp simd
             for (u64 j = i; j < m->rows; ++j)
             {
                 v -= m->data[(i - 1) * m->cols + j] * out->data[j * out->cols + i_col];
@@ -303,18 +318,30 @@ void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out)
 static result_t operations_list_append(u64 *const p_count, u64 *const p_capacity, operation_t **const pp_ops,
                                        const operation_t op)
 {
-    if (*p_count == *p_capacity)
+    result_t res = RESULT_SUCCESS;
+#pragma omp critical(operations_list_append)
     {
-        const u64 new_capacity = *p_capacity ? *p_capacity * 2 : 8;
-        operation_t *const ptr = (operation_t *)PyMem_RawRealloc(*pp_ops, new_capacity * sizeof(**pp_ops));
-        if (!ptr)
-            return RESULT_FAILED_ALLOC;
-        *pp_ops = ptr;
-        *p_capacity = new_capacity;
+        if (*p_count == *p_capacity)
+        {
+            const u64 new_capacity = *p_capacity ? *p_capacity * 2 : 8;
+            operation_t *const ptr = (operation_t *)PyMem_RawRealloc(*pp_ops, new_capacity * sizeof(**pp_ops));
+            if (!ptr)
+            {
+                res = RESULT_FAILED_ALLOC;
+            }
+            else
+            {
+                *pp_ops = ptr;
+                *p_capacity = new_capacity;
+            }
+        }
+        if (res == RESULT_SUCCESS)
+        {
+            (*pp_ops)[*p_count] = op;
+            *p_count += 1;
+        }
     }
-    (*pp_ops)[*p_count] = op;
-    *p_count += 1;
-    return RESULT_SUCCESS;
+    return res;
 }
 
 typedef enum
@@ -330,12 +357,12 @@ typedef struct
     u64 idx_src_needed;
 } target_row_t;
 
-result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operation_t **pp_ops)
+result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operation_t **pp_ops, const uint n_threads)
 {
     u64 count = 0;
     u64 capacity = 0;
     operation_t *ops = NULL;
-    result_t res;
+    result_t shared_res = RESULT_SUCCESS;
 
     target_row_t *const target_status = (target_row_t *)PyMem_RawMalloc(this->n * sizeof(*target_status));
     if (!target_status)
@@ -345,19 +372,24 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
 
     // Check which rows start with the diagonal block
     u64 n_tgt = 0;
+#pragma omp parallel for schedule(dynamic) reduction(+ : n_tgt) default(none)                                          \
+    shared(this, target_status, shared_res, count, capacity, ops)
     for (u64 i_row = 0; i_row < this->n; ++i_row)
     {
+        if (shared_res != RESULT_SUCCESS)
+            continue;
+
         const sys_row_t *const row = this->rows + i_row;
         const u8 is_available = (row->entries[0]->col == i_row);
         if (is_available)
         {
             // Add the operation
-            res = operations_list_append(&count, &capacity, &ops,
-                                         (operation_t){.type = OPERATION_INVDIA, .invdia = {.idx = i_row}});
+            const result_t res = operations_list_append(
+                &count, &capacity, &ops, (operation_t){.type = OPERATION_INVDIA, .invdia = {.idx = i_row}});
             if (res != RESULT_SUCCESS)
             {
-                PyMem_RawFree(target_status);
-                return res;
+                shared_res = res;
+                continue;
             }
             // Perform the actual operation
             block_system_decompose_diagonal(this, i_row);
@@ -372,44 +404,65 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
         }
     }
 
-    // TODO: we can make this shit parallel nigga!
-    while (n_tgt)
+    if (shared_res != RESULT_SUCCESS)
     {
-        u64 i_tgt;
-        for (i_tgt = 0; i_tgt < this->n; ++i_tgt)
+        PyMem_RawFree(target_status);
+        return shared_res;
+    }
+
+#pragma omp parallel default(none) shared(n_tgt, this, target_status, count, capacity, ops, pn_ops, pp_ops,            \
+                                              shared_res) if (n_threads > 1) num_threads(n_threads)
+    while (n_tgt && shared_res == RESULT_SUCCESS)
+    {
+        u64 i_tgt = this->n;
+        while (i_tgt == this->n && n_tgt > 0 && shared_res == RESULT_SUCCESS)
         {
-            target_row_t *const status = target_status + i_tgt;
-            if (status->status == TARGET_FREE && target_status[status->idx_src_needed].status == TARGET_DONE)
+            for (i_tgt = 0; i_tgt < this->n; ++i_tgt)
             {
-                // Make this an atomic exchange, and we solve race conditions
-                const target_status_t old_status = status->status;
-                status->status = TARGET_IN_USE;
-                if (old_status != TARGET_FREE)
+                target_row_t *const status = target_status + i_tgt;
+                if (status->status == TARGET_FREE && target_status[status->idx_src_needed].status == TARGET_DONE)
                 {
-                    status->status = old_status;
-                    i_tgt = -1;
-                }
-                else
-                {
+                    target_status_t old_status;
+#pragma omp atomic capture
+                    {
+                        old_status = status->status;
+                        status->status = (status->status == TARGET_FREE) ? TARGET_IN_USE : status->status;
+                    }
+
+                    // Make this an atomic exchange, and we solve race conditions
+                    if (old_status != TARGET_FREE)
+                    {
+                        continue;
+                    }
+
                     break;
                 }
             }
         }
-        CPYUTL_ASSERT(i_tgt != this->n, "Internal error: no free target row found.");
+        if (n_tgt == 0 || shared_res != RESULT_SUCCESS)
+        {
+            break;
+        }
+
         target_row_t *const status = target_status + i_tgt;
-        // printf("Eliminating row %zu (needs row %zu)\n", i_tgt, status->idx_src_needed);
-        res = block_system_eliminate_row(this, i_tgt, status->idx_src_needed);
+        result_t res = block_system_eliminate_row(this, i_tgt, status->idx_src_needed);
         CPYUTL_ASSERT(res == RESULT_SUCCESS, "Failed to eliminate row %zu with row %zu.", i_tgt,
                       status->idx_src_needed);
         if (res != RESULT_SUCCESS)
-            return res;
+        {
+            shared_res = res;
+            break;
+        }
 
         res = operations_list_append(
             &count, &capacity, &ops,
             (operation_t){.type = OPERATION_ELIMIN, .elimin = {.idx_row = i_tgt, .idx_col = status->idx_src_needed}});
 
         if (res != RESULT_SUCCESS)
-            return res;
+        {
+            shared_res = res;
+            break;
+        }
 
         const sys_row_t *const row = this->rows + i_tgt;
         const u64 new_idx_src_needed =
@@ -424,8 +477,12 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
             res = operations_list_append(&count, &capacity, &ops,
                                          (operation_t){.type = OPERATION_INVDIA, .invdia = {.idx = i_tgt}});
             if (res != RESULT_SUCCESS)
-                return res;
+            {
+                shared_res = res;
+                break;
+            }
 
+#pragma omp atomic update
             n_tgt -= 1;
         }
         else
@@ -549,6 +606,7 @@ result_t block_system_eliminate_row(const block_system_t *this, const u64 idx_tg
         row_tgt->entries = new_entries;
         row_tgt->capacity = needed_size;
         // Zero initialize it
+#pragma omp simd
         for (u64 i = row_tgt->count; i < needed_size; ++i)
         {
             row_tgt->entries[i] = NULL;

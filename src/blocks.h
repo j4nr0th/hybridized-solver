@@ -89,7 +89,7 @@ MODULE_INTERNAL
 void matrix_lu_solve(const matrix_t *m, const matrix_t *b, const matrix_t *out);
 
 MODULE_INTERNAL
-result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operation_t **pp_ops);
+result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operation_t **pp_ops, uint n_threads);
 
 MODULE_INTERNAL
 void block_system_apply_diagonal_inverse(const block_system_t *this, u64 idx_row);

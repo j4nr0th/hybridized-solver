@@ -209,8 +209,15 @@ class BlockSystem:
         """
         ...
 
-    def decompose(self) -> None:
-        """Decompose the block system."""
+    def decompose(self, n_threads: int = 0) -> None:
+        """Decompose the block system.
+
+        Parameters
+        ----------
+        n_threads : int, default: 0
+            Number of OpenMP threads to use. When 0 or 1 is used,
+            the decomposition is serial.
+        """
         ...
 
     def operations(self) -> tuple[tuple[int, int] | tuple[int]]:

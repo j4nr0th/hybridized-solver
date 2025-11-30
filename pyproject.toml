@@ -34,12 +34,12 @@ dev = [
     "tomli",
 ]
 docs = [
+    "matplotlib",
     "sphinx",
     "pydata-sphinx-theme",
     "sphinx-favicon",
     "sphinx-design",
     "sphinx-gallery",
-    "pyvista[jupyter,trame]",
     "pypandoc",
     "pytest-sphinx",
     "sphinx-autobuild",

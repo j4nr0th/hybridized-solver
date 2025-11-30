@@ -4,9 +4,12 @@ if (NOT DEFINED SKBUILD_PROJECT_NAME)
     set(SKBUILD_PROJECT_NAME "hybsol")
 endif ()
 
+
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 project(${SKBUILD_PROJECT_NAME} LANGUAGES C)
 find_package(Python COMPONENTS Interpreter Development.Module Development.SABIModule REQUIRED)
+
+find_package(OpenMP REQUIRED COMPONENTS C)
 
 execute_process(
         COMMAND "${Python_EXECUTABLE}"
@@ -24,7 +27,7 @@ Python_add_library(_mod MODULE
 
 add_subdirectory(cpyutl)
 
-target_link_libraries(_mod PRIVATE cpyutl)
+target_link_libraries(_mod PRIVATE cpyutl OpenMP::OpenMP_C)
 set_property(TARGET _mod PROPERTY C_STANDARD 17)
 install(TARGETS _mod DESTINATION ${SKBUILD_PROJECT_NAME})
 target_compile_definitions(_mod PRIVATE CPYUTL_ASSERTS)
@@ -35,5 +38,5 @@ endif ()
 target_include_directories(_mod PRIVATE ${NumPy_INCLUDE_DIRS} ${Python_INCLUDE_DIRS} cpyutl/src)
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(_mod PRIVATE -Wall -Wextra -Werror -fwhole-program -flto=auto)
+    target_compile_options(_mod PRIVATE -Wall -Wextra -Werror -fwhole-program -flto=auto -fno-omit-frame-pointer -g)
 endif ()
