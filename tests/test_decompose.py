@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from hybsol._mod import BlockDecomposition
 from hybsol.system import (
     BlockSystem,
     # OperationEliminate,
@@ -130,9 +129,7 @@ def test_dense_matrix_blocks_with_c(n_blocks: int, block_size: int) -> None:
 
     # Decompose
     ops, decomp = decompose_block_system_c(sys)
-    c_decomp = BlockDecomposition(sys_2)
-
-    assert c_decomp.system is sys_2
+    sys_2.decompose()
 
     for i_row in range(decomp.n_blocks):
         cols = decomp.get_row_block_indices(i_row)

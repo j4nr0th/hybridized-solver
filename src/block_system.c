@@ -1,5 +1,29 @@
 #include "block_system.h"
 
+static int block_system_ensure_decomposed(const block_system_object *const this)
+{
+    if (this->ops != NULL)
+    {
+        return 0;
+    }
+
+    PyErr_SetString(PyExc_RuntimeError, "The system has not been decomposed yet.");
+
+    return -1;
+}
+
+static int block_system_ensure_not_decomposed(const block_system_object *const this)
+{
+    if (this->ops == NULL)
+    {
+        return 0;
+    }
+
+    PyErr_SetString(PyExc_RuntimeError, "The system has already been decomposed.");
+
+    return -1;
+}
+
 static void block_system_dealloc(block_system_object *self)
 {
     PyObject_GC_UnTrack(self);
@@ -25,6 +49,9 @@ static void block_system_dealloc(block_system_object *self)
         PyMem_Free(self->system.rows);
         self->system.rows = NULL;
     }
+    PyMem_RawFree(self->ops);
+    self->ops = NULL;
+    self->nops = 0;
     type->tp_free((PyObject *)self);
     Py_DECREF(type);
 }
@@ -55,6 +82,8 @@ static PyObject *block_system_new(PyTypeObject *subtype, PyObject *args, const P
     }
     self->system.n = n_blocks;
     // Zero-initialize
+    self->ops = NULL;
+    self->nops = 0;
     self->system.rows = NULL;
     self->system.block_offsets = PyMem_Malloc((n_blocks + 1) * sizeof(*self->system.block_offsets));
     if (!self->system.block_offsets)
@@ -141,6 +170,9 @@ static PyObject *block_system_object_add_block(PyObject *self, PyTypeObject *def
     const module_state_t *state;
     block_system_object *this;
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_not_decomposed(this) < 0)
         return NULL;
 
     Py_ssize_t row_idx, col_idx;
@@ -427,6 +459,9 @@ static PyObject *block_system_object_multiply_row(PyObject *self, PyTypeObject *
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
         return NULL;
 
+    if (block_system_ensure_not_decomposed(this) < 0)
+        return NULL;
+
     Py_ssize_t row_idx, start_idx = 0;
     PyObject *value;
     if (parse_arguments_check(
@@ -520,6 +555,9 @@ static PyObject *block_system_object_eliminate_row(PyObject *self, PyTypeObject 
     const module_state_t *state;
     block_system_object *this;
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_not_decomposed(this) < 0)
         return NULL;
 
     Py_ssize_t i_row_src, i_row_tgt;
@@ -906,6 +944,9 @@ static PyObject *block_system_object_decompose_diagonal(PyObject *self, PyTypeOb
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
         return NULL;
 
+    if (block_system_ensure_not_decomposed(this) < 0)
+        return NULL;
+
     Py_ssize_t i_row;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
@@ -1099,6 +1140,102 @@ PyDoc_STRVAR(block_system_object_row_apply_decomposition_docstring,
              "    block decomposed by a call to :meth:`BlockSystem.decompose_diagonal` with\n"
              "    ``row`` passed to it before.\n");
 
+static PyObject *block_system_object_decompose(PyObject *self, PyTypeObject *defining_class,
+                                               PyObject *const *Py_UNUSED(args), const Py_ssize_t nargs,
+                                               const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_not_decomposed(this) < 0)
+        return NULL;
+
+    if (nargs != 0 || kwnames != NULL)
+    {
+        PyErr_SetString(PyExc_TypeError, "No arguments accepted.");
+        return NULL;
+    }
+
+    result_t res;
+    Py_BEGIN_ALLOW_THREADS;
+    res = block_system_decompose(&this->system, &this->nops, &this->ops);
+    Py_END_ALLOW_THREADS;
+
+    if (res != RESULT_SUCCESS)
+    {
+        PyErr_Format(PyExc_RuntimeError, "Block system decomposition failed with error %d.", res);
+        return NULL;
+    }
+
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(block_system_object_decompose_docstring, "decompose() -> None\n"
+                                                      "Decompose the block system.\n");
+
+static PyObject *block_system_object_operations(PyObject *self, PyTypeObject *defining_class,
+                                                PyObject *const *Py_UNUSED(args), const Py_ssize_t nargs,
+                                                const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_decomposed(this) < 0)
+        return NULL;
+
+    if (nargs != 0 || kwnames != NULL)
+    {
+        PyErr_SetString(PyExc_TypeError, "No arguments accepted.");
+        return NULL;
+    }
+
+    PyTupleObject *const out = (PyTupleObject *)PyTuple_New((Py_ssize_t)this->nops);
+
+    for (u64 i = 0; i < this->nops; ++i)
+    {
+        const operation_t op = this->ops[i];
+        PyObject *val = NULL;
+        switch (op.type)
+        {
+        case OPERATION_INVDIA:
+            val = cpyutl_output_create_check(CPYOUT_TYPE_TUPLE,
+                                             (const cpyutl_output_t[]){
+                                                 {.type = CPYOUT_TYPE_PYINT, .value_int = (Py_ssize_t)op.invdia.idx},
+                                                 {},
+                                             });
+            break;
+
+        case OPERATION_ELIMIN:
+            val = cpyutl_output_create_check(
+                CPYOUT_TYPE_TUPLE, (const cpyutl_output_t[]){
+                                       {.type = CPYOUT_TYPE_PYINT, .value_int = (Py_ssize_t)op.elimin.idx_row},
+                                       {.type = CPYOUT_TYPE_PYINT, .value_int = (Py_ssize_t)op.elimin.idx_col},
+                                       {},
+                                   });
+            break;
+        default:
+            PyErr_Format(PyExc_RuntimeError, "Unknown operation type (%u).", op.type);
+            Py_DECREF(out);
+            return NULL;
+        }
+        if (val == NULL)
+        {
+            Py_DECREF(out);
+            return NULL;
+        }
+        PyTuple_SET_ITEM(out, i, val);
+    }
+
+    return (PyObject *)out;
+}
+
+PyDoc_STRVAR(block_system_object_operations_docstring, "operations() -> tuple[tuple[int, int] | tuple[int]]\n"
+                                                       "Get operations as tuples of one or two ints.");
+
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
     const block_system_object *this = (block_system_object *)self;
@@ -1222,6 +1359,18 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_row_apply_decomposition,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_row_apply_decomposition_docstring,
+                 },
+                 {
+                     .ml_name = "decompose",
+                     .ml_meth = (void *)block_system_object_decompose,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_decompose_docstring,
+                 },
+                 {
+                     .ml_name = "operations",
+                     .ml_meth = (void *)block_system_object_operations,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_operations_docstring,
                  },
                  {},
              }},

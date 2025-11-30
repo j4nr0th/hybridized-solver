@@ -37,7 +37,6 @@ typedef struct
 {
     PyTypeObject *type_block_info;
     PyTypeObject *type_block_system;
-    PyTypeObject *type_block_decomposition;
 } module_state_t;
 
 MODULE_INTERNAL
