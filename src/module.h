@@ -69,4 +69,5 @@ typedef enum
     RESULT_SUCCESS,
     RESULT_BLOCK_NOT_IN_SYSTEM,
     RESULT_FAILED_ALLOC,
+    RESULT_MAX_COLORS,
 } result_t;

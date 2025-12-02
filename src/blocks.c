@@ -784,3 +784,313 @@ void block_system_solve_u(const block_system_t *const this, f64 *const y)
         }
     }
 }
+
+void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_colors,
+                       u64 colored_by_color[const static max_colors], const u64 color_count,
+                       u64 counts[const static color_count])
+{
+    // Initialize the colored_by_color array to be used for changing color indices
+    for (u64 i = 0; i < color_count; ++i)
+    {
+        colored_by_color[i] = i;
+    }
+
+    // Sort the color counts by the highest count first using bubble sort
+    for (u64 i = 0; i < color_count - 1; ++i)
+    {
+        for (u64 j = i; j < color_count; ++j)
+        {
+            if (counts[i] < counts[j])
+            {
+                const u64 tmp = counts[i];
+                counts[i] = counts[j];
+                counts[j] = tmp;
+                const u64 tmp2 = colored_by_color[i];
+                colored_by_color[i] = colored_by_color[j];
+                colored_by_color[j] = tmp2;
+            }
+        }
+    }
+
+    // Convert the count array into an offset
+    u64 total_count = 0;
+    for (u64 i = 0; i < color_count; ++i)
+    {
+        const u64 current_count = counts[i];
+        counts[i] = total_count;
+        total_count += current_count;
+    }
+
+    // Unpermute offsets array
+    for (u64 i = 0; i < color_count; ++i)
+    {
+        const u64 new_idx = colored_by_color[i];
+        colored_by_color[i] = counts[new_idx];
+    }
+
+    // Copy the offsets back and initialize counters of colored unknowns
+    for (u64 i = 0; i < n; ++i)
+    {
+        counts[i] = colored_by_color[i];
+        colored_by_color[i] = 0;
+    }
+
+    // Create ordering based on colors now
+    for (u64 i = 0; i < n; ++i)
+    {
+        const u64 color = ordering[i];
+        const u64 offset = counts[color];
+        const u64 new_idx = colored_by_color[color] + offset;
+        // printf("Block %zu has color %zu: new index is %zu, with %zu of the same colors before\n", i, color, new_idx,
+        //        colored_by_color[color]);
+        ordering[i] = new_idx;
+        colored_by_color[color] += 1;
+    }
+}
+
+result_t update_color_counts(const u64 max_colors, u64 *color_count, u64 counts[const max_colors], const u64 color)
+{
+    if (color == *color_count)
+    {
+        // Are we out of space yet?
+        if (max_colors == *color_count)
+        {
+            return RESULT_MAX_COLORS;
+        }
+        // Set the new counter to one
+        counts[(*color_count)] = 1;
+        *color_count += 1;
+    }
+    else
+    {
+        // We can just increment the counter for old colors
+        counts[color] += 1;
+    }
+
+    return RESULT_SUCCESS;
+}
+
+result_t block_system_compute_ordering_first(const u64 n, const sys_row_t rows[const static n], u64 ordering[const n],
+                                             const u64 max_colors, u64 color_buffer[2 * max_colors])
+{
+    // Paint all as invalid
+    for (u64 i = 0; i < n; ++i)
+    {
+        ordering[i] = ~0ULL;
+    }
+
+    u64 color_count = 0;
+    u64 *const counts = color_buffer + 0 * max_colors;
+    // For the first part, we can re-use the ordering array for storing colors
+
+    for (u64 i = 0; i < n; ++i)
+    {
+        const sys_row_t *const row = rows + i;
+        const u64 block_count = row->count;
+        u64 color = 0;
+
+        // Pick the first available color
+    color_check:
+        for (u64 j = 0; j < block_count && color < color_count; ++j)
+        {
+            const row_entry_t *const entry = row->entries[j];
+            const u64 col = entry->col;
+            const u64 neighbor_color = ordering[col];
+            // Can't use this color, try the next!
+            if (neighbor_color == color)
+            {
+                color += 1;
+                // Restart the whole loop again
+                goto color_check;
+            }
+        }
+        CPYUTL_ASSERT(color <= color_count, "Color chosen for row %zu was %zu, which is out of bounds!", i, color);
+
+        ordering[i] = color;
+        // Do we need to add a new color counter?
+        const result_t res = update_color_counts(max_colors, &color_count, counts, color);
+        if (res != RESULT_SUCCESS)
+            return res;
+    }
+
+    order_from_colors(n, ordering, max_colors, color_buffer + 1 * max_colors, color_count, counts);
+
+    return RESULT_SUCCESS;
+}
+
+result_t block_system_compute_ordering_greedy(const u64 n, const sys_row_t rows[const static n], u64 ordering[const n],
+                                              const u64 max_colors, u64 color_buffer[2 * max_colors])
+{
+    // For the first part, we can re-use the ordering array for storing the colors.
+    // Paint all as invalid.
+    for (u64 i = 0; i < n; ++i)
+    {
+        ordering[i] = ~0ULL;
+    }
+
+    u64 color_count = 0;
+    // Array for counts of colors
+    u64 *const counts = color_buffer + 0 * max_colors;
+    // Array to have the color indices sorted from the most used to the least used
+    u64 *const color_order = color_buffer + 1 * max_colors;
+    // Initialize it with the default order
+    for (u64 i = 0; i < max_colors; ++i)
+    {
+        color_order[i] = i;
+        counts[i] = 0;
+    }
+
+    for (u64 i = 0; i < n; ++i)
+    {
+        const sys_row_t *const row = rows + i;
+        const u64 block_count = row->count;
+        // Pick the first color with the most entries
+        u64 i_color = 0;
+
+    color_check:
+        for (u64 j = 0; j < block_count && i_color < color_count; ++j)
+        {
+            const row_entry_t *const entry = row->entries[j];
+            const u64 col = entry->col;
+            const u64 neighbor_color = ordering[col];
+            // Can't use this color, try the next most used
+            if (neighbor_color == color_order[i_color])
+            {
+                // Try the next most used
+                i_color += 1;
+                // Restart the whole loop again
+                goto color_check;
+            }
+        }
+        const u64 color = color_order[i_color];
+        CPYUTL_ASSERT(i_color <= color_count, "Color chosen for row %zu was %zu, which is out of bounds!", i, color);
+
+        // Do we need to add a new color counter?
+        const result_t res = update_color_counts(max_colors, &color_count, counts, color);
+        if (res != RESULT_SUCCESS)
+            return res;
+
+        ordering[i] = color;
+
+        // Use bubble sort to check if we need to change the order of color indices
+        for (u64 j = i_color; j > 0; --j)
+        {
+            if (counts[color_order[j]] > counts[color_order[j - 1]])
+            {
+                const u64 tmp = color_order[j];
+                color_order[j] = color_order[j - 1];
+                color_order[j - 1] = tmp;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+#ifdef CPYUTL_ENABLE_ASSERTS
+    for (u64 color = 0; color < color_count; ++color)
+    {
+        u64 counted = 0;
+        for (u64 i = 0; i < n; ++i)
+        {
+            counted += (ordering[i] == color);
+        }
+        CPYUTL_ASSERT(counted == counts[color], "Color %zu had %zu entries, but counted %zu!", color, counts[color],
+                      counted);
+    }
+#endif
+
+    order_from_colors(n, ordering, max_colors, color_buffer + 1 * max_colors, color_count, counts);
+
+    return RESULT_SUCCESS;
+}
+
+result_t block_system_compute_ordering_balanced(const u64 n, const sys_row_t rows[const static n],
+                                                u64 ordering[const n], const u64 max_colors,
+                                                u64 color_buffer[2 * max_colors])
+{
+    // For the first part, we can re-use the ordering array for storing the colors.
+    // Paint all as invalid.
+    for (u64 i = 0; i < n; ++i)
+    {
+        ordering[i] = ~0ULL;
+    }
+
+    u64 color_count = 0;
+    // Array for counts of colors
+    u64 *const counts = color_buffer + 0 * max_colors;
+    // Array to have the color indices sorted from the most used to the least used
+    u64 *const color_order = color_buffer + 1 * max_colors;
+    // Initialize it with the default order
+    for (u64 i = 0; i < max_colors; ++i)
+    {
+        color_order[i] = i;
+        counts[i] = 0;
+    }
+
+    for (u64 i = 0; i < n; ++i)
+    {
+        const sys_row_t *const row = rows + i;
+        const u64 block_count = row->count;
+        // Pick the first color with the most entries
+        u64 i_color = 0;
+
+    color_check:
+        for (u64 j = 0; j < block_count && i_color < color_count; ++j)
+        {
+            const row_entry_t *const entry = row->entries[j];
+            const u64 col = entry->col;
+            const u64 neighbor_color = ordering[col];
+            // Can't use this color, try the next most used
+            if (neighbor_color == color_order[i_color])
+            {
+                // Try the next most used
+                i_color += 1;
+                // Restart the whole loop again
+                goto color_check;
+            }
+        }
+        const u64 color = color_order[i_color];
+        CPYUTL_ASSERT(i_color <= color_count, "Color chosen for row %zu was %zu, which is out of bounds!", i, color);
+
+        // Do we need to add a new color counter?
+        const result_t res = update_color_counts(max_colors, &color_count, counts, color);
+        if (res != RESULT_SUCCESS)
+            return res;
+
+        ordering[i] = color;
+
+        // Use bubble sort to check if we need to change the order of color indices
+        for (u64 j = i_color + 1; j < color_count; ++j)
+        {
+            if (counts[color_order[j]] < counts[color_order[j - 1]])
+            {
+                const u64 tmp = color_order[j];
+                color_order[j] = color_order[j - 1];
+                color_order[j - 1] = tmp;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+#ifdef CPYUTL_ENABLE_ASSERTS
+    for (u64 color = 0; color < color_count; ++color)
+    {
+        u64 counted = 0;
+        for (u64 i = 0; i < n; ++i)
+        {
+            counted += (ordering[i] == color);
+        }
+        CPYUTL_ASSERT(counted == counts[color], "Color %zu had %zu entries, but counted %zu!", color, counts[color],
+                      counted);
+    }
+#endif
+
+    order_from_colors(n, ordering, max_colors, color_buffer + 1 * max_colors, color_count, counts);
+
+    return RESULT_SUCCESS;
+}

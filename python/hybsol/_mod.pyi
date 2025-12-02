@@ -1,6 +1,6 @@
 """Stub for the C extension module _mod."""
 
-from typing import Self
+from typing import Literal, Self
 
 import numpy as np
 from numpy import typing as npt
@@ -261,5 +261,39 @@ class BlockSystem:
         n_threads : int, default: 0
             Number of OpenMP threads to use for reordering. Specifiny 0 or 1 means
             that it is done in series.
+        """
+        ...
+
+    def compute_reordering(
+        self,
+        strategy: Literal["first", "greedy", "balanced"] = "first",
+        max_colors: int = 0,
+    ) -> npt.NDArray[np.uint64]:
+        """Find ordering of unknowns in the system based on "coloring".
+
+        The idea behind computing reordering the degrees of freedom is to first sort them
+        by group index, such that a degree of freedom has no interaction with degree of
+        freedom has no shared interactions (non-zero blocks in the system) with any other
+        degree of freedom in that group. This is often called "coloring". After all the
+        degrees of freedom are sorted into these groups, they are ordered group by group.
+
+        Parameters
+        ----------
+        strategy : typing.Literal["first", "greedy", "balanced"], default: "first"
+            How the grouping is constructed. "first" tries to group as many degrees of
+            freedom into the first available group, while "greedy" and "balanced" will
+            use the group with the most or the least others in them respectively.
+
+        max_colors: int, default: 0
+            Maximum number of colors allowed for the coloring. If ``0`` is specified,
+            each unknown cna have its own color. If the coloring can not be completed
+            using this number of colors, an exception will be raised.
+
+        Returns
+        -------
+        array
+            Array, which specifies new indices for old degrees of freedom. If the
+            old degree of freedom had index ``i``, then its new index will be in
+            this array at the same index.
         """
         ...

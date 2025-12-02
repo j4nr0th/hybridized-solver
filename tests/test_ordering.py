@@ -1,9 +1,10 @@
 """Check reordering functions work correctly."""
 
-import numpy as np
-from hybsol._mod import BlockSystem
+from typing import Literal
 
-# from hybsol.system import reorder_blocks
+import numpy as np
+import pytest
+from hybsol._mod import BlockSystem
 
 
 def random_sparse_system(
@@ -22,6 +23,26 @@ def random_sparse_system(
             sys.add_block(ic, ir, rng.random((sz, sizes[0])))
 
     return sys
+
+
+@pytest.mark.parametrize("strat", ("first", "greedy", "balanced"))
+@pytest.mark.parametrize(("nb", "bs", "sp"), ((10, 5, 0.3), (15, 5, 0.9), (20, 2, 0.8)))
+def test_strategies(
+    strat: Literal["first", "greedy", "balanced"], nb: int, bs: int, sp: float
+) -> None:
+    """Check that the strategy produces a valid ordering."""
+    rng = np.random.default_rng(1359)
+    sys = random_sparse_system(rng, nb, bs, sp)
+    orderings = sys.compute_reordering(strat)
+    print(orderings)
+    # Each index should appear exactly once
+    assert np.all(np.unique(orderings) == tuple(range(nb)))
+
+
+if __name__ == "__main__":
+    for strat in ("first", "greedy", "balanced"):
+        for nb, bs, sp in ((10, 5, 0.3), (15, 5, 0.9), (20, 2, 0.8)):
+            test_strategies(strat, nb, bs, sp)
 
 
 # def test_greedy_coloring(n_blocks: int, max_size: int, sparsity: float) -> None:

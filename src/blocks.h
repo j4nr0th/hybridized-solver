@@ -55,6 +55,13 @@ typedef struct
     };
 } operation_t;
 
+typedef enum
+{
+    ORDERING_FIRST,
+    ORDERING_GREEDY,
+    ORDERING_BALANCED,
+} ordering_strategy_t;
+
 MODULE_INTERNAL
 int block_system_add_block(const block_system_t *this, u64 idx_row, u64 idx_col, u64 nv, const f64 vals[static nv]);
 
@@ -110,3 +117,15 @@ static inline u64 block_system_get_block_size(const block_system_t *this, const 
 {
     return this->block_offsets[idx_row + 1] - this->block_offsets[idx_row];
 }
+
+MODULE_INTERNAL
+result_t block_system_compute_ordering_first(u64 n, const sys_row_t rows[const static n], u64 ordering[const n],
+                                             u64 max_colors, u64 color_buffer[2 * max_colors]);
+
+MODULE_INTERNAL
+result_t block_system_compute_ordering_greedy(u64 n, const sys_row_t rows[const static n], u64 ordering[const n],
+                                              u64 max_colors, u64 color_buffer[2 * max_colors]);
+
+MODULE_INTERNAL
+result_t block_system_compute_ordering_balanced(u64 n, const sys_row_t rows[const static n], u64 ordering[const n],
+                                                u64 max_colors, u64 color_buffer[2 * max_colors]);

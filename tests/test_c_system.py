@@ -2,9 +2,7 @@
 
 import numpy as np
 import pytest
-from hybsol._mod import BlockSystem as CBlockSystem
-
-# from hybsol.system import BlockSystem as PyBlockSystem
+from hybsol._mod import BlockSystem
 
 
 @pytest.mark.parametrize("n_blocks", (1, 2, 4, 10))
@@ -20,7 +18,7 @@ def test_c_system_as_array(n_blocks: int, max_size: int) -> None:
     block_offsets = np.pad(np.cumsum(block_sizes), (1, 0))
     full_array = rng.random((block_sizes.sum(), block_sizes.sum()))
 
-    sys = CBlockSystem(*block_sizes)
+    sys = BlockSystem(*block_sizes)
     # Zero for now
     assert np.all(sys.as_array() == np.zeros_like(full_array))
 
@@ -67,7 +65,7 @@ def test_c_system_get_block(n_blocks: int, max_size: int) -> None:
     block_offsets = np.pad(np.cumsum(block_sizes), (1, 0))
     full_array = rng.random((block_sizes.sum(), block_sizes.sum()))
 
-    sys = CBlockSystem(*block_sizes)
+    sys = BlockSystem(*block_sizes)
 
     # Fill it up
     for i_row in range(n_blocks):
@@ -108,7 +106,7 @@ def test_c_system_multiply_row(n_blocks: int, max_size: int) -> None:
     block_offsets = np.pad(np.cumsum(block_sizes), (1, 0))
     full_array = rng.random((block_sizes.sum(), block_sizes.sum()))
 
-    sys = CBlockSystem(*block_sizes)
+    sys = BlockSystem(*block_sizes)
 
     # Fill it up
     for i_row in range(n_blocks):
@@ -153,7 +151,7 @@ def test_c_system_eliminate_row_dense(n_blocks: int, max_size: int) -> None:
     block_offsets = np.pad(np.cumsum(block_sizes), (1, 0))
     full_array = rng.random((block_sizes.sum(), block_sizes.sum()))
 
-    sys = CBlockSystem(*block_sizes)
+    sys = BlockSystem(*block_sizes)
 
     # Fill it up
     for i_row in range(n_blocks):
@@ -205,7 +203,7 @@ def test_c_system_eliminate_row_sparse(
     block_offsets = np.pad(np.cumsum(block_sizes), (1, 0))
     full_array = rng.random((block_sizes.sum(), block_sizes.sum()))
 
-    sys = CBlockSystem(*block_sizes)
+    sys = BlockSystem(*block_sizes)
 
     # Fill it up
     for i_row in range(n_blocks):
@@ -269,7 +267,7 @@ def test_c_system_inverse(n: int, m: int) -> None:
     rhs = mat @ lhs
     out = np.empty_like(rhs)
 
-    sys = CBlockSystem(n)
+    sys = BlockSystem(n)
     sys.add_block(0, 0, mat)
     sys.decompose_diagonal(idx=0)
     sys.solve_diagonal(out=out, idx=0, val=rhs)
@@ -290,7 +288,7 @@ def test_c_system_copy(n_blocks: int, max_size: int, density: float) -> None:
     block_offsets = np.pad(np.cumsum(block_sizes), (1, 0))
     full_array = rng.random((block_sizes.sum(), block_sizes.sum()))
 
-    sys = CBlockSystem(*block_sizes)
+    sys = BlockSystem(*block_sizes)
 
     # Fill it up
     for i_row in range(n_blocks):

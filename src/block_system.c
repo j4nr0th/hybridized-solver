@@ -1653,8 +1653,139 @@ PyDoc_STRVAR(block_system_object_reorder_blocks_docstring,
              "    Array of indices specifying where the old values should be moved to.\n"
              "\n"
              "n_threads : int, default: 0\n"
-             "    Number of OpenMP threads to use for reordering. Specifiny 0 or 1 means\n"
+             "    Number of OpenMP threads to use for reordering. Specifying 0 or 1 means\n"
              "    that it is done in series.\n");
+
+static int convert_ordering_strategy(PyObject *py_strategy, void *ptr, const char *name)
+{
+    (void)name;
+    if (!PyUnicode_Check(py_strategy))
+    {
+        PyErr_SetString(PyExc_TypeError, "Ordering strategy must be a string.");
+        return -1;
+    }
+    const char *const strategy = PyUnicode_AsUTF8(py_strategy);
+    if (!strategy)
+        return -1;
+
+    ordering_strategy_t *const out = ptr;
+    if (strcmp(strategy, "greedy") == 0)
+    {
+        *out = ORDERING_GREEDY;
+    }
+    else if (strcmp(strategy, "balanced") == 0)
+    {
+        *out = ORDERING_BALANCED;
+    }
+    else if (strcmp(strategy, "first") == 0)
+    {
+        *out = ORDERING_FIRST;
+    }
+    else
+    {
+        PyErr_Format(PyExc_ValueError, "Unknown ordering strategy '%s'.", strategy);
+        return -1;
+    }
+
+    return 0;
+}
+
+static PyObject *block_system_object_compute_reordering(PyObject *self, PyTypeObject *defining_class,
+                                                        PyObject *const *args, const Py_ssize_t nargs,
+                                                        const PyObject *kwnames)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return NULL;
+
+    if (block_system_ensure_not_decomposed(this) < 0)
+        return NULL;
+
+    ordering_strategy_t strategy = ORDERING_FIRST;
+    Py_ssize_t max_colors = 0;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_CUSTOM,
+                 .p_val = &strategy,
+                 .kwname = "strategy",
+                 .optional = 1,
+                 .custom_convert = convert_ordering_strategy},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &max_colors, .kwname = "max_colors", .optional = 1},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return NULL;
+
+    if (max_colors < 0)
+    {
+        PyErr_SetString(PyExc_ValueError, "Maximum number of colors must be non-negative.");
+        return NULL;
+    }
+    if (max_colors == 0)
+    {
+        max_colors = this->system.n;
+    }
+    u64 *const color_buffer = PyMem_RawMalloc(sizeof(u64) * max_colors * 2);
+    if (!color_buffer)
+    {
+        return NULL;
+    }
+
+    const npy_intp dims = (npy_intp)this->system.n;
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(1, &dims, NPY_UINT64);
+    if (!arr)
+    {
+        PyMem_RawFree(color_buffer);
+        return NULL;
+    }
+
+    u64 *const order = (u64 *)PyArray_DATA(arr);
+    result_t res;
+    switch (strategy)
+    {
+    case ORDERING_FIRST:
+        res = block_system_compute_ordering_first(this->system.n, this->system.rows, order, max_colors, color_buffer);
+        break;
+
+    case ORDERING_BALANCED:
+        res =
+            block_system_compute_ordering_balanced(this->system.n, this->system.rows, order, max_colors, color_buffer);
+        break;
+
+    case ORDERING_GREEDY:
+        res = block_system_compute_ordering_greedy(this->system.n, this->system.rows, order, max_colors, color_buffer);
+        break;
+
+    default:
+        PyErr_Format(PyExc_RuntimeError, "Unknown ordering strategy %d was not guarded against.", strategy);
+        PyMem_RawFree(color_buffer);
+        Py_DECREF(arr);
+        return NULL;
+    }
+
+    PyMem_RawFree(color_buffer);
+    if (res != RESULT_SUCCESS)
+    {
+        if (res == RESULT_MAX_COLORS)
+        {
+            PyErr_Format(PyExc_ValueError, "Maximum number of colors (%zu) exceeded.", max_colors);
+        }
+        else
+        {
+            PyErr_SetString(PyExc_RuntimeError, "Unknown error occurred.");
+        }
+        Py_DECREF(arr);
+        return NULL;
+    }
+
+    return (PyObject *)arr;
+}
+
+PyDoc_STRVAR(block_system_object_compute_reordering_docstring,
+             "compute_reordering(strategy: typing.Literal[\"first\", \"greedy\", \"balanced\"] = \"first\", "
+             "max_colors: int = 0) "
+             "-> numpy.typing.NDArray[numpy.uint64]\n");
 
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
@@ -1809,6 +1940,12 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_reorder_blocks,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_reorder_blocks_docstring,
+                 },
+                 {
+                     .ml_name = "compute_reordering",
+                     .ml_meth = (void *)block_system_object_compute_reordering,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_compute_reordering_docstring,
                  },
                  {},
              }},

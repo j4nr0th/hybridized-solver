@@ -1,7 +1,7 @@
 """Types to define system information."""
 
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -197,66 +197,3 @@ def solve_decomposed_c(
         vec[i_row] = v
 
     return np.concatenate(vec)
-
-
-def reorder_blocks(
-    system: BlockSystem, strategy: Literal["greedy", "balanced"] = "greedy"
-) -> npt.NDArray[np.uint64]:
-    """Assign blocks order which allows for higher amount of parallelism.
-
-    Parameters
-    ----------
-    system : BlockSystem
-        System that should be reordered.
-
-    Returns
-    -------
-    array
-        Array of indices of new blocks for old blocks (``new_idx = arr[old_idx]``).
-    """
-    color_counts: list[int] = [0]
-    block_colors = np.zeros(system.n_blocks, int)
-
-    for i_row in range(system.n_blocks):
-        if block_colors[i_row] != 0:
-            continue
-
-        neighbors = system.get_row_block_indices(i_row)
-        neighbor_colors = block_colors[np.array(neighbors)]
-        c = 1
-        if strategy == "greedy":
-            # Take the first available color
-            for c in range(1, len(color_counts) + 1):
-                if c not in neighbor_colors:
-                    break
-                c += 1
-        elif strategy == "balanced":
-            # Take the least used color
-            for c in sorted(
-                range(1, len(color_counts) + 1), key=lambda c: color_counts[c - 1]
-            ):
-                if c not in neighbor_colors:
-                    break
-                c += 1
-
-        else:
-            raise ValueError(f'Invalid strategy "{strategy}"')
-
-        if c - 1 == len(color_counts):
-            color_counts.append(1)
-        else:
-            color_counts[c - 1] += 1
-
-        block_colors[i_row] = c
-
-    color_offsets = np.pad(np.cumsum(color_counts), (1, 0))
-    colored_elements = np.zeros(len(color_counts), dtype=np.uint64)
-    ordering = np.empty(system.n_blocks, np.uint64)
-
-    for old_index in range(system.n_blocks):
-        c = block_colors[old_index]
-        new_index = colored_elements[c - 1] + color_offsets[c - 1]
-        ordering[old_index] = new_index
-        colored_elements[c - 1] += 1
-
-    return ordering

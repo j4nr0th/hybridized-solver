@@ -2,13 +2,7 @@
 
 import numpy as np
 import pytest
-from hybsol.system import (
-    BlockSystem,
-    # OperationEliminate,
-    # OperationInvDiag,
-    decompose_block_system_c,
-    solve_decomposed_c,
-)
+from hybsol.system import BlockSystem, decompose_block_system_c, solve_decomposed_c
 
 
 @pytest.mark.parametrize("n", (2, 4, 10))
