@@ -39,7 +39,7 @@ def test_strategies(
     assert np.all(np.unique(orderings) == tuple(range(nb)))
 
 
-@pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5)))
+@pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5), (200, 10)))
 def test_reordering(nb: int, bs: int) -> None:
     """Check that vectors are correctly re-ordered."""
     rng = np.random.default_rng(2)
@@ -60,7 +60,7 @@ def test_reordering(nb: int, bs: int) -> None:
     assert np.all(reordered_vector == expected_vector)
 
 
-@pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5)))
+@pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5), (200, 10)))
 def test_unordering(nb: int, bs: int) -> None:
     """Check that vectors are correctly re-ordered and un-ordered."""
     rng = np.random.default_rng(2)
