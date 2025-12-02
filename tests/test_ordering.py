@@ -26,7 +26,7 @@ def random_sparse_system(
 
 
 @pytest.mark.parametrize("strat", ("first", "greedy", "balanced"))
-@pytest.mark.parametrize(("nb", "bs", "sp"), ((10, 5, 0.3), (15, 5, 0.9), (20, 2, 0.8)))
+@pytest.mark.parametrize(("nb", "bs", "sp"), ((10, 5, 0.3), (15, 5, 0.9), (200, 2, 0.8)))
 def test_strategies(
     strat: Literal["first", "greedy", "balanced"], nb: int, bs: int, sp: float
 ) -> None:
@@ -83,14 +83,14 @@ def test_unordering(nb: int, bs: int) -> None:
 # if __name__ == "__main__":
 #     from matplotlib import pyplot as plt
 
-#     sys = random_sparse_system(np.random.default_rng(30), 100, 4, 0.9)
+#     sys = random_sparse_system(np.random.default_rng(30), 400, 4, 0.9)
 
 #     fig, ax = plt.subplots()
 
 #     ax.spy(sys.as_array())
 #     plt.show()
 
-#     new_ordering = sys.compute_reordering("balanced")
+#     new_ordering = sys.compute_reordering("greedy")
 #     print(new_ordering)
 #     assert len(np.unique(new_ordering)) == len(new_ordering)
 

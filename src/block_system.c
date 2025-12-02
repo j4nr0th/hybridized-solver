@@ -1724,7 +1724,12 @@ static PyObject *block_system_object_compute_reordering(PyObject *self, PyTypeOb
     }
     if (max_colors == 0)
     {
-        max_colors = this->system.n;
+        // The highest number of colors cannot exceed the highest number of column entries
+        for (u64 i = 0; i < this->system.n; ++i)
+        {
+            const sys_row_t *const row = this->system.rows + i;
+            max_colors = (Py_ssize_t)row->count > max_colors ? (Py_ssize_t)row->count : max_colors;
+        }
     }
     u64 *const color_buffer = PyMem_RawMalloc(sizeof(u64) * max_colors * 2);
     if (!color_buffer)

@@ -810,6 +810,13 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
         colored_by_color[i] = i;
     }
 
+    // printf("Unsorted color counts:");
+    // for (u64 i = 0; i < color_count; ++i)
+    // {
+    //     printf(" (col: %zu, cnt: %zu)", i, counts[i]);
+    // }
+    // printf("\n");
+
     // Sort the color counts by the highest count first using bubble sort
     for (u64 i = 0; i < color_count - 1; ++i)
     {
@@ -826,6 +833,12 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
             }
         }
     }
+    // printf("Sorted color counts:");
+    // for (u64 i = 0; i < color_count; ++i)
+    // {
+    //     printf(" (col: %zu, cnt: %zu)", colored_by_color[i], counts[i]);
+    // }
+    // printf("\n");
 
     // Convert the count array into an offset
     u64 total_count = 0;
@@ -836,21 +849,34 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
         total_count += current_count;
     }
 
-    // Unpermute offsets array
-#pragma omp simd
-    for (u64 i = 0; i < color_count; ++i)
+    // Now re-sort the arrays based on the color instead
+    for (u64 i = 0; i < color_count - 1; ++i)
     {
-        const u64 new_idx = colored_by_color[i];
-        colored_by_color[i] = counts[new_idx];
+        for (u64 j = i; j < color_count; ++j)
+        {
+            if (colored_by_color[i] > colored_by_color[j])
+            {
+                const u64 tmp = counts[i];
+                counts[i] = counts[j];
+                counts[j] = tmp;
+                const u64 tmp2 = colored_by_color[i];
+                colored_by_color[i] = colored_by_color[j];
+                colored_by_color[j] = tmp2;
+            }
+        }
     }
 
-    // Copy the offsets back and initialize counters of colored unknowns
+    // printf("Sorted color offsets:");
+    // for (u64 i = 0; i < color_count; ++i)
+    // {
+    //     printf(" (col: %zu, cnt: %zu)", i, counts[i]);
+    // }
+    // printf("\n");
+
+    // Clear the counted_by_color array for reuse
 #pragma omp simd
-    for (u64 i = 0; i < n; ++i)
-    {
-        counts[i] = colored_by_color[i];
+    for (u64 i = 0; i < color_count; ++i)
         colored_by_color[i] = 0;
-    }
 
     // Create ordering based on colors now
     for (u64 i = 0; i < n; ++i)
@@ -862,7 +888,7 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
         local_offset = colored_by_color[color]++;
         const u64 new_idx = local_offset + color_based_offset;
         // printf("Block %zu has color %zu: new index is %zu, with %zu of the same colors before\n", i, color, new_idx,
-        //        colored_by_color[color]);
+        //        local_offset);
         ordering[i] = new_idx;
     }
 }
