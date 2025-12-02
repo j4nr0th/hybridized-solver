@@ -297,3 +297,60 @@ class BlockSystem:
             this array at the same index.
         """
         ...
+
+    def reorder_vector(
+        self,
+        new_order: npt.ArrayLike,
+        vector: npt.ArrayLike,
+        out: npt.NDArray[np.double] | None = None,
+    ) -> npt.NDArray[np.double]:
+        """Reorder the vector based on new block ordering.
+
+        Parameters
+        ----------
+        new_order : array_like
+            New order of blocks, as returned by :meth:`BlockSystem.reorder_blocks`.
+
+        vector : array_like
+            Vector that should be re-ordered.
+
+        out : array, optional
+            Output array to receive the reordered vector contents. Should not be the same
+            as ``vector``.
+
+        Returns
+        -------
+        array
+            An array which has re-ordered contents of ``vector``. If ``out`` was
+            specified, this is just a reference to it, otherwise a new array is created.
+        """
+        ...
+
+    def unorder_vector(
+        self,
+        new_order: npt.ArrayLike,
+        vector: npt.ArrayLike,
+        out: npt.NDArray[np.double] | None = None,
+    ) -> npt.NDArray[np.double]:
+        """Undo reordering of the vector based on new block ordering.
+
+        Parameters
+        ----------
+        new_order : array_like
+            New order of blocks, as returned by :meth:`BlockSystem.reorder_blocks`.
+
+        vector : array_like
+            Vector for which the re-ordering should be redone.
+
+        out : array, optional
+            Output array to receive the resulting vector contents. Should not be the same
+            as ``vector``.
+
+        Returns
+        -------
+        array
+            An array which has contains un-re-ordered contents of ``vector``. If ``out``
+            was specified, this is just a reference to it, otherwise a new array is
+            created.
+        """
+        ...

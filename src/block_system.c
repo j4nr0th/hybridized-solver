@@ -1785,7 +1785,237 @@ static PyObject *block_system_object_compute_reordering(PyObject *self, PyTypeOb
 PyDoc_STRVAR(block_system_object_compute_reordering_docstring,
              "compute_reordering(strategy: typing.Literal[\"first\", \"greedy\", \"balanced\"] = \"first\", "
              "max_colors: int = 0) "
-             "-> numpy.typing.NDArray[numpy.uint64]\n");
+             "-> numpy.typing.NDArray[numpy.uint64]\n"
+             "Find ordering of unknowns in the system based on \"coloring\".\n"
+             "\n"
+             "The idea behind computing reordering the degrees of freedom is to first sort them\n"
+             "by group index, such that a degree of freedom has no interaction with degree of\n"
+             "freedom has no shared interactions (non-zero blocks in the system) with any other\n"
+             "degree of freedom in that group. This is often called \"coloring\". After all the\n"
+             "degrees of freedom are sorted into these groups, they are ordered group by group.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "strategy : typing.Literal[\"first\", \"greedy\", \"balanced\"], default: \"first\"\n"
+             "    How the grouping is constructed. \"first\" tries to group as many degrees of\n"
+             "    freedom into the first available group, while \"greedy\" and \"balanced\" will\n"
+             "    use the group with the most or the least others in them respectively.\n"
+             "\n"
+             "max_colors: int, default: 0\n"
+             "    Maximum number of colors allowed for the coloring. If ``0`` is specified,\n"
+             "    each unknown cna have its own color. If the coloring can not be completed\n"
+             "    using this number of colors, an exception will be raised.\n"
+             "\n"
+             "Returns\n"
+             "-------\n"
+             "array\n"
+             "    Array, which specifies new indices for old degrees of freedom. If the\n"
+             "    old degree of freedom had index ``i``, then its new index will be in\n"
+             "    this array at the same index.\n");
+
+// TODO
+static int prepare_for_reordering(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                  const Py_ssize_t nargs, const PyObject *kwnames, const block_system_object **p_this,
+                                  PyArrayObject **p_arr_vector, PyArrayObject **p_arr_order, PyArrayObject **p_out_arr)
+{
+    const module_state_t *state;
+    block_system_object *this;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+        return -1;
+
+    PyObject *py_new_order, *py_vector;
+    PyArrayObject *out_arr = NULL;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_new_order, .kwname = "new_order"},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_vector, .kwname = "vector"},
+                {.type = CPYARG_TYPE_PYTHON,
+                 .p_val = &out_arr,
+                 .kwname = "out",
+                 .optional = 1,
+                 .type_check = &PyArray_Type},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+        return -1;
+
+    // Get the order array
+    const npy_intp dims_order = (npy_intp)this->system.n;
+    PyArrayObject *const arr_order =
+        (PyArrayObject *)PyArray_FROMANY(py_new_order, NPY_UINT64, 1, 1, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (!arr_order)
+    {
+        return -1;
+    }
+    if (check_input_array(arr_order, 1, &dims_order, NPY_UINT64, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED,
+                          "new_order") < 0)
+    {
+        Py_DECREF(arr_order);
+        return -1;
+    }
+
+    // Get the input vector
+    const npy_intp dims_vector = (npy_intp)this->system.block_offsets[this->system.n];
+    PyArrayObject *const arr_vector =
+        (PyArrayObject *)PyArray_FROMANY(py_vector, NPY_DOUBLE, 1, 1, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (!arr_vector)
+    {
+        Py_DECREF(arr_order);
+        return -1;
+    }
+    if (check_input_array(arr_vector, 1, &dims_vector, NPY_DOUBLE, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED,
+                          "vector") < 0)
+    {
+        Py_DECREF(arr_vector);
+        Py_DECREF(arr_order);
+        return -1;
+    }
+
+    // Check output
+    if (out_arr)
+    {
+        if (check_input_array(out_arr, 1, (const npy_intp[]){dims_vector}, NPY_DOUBLE,
+                              NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, "out") < 0)
+        {
+            Py_DECREF(arr_vector);
+            Py_DECREF(arr_order);
+            return -1;
+        }
+        Py_INCREF(out_arr);
+    }
+    else
+    {
+        out_arr = (PyArrayObject *)PyArray_SimpleNew(1, &dims_vector, NPY_DOUBLE);
+        if (!out_arr)
+        {
+            Py_DECREF(arr_vector);
+            Py_DECREF(arr_order);
+            return -1;
+        }
+    }
+
+    *p_this = this;
+    *p_arr_vector = arr_vector;
+    *p_arr_order = arr_order;
+    *p_out_arr = out_arr;
+
+    return 0;
+}
+
+static PyObject *block_system_object_reorder_vector(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                                    const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const block_system_object *this;
+    PyArrayObject *arr_vector, *arr_order, *out_arr;
+    if (prepare_for_reordering(self, defining_class, args, nargs, kwnames, &this, &arr_vector, &arr_order, &out_arr) <
+        0)
+        return NULL;
+
+    const npy_uint64 *const new_order = (npy_uint64 *)PyArray_DATA(arr_order);
+    const npy_double *const vector = (npy_double *)PyArray_DATA(arr_vector);
+    npy_double *const out = (npy_double *)PyArray_DATA(out_arr);
+
+    // Should be possible to parallelize
+    u64 offset = 0;
+    for (u64 i_block = 0; i_block < this->system.n; ++i_block)
+    {
+        const u64 new_block_idx = new_order[i_block];
+        const u64 new_offset = this->system.block_offsets[new_block_idx];
+        const u64 block_size = block_system_get_block_size(&this->system, new_block_idx);
+#pragma omp simd
+        for (u64 i_entry = 0; i_entry < block_size; ++i_entry)
+        {
+            out[offset + i_entry] = vector[new_offset + i_entry];
+        }
+        offset += block_size;
+    }
+
+    Py_DECREF(arr_vector);
+    Py_DECREF(arr_order);
+    return (PyObject *)out_arr;
+}
+
+PyDoc_STRVAR(block_system_object_reorder_vector_docstring,
+             "reorder_vector(new_order: numpy.typing.ArrayLike, vector: numpy.typing.ArrayLike, out: "
+             "numpy.typing.NDArray[numpy.double] | None = None) -> None\n"
+             "Reorder the vector based on new block ordering.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "new_order : array_like\n"
+             "    New order of blocks, as returned by :meth:`BlockSystem.reorder_blocks`.\n"
+             "\n"
+             "vector : array_like\n"
+             "    Vector that should be re-ordered.\n"
+             "\n"
+             "out : array, optional\n"
+             "    Output array to receive the reordered vector contents. Should not be the same\n"
+             "    as ``vector``.\n"
+             "\n"
+             "Returns\n"
+             "-------\n"
+             "array\n"
+             "    An array which has re-ordered contents of ``vector``. If ``out`` was\n"
+             "    specified, this is just a reference to it, otherwise a new array is created.\n");
+
+static PyObject *block_system_object_unorder_vector(PyObject *self, PyTypeObject *defining_class, PyObject *const *args,
+                                                    const Py_ssize_t nargs, const PyObject *kwnames)
+{
+    const block_system_object *this;
+    PyArrayObject *arr_vector, *arr_order, *out_arr;
+    if (prepare_for_reordering(self, defining_class, args, nargs, kwnames, &this, &arr_vector, &arr_order, &out_arr) <
+        0)
+        return NULL;
+
+    const npy_uint64 *const new_order = (npy_uint64 *)PyArray_DATA(arr_order);
+    const npy_double *const vector = (npy_double *)PyArray_DATA(arr_vector);
+    npy_double *const out = (npy_double *)PyArray_DATA(out_arr);
+
+    // Should be possible to parallelize
+    u64 offset = 0;
+    for (u64 i_block = 0; i_block < this->system.n; ++i_block)
+    {
+        const u64 new_block_idx = new_order[i_block];
+        const u64 new_offset = this->system.block_offsets[new_block_idx];
+        const u64 block_size = block_system_get_block_size(&this->system, new_block_idx);
+#pragma omp simd
+        for (u64 i_entry = 0; i_entry < block_size; ++i_entry)
+        {
+            out[new_offset + i_entry] = vector[offset + i_entry];
+        }
+        offset += block_size;
+    }
+
+    Py_DECREF(arr_vector);
+    Py_DECREF(arr_order);
+    return (PyObject *)out_arr;
+}
+
+PyDoc_STRVAR(block_system_object_unorder_vector_docstring,
+             "unorder_vector(new_order: numpy.typing.ArrayLike, vector: numpy.typing.ArrayLike, out: "
+             "numpy.typing.NDArray[numpy.double] | None = None) -> None\n"
+             "Undo reordering of the vector based on new block ordering.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "new_order : array_like\n"
+             "    New order of blocks, as returned by :meth:`BlockSystem.reorder_blocks`.\n"
+             "\n"
+             "vector : array_like\n"
+             "    Vector for which the re-ordering should be redone.\n"
+             "\n"
+             "out : array, optional\n"
+             "    Output array to receive the resulting vector contents. Should not be the same\n"
+             "    as ``vector``.\n"
+             "\n"
+             "Returns\n"
+             "-------\n"
+             "array\n"
+             "    An array which has contains un-re-ordered contents of ``vector``. If ``out``\n"
+             "    was specified, this is just a reference to it, otherwise a new array is\n"
+             "    created.\n");
+
+// GETSET functions
 
 static PyObject *block_system_object_get_n_blocks(PyObject *self, void *Py_UNUSED(closure))
 {
@@ -1946,6 +2176,18 @@ PyType_Spec block_system_type_spec = {
                      .ml_meth = (void *)block_system_object_compute_reordering,
                      .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
                      .ml_doc = block_system_object_compute_reordering_docstring,
+                 },
+                 {
+                     .ml_name = "reorder_vector",
+                     .ml_meth = (void *)block_system_object_reorder_vector,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_reorder_vector_docstring,
+                 },
+                 {
+                     .ml_name = "unorder_vector",
+                     .ml_meth = (void *)block_system_object_unorder_vector,
+                     .ml_flags = METH_METHOD | METH_FASTCALL | METH_KEYWORDS,
+                     .ml_doc = block_system_object_unorder_vector_docstring,
                  },
                  {},
              }},

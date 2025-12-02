@@ -34,15 +34,47 @@ def test_strategies(
     rng = np.random.default_rng(1359)
     sys = random_sparse_system(rng, nb, bs, sp)
     orderings = sys.compute_reordering(strat)
-    print(orderings)
+    # print(orderings)
     # Each index should appear exactly once
     assert np.all(np.unique(orderings) == tuple(range(nb)))
 
 
-if __name__ == "__main__":
-    for strat in ("first", "greedy", "balanced"):
-        for nb, bs, sp in ((10, 5, 0.3), (15, 5, 0.9), (20, 2, 0.8)):
-            test_strategies(strat, nb, bs, sp)
+@pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5)))
+def test_reordering(nb: int, bs: int) -> None:
+    """Check that vectors are correctly re-ordered."""
+    rng = np.random.default_rng(2)
+    sys = random_sparse_system(rng, nb, bs, 0.9)
+    # random ordering
+    ordering = rng.permuted(np.arange(sys.n_blocks, dtype=np.uint64))
+    sys.reorder_blocks(ordering)
+    original_vector = np.concatenate(
+        [np.full(sys.block_sizes[i], i) for i in range(sys.n_blocks)]
+    )
+    expected_vector = np.concatenate(
+        [
+            np.full(sys.block_sizes[i], i)
+            for i in (ordering[i] for i in range(sys.n_blocks))
+        ]
+    )
+    reordered_vector = sys.reorder_vector(ordering, original_vector)
+    assert np.all(reordered_vector == expected_vector)
+
+
+@pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5)))
+def test_unordering(nb: int, bs: int) -> None:
+    """Check that vectors are correctly re-ordered and un-ordered."""
+    rng = np.random.default_rng(2)
+    sys = random_sparse_system(rng, nb, bs, 0.9)
+    # random ordering
+    ordering = rng.permuted(np.arange(sys.n_blocks, dtype=np.uint64))
+    sys.reorder_blocks(ordering)
+    original_vector = np.concatenate(
+        [np.full(sys.block_sizes[i], i) for i in range(sys.n_blocks)]
+    )
+    unordered_vector = sys.unorder_vector(
+        ordering, sys.reorder_vector(ordering, original_vector)
+    )  # re-ordering, then un-ordering should be an identity operation
+    assert np.all(unordered_vector == original_vector)
 
 
 # def test_greedy_coloring(n_blocks: int, max_size: int, sparsity: float) -> None:
@@ -58,7 +90,7 @@ if __name__ == "__main__":
 #     ax.spy(sys.as_array())
 #     plt.show()
 
-#     new_ordering = reorder_blocks(sys, strategy="balanced")
+#     new_ordering = sys.compute_reordering("balanced")
 #     print(new_ordering)
 #     assert len(np.unique(new_ordering)) == len(new_ordering)
 

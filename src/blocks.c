@@ -790,6 +790,7 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
                        u64 counts[const static color_count])
 {
     // Initialize the colored_by_color array to be used for changing color indices
+#pragma omp simd
     for (u64 i = 0; i < color_count; ++i)
     {
         colored_by_color[i] = i;
@@ -822,6 +823,7 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
     }
 
     // Unpermute offsets array
+#pragma omp simd
     for (u64 i = 0; i < color_count; ++i)
     {
         const u64 new_idx = colored_by_color[i];
@@ -829,6 +831,7 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
     }
 
     // Copy the offsets back and initialize counters of colored unknowns
+#pragma omp simd
     for (u64 i = 0; i < n; ++i)
     {
         counts[i] = colored_by_color[i];
@@ -839,12 +842,14 @@ void order_from_colors(const u64 n, u64 ordering[const static n], const u64 max_
     for (u64 i = 0; i < n; ++i)
     {
         const u64 color = ordering[i];
-        const u64 offset = counts[color];
-        const u64 new_idx = colored_by_color[color] + offset;
+        const u64 color_based_offset = counts[color];
+        u64 local_offset;
+        // #pragma omp atomic capture
+        local_offset = colored_by_color[color]++;
+        const u64 new_idx = local_offset + color_based_offset;
         // printf("Block %zu has color %zu: new index is %zu, with %zu of the same colors before\n", i, color, new_idx,
         //        colored_by_color[color]);
         ordering[i] = new_idx;
-        colored_by_color[color] += 1;
     }
 }
 
