@@ -5,6 +5,19 @@ authors = [{ name = "Jan Roth", email = "r0th.j4n@gmail.com" }]
 description = "Solver for Hybridized systems."
 requires-python = ">=3.11"
 dependencies = ["numpy>=2.0.0", "scipy"]
+license-files = ["LICENSE"]
+license = "GPL-3.0-or-later"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+    "Private :: Still very much WIP",
+]
 
 
 [build-system]
