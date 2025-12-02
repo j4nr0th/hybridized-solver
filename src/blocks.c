@@ -410,14 +410,19 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
         return shared_res;
     }
 
+    // Target search range can be somewhat constrainted already
+    u64 i_first = 0;
+    while (i_first < this->n && target_status[i_first].status == TARGET_DONE)
+        i_first += 1;
+
 #pragma omp parallel default(none) shared(n_tgt, this, target_status, count, capacity, ops, pn_ops, pp_ops,            \
-                                              shared_res) if (n_threads > 1) num_threads(n_threads)
+                                              shared_res, i_first) if (n_threads > 1) num_threads(n_threads)
     while (n_tgt && shared_res == RESULT_SUCCESS)
     {
         u64 i_tgt = this->n;
         while (i_tgt == this->n && n_tgt > 0 && shared_res == RESULT_SUCCESS)
         {
-            for (i_tgt = 0; i_tgt < this->n; ++i_tgt)
+            for (i_tgt = i_first; i_tgt < this->n; ++i_tgt)
             {
                 target_row_t *const status = target_status + i_tgt;
                 if (status->status == TARGET_FREE && target_status[status->idx_src_needed].status == TARGET_DONE)
@@ -482,8 +487,17 @@ result_t block_system_decompose(const block_system_t *this, u64 *pn_ops, operati
                 break;
             }
 
+            // Update total count
 #pragma omp atomic update
             n_tgt -= 1;
+
+            // Check if we can improve the search range
+#pragma omp critical(updating_first)
+            if (i_tgt == i_first)
+            {
+                while (i_first < this->n && target_status[i_first].status == TARGET_DONE)
+                    i_first += 1;
+            }
         }
         else
         {
