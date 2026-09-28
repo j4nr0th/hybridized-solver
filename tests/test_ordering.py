@@ -79,28 +79,3 @@ def test_unordering(nb: int, bs: int) -> None:
 
 # def test_greedy_coloring(n_blocks: int, max_size: int, sparsity: float) -> None:
 #     """Check how the greedy coloring algorithm works."""
-
-# if __name__ == "__main__":
-#     from matplotlib import pyplot as plt
-
-#     sys = random_sparse_system(np.random.default_rng(30), 400, 4, 0.9)
-
-#     fig, ax = plt.subplots()
-
-#     ax.spy(sys.as_array())
-#     plt.show()
-
-#     new_ordering = sys.compute_reordering("greedy")
-#     print(new_ordering)
-#     assert len(np.unique(new_ordering)) == len(new_ordering)
-
-#     old_sys = sys.copy()
-#     old_sizes = sys.block_sizes
-#     sys.reorder_blocks(new_ordering)
-#     new_sizes = sys.block_sizes
-#     assert np.all(old_sizes == new_sizes[new_ordering])
-
-#     fig, ax = plt.subplots()
-
-#     ax.spy(sys.as_array())
-#     plt.show()
