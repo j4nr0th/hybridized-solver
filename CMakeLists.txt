@@ -60,6 +60,22 @@ if (NOT HYBSOL_BUILD_PYTHON)
     return()
 endif ()
 
+# An interpreter found on PATH usually has no NumPy, which the include
+# directory lookup below needs. Prefer the project's own environment when
+# there is one; an explicit -DPython_EXECUTABLE still wins.
+if (NOT DEFINED Python_EXECUTABLE)
+    if (WIN32)
+        set(_hybsol_venv_python "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe")
+    else ()
+        set(_hybsol_venv_python "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+    endif ()
+    if (EXISTS "${_hybsol_venv_python}")
+        set(Python_EXECUTABLE "${_hybsol_venv_python}")
+        message(STATUS "Using the project environment: ${Python_EXECUTABLE}")
+    endif ()
+    unset(_hybsol_venv_python)
+endif ()
+
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 
 execute_process(
@@ -70,7 +86,11 @@ execute_process(
 )
 
 if ("${NumPy_INCLUDE_DIRS}" STREQUAL "")
-    message(FATAL_ERROR "NumPy_INCLUDE_DIRS was empty.")
+    message(FATAL_ERROR
+            "Could not get NumPy's include directory from ${Python_EXECUTABLE}. "
+            "The bindings need NumPy; either activate the environment that has it, "
+            "or configure with -DPython_EXECUTABLE=/path/to/python. "
+            "Building only the core? Pass -DHYBSOL_BUILD_PYTHON=OFF.")
 endif ()
 
 add_subdirectory(cpyutl)
