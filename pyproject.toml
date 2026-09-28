@@ -58,6 +58,9 @@ docs = [
 dev = [
     "build",
     "scikit-build-core",
+    # Kept in step with the ruff-pre-commit rev above, so that local runs and
+    # the hook cannot disagree about formatting.
+    "ruff==0.16.9",
     "pyrefly",
     "pytest",
     "pytest-cov",
