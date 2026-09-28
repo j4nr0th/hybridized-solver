@@ -80,7 +80,7 @@ skip = "sandbox/*"
 count = true
 
 [tool.ruff]
-exclude = [".venv", ".pytest_cache", ".vscode", "doc"]
+exclude = [".venv", ".pytest_cache", ".vscode", "doc", "docs/conf.py"]
 line-length = 90
 
 [tool.ruff.format]

@@ -1,0 +1,43 @@
+C API
+=====
+
+The solver lives in a small, dependency-free C library that knows nothing
+about Python. It is built as the ``hybsol_core`` static library and can be
+consumed directly with ``add_subdirectory`` or FetchContent_:
+
+.. code-block:: cmake
+
+    add_subdirectory(hybsol)
+    target_link_libraries(my_target PRIVATE hybsol::hybsol)
+
+Include ``hybsol/hybsol.h`` — or the individual headers under ``hybsol/`` — to
+get the whole API. The core is thread-safe as long as no single system is
+touched by two threads at once; the ``n_threads`` arguments select how many
+OpenMP threads are used, with ``0`` meaning the OpenMP default and ``1``
+running serially.
+
+.. _FetchContent: https://cmake.org/cmake/help/latest/module/FetchContent.html
+
+Conventions
+-----------
+
+Fallible functions return a result code instead of setting ``errno``;
+:c:func:`hybsol_result_str` turns a code into a short, stable description.
+Memory is allocated with ``malloc``/``realloc``/``free`` unless
+:c:func:`hybsol_set_allocator` installs a replacement before the first system
+is created. Indices and counts are ``uint64_t`` throughout, and a system is an
+opaque :c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds
+and :c:func:`hybsol_system_destroy` releases.
+
+The headers
+-----------
+
+.. c:autodoc:: include/hybsol/types.h
+
+.. c:autodoc:: include/hybsol/matrix.h
+
+.. c:autodoc:: include/hybsol/block_system.h
+
+.. c:autodoc:: include/hybsol/decompose.h
+
+.. c:autodoc:: include/hybsol/ordering.h
