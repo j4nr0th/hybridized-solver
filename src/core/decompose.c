@@ -47,7 +47,7 @@ uint64_t hybsol_system_n_operations(const hybsol_system_t *const sys)
 
 const hybsol_operation_t *hybsol_system_operations(const hybsol_system_t *const sys)
 {
-    return sys->ops;
+    return sys->decomposed ? sys->ops : NULL;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -172,21 +172,25 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
     sys->n_ops = 0;
 
     target_row_t *const target_status = hybsol_alloc((size_t)sys->n * sizeof(*target_status));
-    if (target_status == NULL)
+    uint64_t *const ready = hybsol_alloc((size_t)sys->n * sizeof(*ready));
+    hybsol_result_t *const results = hybsol_alloc((size_t)sys->n * sizeof(*results));
+    if (target_status == NULL || ready == NULL || results == NULL)
+    {
+        hybsol_free(target_status);
+        hybsol_free(ready);
+        hybsol_free(results);
         return HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
 
     hybsol_result_t shared_res = HYBSOL_SUCCESS;
     uint64_t n_tgt = 0;
 
     // Rows that already start with their diagonal block can be finished right
-    // away; everything else waits for the elimination pass below.
+    // away; everything else waits for the elimination passes below.
 #pragma omp parallel for schedule(dynamic) reduction(+ : n_tgt) default(none)                                          \
     shared(sys, target_status, shared_res) if (threads > 1) num_threads(threads)
     for (uint64_t i_row = 0; i_row < sys->n; ++i_row)
     {
-        if (shared_res != HYBSOL_SUCCESS)
-            continue;
-
         const hybsol_row_t *const row = sys->rows + i_row;
         if (row->entries[0]->col == i_row)
         {
@@ -199,6 +203,7 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
 
             if (res != HYBSOL_SUCCESS)
             {
+#pragma omp critical(hybsol_decompose_error)
                 shared_res = res;
                 continue;
             }
@@ -212,117 +217,95 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
         }
     }
 
-    if (shared_res != HYBSOL_SUCCESS)
+    // Every pass eliminates the rows whose blocking row is finished. Rows that
+    // are not done yet simply need another pass, and since the row a row waits
+    // for always has a strictly smaller index, the passes always make progress.
+    while (shared_res == HYBSOL_SUCCESS)
     {
-        hybsol_free(target_status);
-        sys->n_ops = 0;
-        return shared_res;
-    }
-
-    // The search for work can start at the first row that is not done yet
-    uint64_t i_first = 0;
-    while (i_first < sys->n && target_status[i_first].status == TARGET_DONE)
-        i_first += 1;
-
-    // Eliminating a row only makes another row's diagonal available, so every
-    // thread scans the same queue and takes ownership of whatever it can
-    // complete next.
-#pragma omp parallel default(none) shared(n_tgt, sys, target_status, shared_res, i_first) if (threads > 1)             \
-    num_threads(threads)
-    while (n_tgt && shared_res == HYBSOL_SUCCESS)
-    {
-        uint64_t i_tgt = sys->n;
-        while (i_tgt == sys->n && n_tgt > 0 && shared_res == HYBSOL_SUCCESS)
+        uint64_t n_ready = 0;
+        for (uint64_t i = 0; i < sys->n; ++i)
         {
-            for (i_tgt = i_first; i_tgt < sys->n; ++i_tgt)
+            target_row_t *const status = target_status + i;
+            if (status->status == TARGET_FREE && target_status[status->idx_src_needed].status == TARGET_DONE)
             {
-                target_row_t *const status = target_status + i_tgt;
-                if (status->status == TARGET_FREE && target_status[status->idx_src_needed].status == TARGET_DONE)
+                status->status = TARGET_IN_USE;
+                ready[n_ready++] = i;
+            }
+        }
+        if (n_ready == 0)
+            break;
+
+#pragma omp parallel for schedule(dynamic) default(none)                                                               \
+    shared(sys, target_status, ready, results, n_ready) if (threads > 1) num_threads(threads)
+        for (uint64_t k = 0; k < n_ready; ++k)
+        {
+            const uint64_t i_tgt = ready[k];
+            target_row_t *const status = target_status + i_tgt;
+
+            hybsol_result_t res = hybsol_system_eliminate_row(sys, i_tgt, status->idx_src_needed);
+            if (res == HYBSOL_SUCCESS)
+                res = hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
+                                                                  .idx_row = i_tgt,
+                                                                  .idx_col = status->idx_src_needed});
+
+            if (res == HYBSOL_SUCCESS)
+            {
+                const hybsol_row_t *const row = sys->rows + i_tgt;
+                const uint64_t next = hybsol_row_find_geq(row, status->idx_src_needed + 1);
+                if (next >= row->count)
+                    res = HYBSOL_ERROR_INTERNAL;
+                else if (row->entries[next]->col == i_tgt)
                 {
-                    target_status_t old_status;
-#pragma omp atomic capture
-                    {
-                        old_status = status->status;
-                        status->status = (status->status == TARGET_FREE) ? TARGET_IN_USE : status->status;
-                    }
-
-                    // The atomic capture resolves races between threads
-                    if (old_status != TARGET_FREE)
-                        continue;
-
-                    break;
+                    // The diagonal is now first in the row, so the row is
+                    // finished and can act as a source in the next pass.
+                    res = hybsol_system_decompose_diagonal(sys, i_tgt);
+                    if (res == HYBSOL_SUCCESS)
+                        res = hybsol_system_apply_diagonal_inverse(sys, i_tgt);
+                    if (res == HYBSOL_SUCCESS)
+                        res = hybsol_ops_append(
+                            sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_tgt});
                 }
             }
-        }
-        if (n_tgt == 0 || shared_res != HYBSOL_SUCCESS)
-            break;
 
-        target_row_t *const status = target_status + i_tgt;
-        hybsol_result_t res = hybsol_system_eliminate_row(sys, i_tgt, status->idx_src_needed);
-        if (res != HYBSOL_SUCCESS)
-        {
-            shared_res = res;
-            break;
+            results[k] = res;
         }
 
-        res = hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
-                                                          .idx_row = i_tgt,
-                                                          .idx_col = status->idx_src_needed});
-        if (res != HYBSOL_SUCCESS)
+        for (uint64_t k = 0; k < n_ready; ++k)
         {
-            shared_res = res;
-            break;
-        }
-
-        const hybsol_row_t *const row = sys->rows + i_tgt;
-        const uint64_t next = hybsol_row_find_geq(row, status->idx_src_needed + 1);
-        if (next >= row->count)
-        {
-            shared_res = HYBSOL_ERROR_INTERNAL;
-            break;
-        }
-        const hybsol_row_entry_t *const entry = row->entries[next];
-        if (entry->col == i_tgt)
-        {
-            // The diagonal is now first in the row, so the row is finished
-            res = hybsol_system_decompose_diagonal(sys, i_tgt);
-            if (res == HYBSOL_SUCCESS)
-                res = hybsol_system_apply_diagonal_inverse(sys, i_tgt);
-            if (res == HYBSOL_SUCCESS)
-                res = hybsol_ops_append(
-                    sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_tgt});
-            if (res != HYBSOL_SUCCESS)
+            const uint64_t i_tgt = ready[k];
+            if (results[k] != HYBSOL_SUCCESS)
             {
-                shared_res = res;
+                shared_res = results[k];
                 break;
             }
-            status->status = TARGET_DONE;
 
-#pragma omp atomic update
-            n_tgt -= 1;
-
-#pragma omp critical(updating_first)
-            if (i_tgt == i_first)
+            target_row_t *const status = target_status + i_tgt;
+            const hybsol_row_t *const row = sys->rows + i_tgt;
+            const uint64_t next = hybsol_row_find_geq(row, status->idx_src_needed + 1);
+            if (row->entries[next]->col == i_tgt)
             {
-                while (i_first < sys->n && target_status[i_first].status == TARGET_DONE)
-                    i_first += 1;
+                status->status = TARGET_DONE;
+                n_tgt -= 1;
             }
-        }
-        else
-        {
-            // This row still needs another elimination
-            status->idx_src_needed = entry->col;
-            status->status = TARGET_FREE;
+            else
+            {
+                status->idx_src_needed = row->entries[next]->col;
+                status->status = TARGET_FREE;
+            }
         }
     }
 
     hybsol_free(target_status);
+    hybsol_free(ready);
+    hybsol_free(results);
 
     if (shared_res != HYBSOL_SUCCESS)
     {
         sys->n_ops = 0;
         return shared_res;
     }
+    if (n_tgt != 0)
+        return HYBSOL_ERROR_INTERNAL;
 
     sys->decomposed = 1;
     return HYBSOL_SUCCESS;

@@ -138,6 +138,14 @@ hybsol_result_t hybsol_system_create(const uint64_t n_blocks, const uint64_t blo
     if (n_blocks == 0)
         return HYBSOL_ERROR_INVALID_ARGUMENT;
 
+    // The sizes are validated up front so that no failure path can run on a
+    // partially initialised system.
+    for (uint64_t i = 0; i < n_blocks; ++i)
+    {
+        if (block_sizes[i] == 0)
+            return HYBSOL_ERROR_INVALID_ARGUMENT;
+    }
+
     hybsol_system_t *const sys = hybsol_alloc(sizeof(*sys));
     if (sys == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -156,11 +164,6 @@ hybsol_result_t hybsol_system_create(const uint64_t n_blocks, const uint64_t blo
     sys->block_offsets[0] = 0;
     for (uint64_t i = 0; i < n_blocks; ++i)
     {
-        if (block_sizes[i] == 0)
-        {
-            hybsol_system_destroy(sys);
-            return HYBSOL_ERROR_INVALID_ARGUMENT;
-        }
         sys->block_offsets[i + 1] = sys->block_offsets[i] + block_sizes[i];
         sys->rows[i] = (hybsol_row_t){0};
         sys->diag_decomposed[i] = 0;
@@ -584,7 +587,9 @@ hybsol_result_t hybsol_system_multiply_row(hybsol_system_t *const sys, const uin
 
     hybsol_row_t *const r = sys->rows + row;
 
-    // Find the largest block in the row to size the temporary buffer
+    // Find the largest block in the row to size the temporary buffer. An
+    // empty row has nothing to multiply (and would otherwise ask for a
+    // zero-sized buffer, which reads as an allocation failure).
     uint64_t max_cols = 0;
     for (uint64_t i = 0; i < r->count; ++i)
     {
@@ -592,6 +597,8 @@ hybsol_result_t hybsol_system_multiply_row(hybsol_system_t *const sys, const uin
         if (block_size > max_cols)
             max_cols = block_size;
     }
+    if (max_cols == 0)
+        return HYBSOL_SUCCESS;
 
     double *const buffer = hybsol_alloc(sizeof(*buffer) * (size_t)max_cols * (size_t)n_rows);
     if (buffer == NULL)
@@ -681,9 +688,17 @@ hybsol_result_t hybsol_system_eliminate_row_with(hybsol_system_t *const sys, con
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    double *const buffer = hybsol_alloc(sizeof(*buffer) * (size_t)max_cols * (size_t)size_tgt);
-    if (buffer == NULL)
-        return HYBSOL_ERROR_OUT_OF_MEMORY;
+    // `max_cols` is zero when there is nothing left to eliminate, in which
+    // case the buffer is never touched; `hybsol_alloc(0)` returns ``NULL``,
+    // so the allocation is skipped instead of being read as a failure.
+    const size_t buffer_len = (size_t)max_cols * (size_t)size_tgt;
+    double *buffer = NULL;
+    if (buffer_len != 0)
+    {
+        buffer = hybsol_alloc(sizeof(*buffer) * buffer_len);
+        if (buffer == NULL)
+            return HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
 
     // Subtract the product of the multiplier and the source entries from the
     // target entries, working backwards so untouched entries only move once.
