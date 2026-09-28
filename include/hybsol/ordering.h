@@ -68,13 +68,15 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *sys, const uint64_
 /**
  * Apply a block ordering to a vector.
  *
- * Produces the vector that corresponds to the reordered system: the slice
- * of ``in`` belonging to block ``i`` is written to the slice of ``out``
- * belonging to block ``new_order[i]``.
+ * Block ``i`` of ``in`` is written to the slot that :c:func:`hybsol_system_reorder_blocks`
+ * moved it to, so the result is the vector of the reordered system. ``sys``
+ * must already have been reordered with ``new_order``; the offsets it holds
+ * are used to locate both slices.
  *
- * :param sys: The system the ordering was computed for.
+ * :param sys: The system the ordering was applied to.
  * :param new_order: ``n_blocks`` entries forming a permutation.
- * :param in: Input vector of length :c:func:`hybsol_system_total_size`.
+ * :param in: Vector in the *old* ordering, of length
+ *     :c:func:`hybsol_system_total_size`.
  * :param out: Destination of the same length; must not alias ``in``.
  */
 void hybsol_system_reorder_vector(const hybsol_system_t *sys, const uint64_t *new_order, const double *in, double *out);
@@ -82,9 +84,13 @@ void hybsol_system_reorder_vector(const hybsol_system_t *sys, const uint64_t *ne
 /**
  * Undo :c:func:`hybsol_system_reorder_vector`.
  *
- * :param sys: The system the ordering was computed for.
+ * Block ``new_order[i]`` of ``in`` is written back to slot ``i``, restoring
+ * the vector of the system as it was before the reordering.
+ *
+ * :param sys: The system the ordering was applied to.
  * :param new_order: ``n_blocks`` entries forming a permutation.
- * :param in: Input vector of length :c:func:`hybsol_system_total_size`.
+ * :param in: Vector in the *new* ordering, of length
+ *     :c:func:`hybsol_system_total_size`.
  * :param out: Destination of the same length; must not alias ``in``.
  */
 void hybsol_system_unorder_vector(const hybsol_system_t *sys, const uint64_t *new_order, const double *in, double *out);

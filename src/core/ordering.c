@@ -432,7 +432,7 @@ void hybsol_system_reorder_vector(const hybsol_system_t *const sys, const uint64
         const uint64_t block_size = hybsol_block_size(sys, new_order[i_block]);
 #pragma omp simd
         for (uint64_t i_entry = 0; i_entry < block_size; ++i_entry)
-            out[offset + i_entry] = in[new_offset + i_entry];
+            out[new_offset + i_entry] = in[offset + i_entry];
         offset += block_size;
     }
 }
@@ -447,7 +447,7 @@ void hybsol_system_unorder_vector(const hybsol_system_t *const sys, const uint64
         const uint64_t block_size = hybsol_block_size(sys, new_order[i_block]);
 #pragma omp simd
         for (uint64_t i_entry = 0; i_entry < block_size; ++i_entry)
-            out[new_offset + i_entry] = in[offset + i_entry];
+            out[offset + i_entry] = in[new_offset + i_entry];
         offset += block_size;
     }
 }
