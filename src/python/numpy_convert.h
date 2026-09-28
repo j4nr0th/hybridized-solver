@@ -59,6 +59,22 @@ int hybsol_double_array(PyObject *obj, int ndim, const npy_intp *dims, const cha
 int hybsol_uint64_array(PyObject *obj, int ndim, const npy_intp *dims, const char *name, PyArrayObject **arr_out);
 
 /**
+ * Convert an object to a C-contiguous ``uint64_t`` array of block indices.
+ *
+ * Identical to :c:func:`hybsol_uint64_array`, except that anything NumPy can
+ * safely cast to ``int64`` is accepted as well (so ``np.arange(n)`` works),
+ * with negative values rejected.
+ *
+ * :param obj: Anything array-like.
+ * :param ndim: Required number of dimensions.
+ * :param dims: Required size per dimension; ``0`` means "any".
+ * :param name: Argument name used in the error message.
+ * :param arr_out: Receives the new reference.
+ * :returns: ``0`` on success, ``-1`` with an exception set on failure.
+ */
+int hybsol_index_array(PyObject *obj, int ndim, const npy_intp *dims, const char *name, PyArrayObject **arr_out);
+
+/**
  * Validate (or allocate) the ``out=`` parameter shared by several methods.
  *
  * When ``out`` is ``NULL`` a new array with the given shape is allocated,

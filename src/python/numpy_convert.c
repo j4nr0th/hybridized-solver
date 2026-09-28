@@ -59,6 +59,60 @@ int hybsol_uint64_array(PyObject *const obj, const int ndim, const npy_intp *con
     return 0;
 }
 
+int hybsol_index_array(PyObject *const obj, const int ndim, const npy_intp *const dims, const char *const name,
+                       PyArrayObject **const arr_out)
+{
+    static const int flags = NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED;
+
+    // A `uint64` array is used as-is. Everything that NumPy can reach with a
+    // *safe* cast to `int64` (Python ints, `int64`, smaller integers) is taken
+    // through that type instead, so that `np.arange(n)` works just as well as
+    // an explicit `dtype=np.uint64` array.
+    PyArrayObject *arr = (PyArrayObject *)PyArray_FROMANY(obj, NPY_UINT64, ndim, ndim, flags);
+    if (!arr)
+    {
+        PyErr_Clear();
+        arr = (PyArrayObject *)PyArray_FROMANY(obj, NPY_INT64, ndim, ndim, flags);
+    }
+    if (!arr)
+    {
+        return -1;
+    }
+    if (check_input_array(arr, (unsigned)ndim, dims, -1, flags, name) < 0)
+    {
+        Py_DECREF(arr);
+        return -1;
+    }
+
+    const Py_ssize_t total = (Py_ssize_t)PyArray_SIZE(arr);
+    const int64_t *const vals = (const int64_t *)PyArray_DATA(arr);
+    for (Py_ssize_t i = 0; i < total; ++i)
+    {
+        if (vals[i] < 0)
+        {
+            PyErr_Format(PyExc_ValueError, "Array %s must not contain negative values, but entry %zd is %lld.", name, i,
+                         (long long)vals[i]);
+            Py_DECREF(arr);
+            return -1;
+        }
+    }
+
+    PyArrayObject *const out = (PyArrayObject *)PyArray_SimpleNew(ndim, PyArray_DIMS(arr), NPY_UINT64);
+    if (!out)
+    {
+        Py_DECREF(arr);
+        return -1;
+    }
+    uint64_t *const dst = (uint64_t *)PyArray_DATA(out);
+    for (Py_ssize_t i = 0; i < total; ++i)
+    {
+        dst[i] = (uint64_t)vals[i];
+    }
+    Py_DECREF(arr);
+    *arr_out = out;
+    return 0;
+}
+
 int hybsol_prepare_output(PyArrayObject *const out, const int ndim, const npy_intp *const dims, const int dtype,
                           const int flags, const char *const name, PyArrayObject **const arr_out)
 {

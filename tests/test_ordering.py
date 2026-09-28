@@ -46,18 +46,20 @@ def test_reordering(nb: int, bs: int) -> None:
     sys = random_sparse_system(rng, nb, bs, 0.9)
     # random ordering
     ordering = rng.permuted(np.arange(sys.n_blocks, dtype=np.uint64))
+    original_sizes = sys.block_sizes.copy()
     sys.reorder_blocks(ordering)
-    original_vector = np.concatenate(
-        [np.full(sys.block_sizes[i], i) for i in range(sys.n_blocks)]
-    )
+
+    # Block ``i`` moves to slot ``ordering[i]``, so the reordered vector holds
+    # old block ``argsort(ordering)[p]`` at slot ``p``.
+    original_vector = np.concatenate([np.full(original_sizes[i], i) for i in range(nb)])
     expected_vector = np.concatenate(
-        [
-            np.full(sys.block_sizes[i], i)
-            for i in (ordering[i] for i in range(sys.n_blocks))
-        ]
+        [np.full(original_sizes[i], i) for i in np.argsort(ordering)]
     )
     reordered_vector = sys.reorder_vector(ordering, original_vector)
     assert np.all(reordered_vector == expected_vector)
+
+    # ... and undoing it has to give back the original.
+    assert np.all(sys.unorder_vector(ordering, reordered_vector) == original_vector)
 
 
 @pytest.mark.parametrize(("nb", "bs"), ((10, 4), (40, 5), (200, 10)))
@@ -75,6 +77,72 @@ def test_unordering(nb: int, bs: int) -> None:
         ordering, sys.reorder_vector(ordering, original_vector)
     )  # re-ordering, then un-ordering should be an identity operation
     assert np.all(unordered_vector == original_vector)
+
+
+@pytest.mark.parametrize(("nb", "bs"), ((6, 3), (15, 5)))
+def test_reordered_system_is_a_permutation(nb: int, bs: int) -> None:
+    """Check that reordering really is a symmetric permutation of the system."""
+    rng = np.random.default_rng(5)
+    sys = random_sparse_system(rng, nb, bs, 0.5)
+    ordering = rng.permuted(np.arange(sys.n_blocks, dtype=np.uint64))
+
+    original_sizes = sys.block_sizes.copy()
+    offsets = np.pad(np.cumsum(original_sizes), (1, 0))
+
+    before = sys.as_array()
+    sys.reorder_blocks(ordering)
+    after = sys.as_array()
+
+    # The permutation matrix P: old block i ends up at slot ordering[i].
+    new_sizes = np.empty(nb, dtype=int)
+    new_sizes[ordering] = original_sizes
+    new_offsets = np.pad(np.cumsum(new_sizes), (1, 0))
+
+    permutation = np.zeros((offsets[-1], offsets[-1]))
+    for i in range(nb):
+        slot = int(ordering[i])
+        permutation[
+            new_offsets[slot] : new_offsets[slot + 1], offsets[i] : offsets[i + 1]
+        ] = np.eye(original_sizes[i])
+
+    assert np.all(after == permutation @ before @ permutation.T)
+    assert np.all(sys.block_sizes == new_sizes)
+
+
+@pytest.mark.parametrize(("nb", "bs"), ((6, 3), (15, 5)))
+def test_reordered_system_solves_consistently(nb: int, bs: int) -> None:
+    """Check that solving a reordered system gives the reordered solution."""
+    rng = np.random.default_rng(5)
+    sys = random_sparse_system(rng, nb, bs, 0.5)
+    ordering = rng.permuted(np.arange(sys.n_blocks, dtype=np.uint64))
+
+    # Shift the system away from singularity: the decomposition is unpivoted.
+    mat = sys.as_array()
+    dim = mat.shape[0]
+    mat += np.eye(dim) * dim
+    sys = BlockSystem(*sys.block_sizes)
+    for i in range(sys.n_blocks):
+        for j in range(sys.n_blocks):
+            block = mat[
+                sum(sys.block_sizes[:i]) : sum(sys.block_sizes[: i + 1]),
+                sum(sys.block_sizes[:j]) : sum(sys.block_sizes[: j + 1]),
+            ]
+            if np.any(block):
+                sys.add_block(i, j, block)
+
+    reference = sys.copy()
+    reference.decompose()
+
+    lhs = rng.random(dim)
+    rhs = mat @ lhs
+
+    ordered = sys.copy()
+    ordered.reorder_blocks(ordering)
+    ordered.decompose()
+
+    solution = ordered.solve(ordered.reorder_vector(ordering, rhs))
+    assert pytest.approx(ordered.unorder_vector(ordering, solution)) == lhs
+    assert pytest.approx(reference.solve(rhs)) == lhs
 
 
 # def test_greedy_coloring(n_blocks: int, max_size: int, sparsity: float) -> None:
