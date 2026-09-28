@@ -33,18 +33,6 @@ editable.rebuild = false
 
 
 [project.optional-dependencies]
-dev = [
-    "build",
-    "scikit-build-core",
-    "pyrefly",
-    "pytest",
-    "pytest-cov",
-    "interrogate",
-    "nox",
-    "pre-commit",
-    "codespell",
-    "tomli",
-]
 docs = [
     "matplotlib",
     "sphinx",
@@ -60,6 +48,24 @@ docs = [
     "sphinxcontrib-websupport",
     "sphinxcontrib-asciinema",
     "jupyter-sphinx",
+    "hawkmoth",
+    "libclang",
+]
+
+
+# PEP 735 groups: `uv sync` installs the default (dev) group automatically.
+[dependency-groups]
+dev = [
+    "build",
+    "scikit-build-core",
+    "pyrefly",
+    "pytest",
+    "pytest-cov",
+    "interrogate",
+    "nox",
+    "pre-commit",
+    "codespell",
+    "tomli",
 ]
 
 
@@ -93,10 +99,16 @@ unfixable = []
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
-[tool.pytest]
-addopts = ["--doctest-modules", "-ra", "--cov=hybsol", "--ignore=cpyutl"]
-testpaths = ["tests", "src"]
-console_output_style = "count"
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-markers", "--doctest-modules", "--ignore=cpyutl"]
+testpaths = ["tests", "python/hybsol"]
+markers = [
+    "benchmark: performance benchmarks, opt-in via -m benchmark",
+]
+
+[tool.coverage.run]
+source = ["hybsol"]
+branch = true
 
 [tool.coverage.report]
 exclude_also = [
