@@ -1,6 +1,6 @@
 /**
  * @file core/alloc.c
- * Result descriptions, the default allocator and assertion reporting.
+ * Result descriptions.
  */
 
 #include "internal.h"
@@ -32,62 +32,3 @@ const char *hybsol_result_str(const hybsol_result_t result)
     }
     return "unknown result code";
 }
-
-static void *default_malloc(const size_t size)
-{
-    return malloc(size);
-}
-
-static void *default_realloc(void *const ptr, const size_t size)
-{
-    return realloc(ptr, size);
-}
-
-static void default_free(void *const ptr)
-{
-    free(ptr);
-}
-
-hybsol_allocator_t hybsol_current_allocator = {
-    .malloc_fn = default_malloc,
-    .realloc_fn = default_realloc,
-    .free_fn = default_free,
-};
-
-void hybsol_set_allocator(const hybsol_allocator_t *const allocator)
-{
-    if (allocator == NULL)
-    {
-        hybsol_current_allocator = (hybsol_allocator_t){
-            .malloc_fn = default_malloc,
-            .realloc_fn = default_realloc,
-            .free_fn = default_free,
-        };
-        return;
-    }
-    hybsol_current_allocator = *allocator;
-}
-
-const hybsol_allocator_t *hybsol_get_allocator(void)
-{
-    return &hybsol_current_allocator;
-}
-
-#if HYBSOL_ENABLE_ASSERTS
-void hybsol_assert_fail(const char *const file, const int line, const char *const func, const char *const cond,
-                        const char *const fmt, ...)
-{
-    va_list args;
-    fprintf(stderr, "%s:%d (%s): assertion \"%s\" failed", file, line, func, cond);
-    if (fmt != NULL && *fmt != '\0')
-    {
-        fputc(':', stderr);
-        fputc(' ', stderr);
-        va_start(args, fmt);
-        vfprintf(stderr, fmt, args);
-        va_end(args);
-    }
-    fputc('\n', stderr);
-    abort();
-}
-#endif

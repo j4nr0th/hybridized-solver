@@ -14,7 +14,7 @@ hybsol_result_t hybsol_ops_append(hybsol_system_t *const sys, const hybsol_opera
         if (sys->n_ops == sys->ops_capacity)
         {
             const uint64_t new_capacity = sys->ops_capacity ? sys->ops_capacity * 2 : 8;
-            hybsol_operation_t *const ptr = hybsol_grow(sys->ops, (size_t)new_capacity * sizeof(*ptr));
+            hybsol_operation_t *const ptr = hybsol_grow(sys->allocator, sys->ops, (size_t)new_capacity * sizeof(*ptr));
             if (ptr == NULL)
             {
                 res = HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -60,8 +60,10 @@ static void find_diagonal(hybsol_system_t *const sys, const uint64_t idx, hybsol
 
     hybsol_row_t *const row = sys->rows + idx;
     uint64_t i_diag;
-    HYBSOL_ASSERT(hybsol_row_find(row, idx, &i_diag), "Row %llu has no diagonal block; every row must contain one.",
-                  (unsigned long long)idx);
+    // The lookup must run for its side effect even with asserts compiled out,
+    // where CUTL_ASSERT degrades to an assumption the optimizer may delete.
+    const int has_diag = hybsol_row_find(row, idx, &i_diag);
+    CUTL_ASSERT(has_diag, "Row %llu has no diagonal block; every row must contain one.", (unsigned long long)idx);
 
     *out = row->entries[i_diag];
 }
@@ -112,7 +114,7 @@ hybsol_result_t hybsol_system_apply_diagonal_inverse(hybsol_system_t *const sys,
 hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *const sys, const uint64_t idx,
                                              const hybsol_matrix_t *const b, const hybsol_matrix_t *const x)
 {
-    HYBSOL_ASSERT(b != NULL && x != NULL, "The right-hand side and destination must not be NULL.");
+    CUTL_ASSERT(b != NULL && x != NULL, "The right-hand side and destination must not be NULL.");
     hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_solve_diagonal(sys, idx, b, x);
@@ -121,7 +123,7 @@ hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *const sys, const u
 hybsol_result_t hybsol_system_solve_diagonal_f32(hybsol_system_t *const sys, const uint64_t idx,
                                                  const hybsol_fmatrix_t *const b, const hybsol_fmatrix_t *const x)
 {
-    HYBSOL_ASSERT(b != NULL && x != NULL, "The right-hand side and destination must not be NULL.");
+    CUTL_ASSERT(b != NULL && x != NULL, "The right-hand side and destination must not be NULL.");
     hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_solve_diagonal(sys, idx, b, x);
@@ -149,7 +151,7 @@ hybsol_result_t hybsol_system_solve(hybsol_system_t *const sys, double *const ve
 {
     if (!sys->decomposed)
         return HYBSOL_ERROR_NOT_DECOMPOSED;
-    HYBSOL_ASSERT(vec != NULL, "The solution vector must not be NULL.");
+    CUTL_ASSERT(vec != NULL, "The solution vector must not be NULL.");
 
     hybsol_system_apply_operations(sys, sys->n_ops, sys->ops, vec);
     hybsol_system_solve_upper(sys, vec);
@@ -184,14 +186,14 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
     HYBSOL_MARK_USED(threads);
     sys->n_ops = 0;
 
-    target_row_t *const target_status = hybsol_alloc((size_t)sys->n * sizeof(*target_status));
-    uint64_t *const ready = hybsol_alloc((size_t)sys->n * sizeof(*ready));
-    hybsol_result_t *const results = hybsol_alloc((size_t)sys->n * sizeof(*results));
+    target_row_t *const target_status = hybsol_alloc(sys->allocator, (size_t)sys->n * sizeof(*target_status));
+    uint64_t *const ready = hybsol_alloc(sys->allocator, (size_t)sys->n * sizeof(*ready));
+    hybsol_result_t *const results = hybsol_alloc(sys->allocator, (size_t)sys->n * sizeof(*results));
     if (target_status == NULL || ready == NULL || results == NULL)
     {
-        hybsol_free(target_status);
-        hybsol_free(ready);
-        hybsol_free(results);
+        hybsol_free(sys->allocator, target_status);
+        hybsol_free(sys->allocator, ready);
+        hybsol_free(sys->allocator, results);
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     }
 
@@ -308,9 +310,9 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
         }
     }
 
-    hybsol_free(target_status);
-    hybsol_free(ready);
-    hybsol_free(results);
+    hybsol_free(sys->allocator, target_status);
+    hybsol_free(sys->allocator, ready);
+    hybsol_free(sys->allocator, results);
 
     if (shared_res != HYBSOL_SUCCESS)
     {

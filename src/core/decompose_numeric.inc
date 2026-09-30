@@ -33,10 +33,10 @@
 static void HYBSOL_FN(vec_multiply_sub)(const HYBSOL_VIEW *const a, const hybsol_matrix_t *const b,
                                         const hybsol_matrix_t *const out)
 {
-    HYBSOL_ASSERT(a->cols == b->rows,
-                  "Matrix multiplication: number of columns of A (%llu) does not match number of rows of B (%llu).",
-                  (unsigned long long)a->cols, (unsigned long long)b->rows);
-    HYBSOL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
+    CUTL_ASSERT(a->cols == b->rows,
+                "Matrix multiplication: number of columns of A (%llu) does not match number of rows of B (%llu).",
+                (unsigned long long)a->cols, (unsigned long long)b->rows);
+    CUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
 
     const HYBSOL_SCALAR *const restrict ptr_a = a->data;
     const double *const restrict ptr_b = b->data;
@@ -58,14 +58,14 @@ static void HYBSOL_FN(vec_multiply_sub)(const HYBSOL_VIEW *const a, const hybsol
 static hybsol_result_t HYBSOL_FN(vec_lu_solve)(const HYBSOL_VIEW *const m, const hybsol_matrix_t *const b,
                                                const hybsol_matrix_t *const out)
 {
-    HYBSOL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
-                  (unsigned long long)m->rows, (unsigned long long)m->cols);
-    HYBSOL_ASSERT(m->rows == b->rows, "The right-hand side has %llu rows, but the factors have %llu.",
-                  (unsigned long long)b->rows, (unsigned long long)m->rows);
-    HYBSOL_ASSERT(b->rows == out->rows && b->cols == out->cols,
-                  "The destination is %llu x %llu, but the right-hand side is %llu x %llu.",
-                  (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
-                  (unsigned long long)b->cols);
+    CUTL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
+                (unsigned long long)m->rows, (unsigned long long)m->cols);
+    CUTL_ASSERT(m->rows == b->rows, "The right-hand side has %llu rows, but the factors have %llu.",
+                (unsigned long long)b->rows, (unsigned long long)m->rows);
+    CUTL_ASSERT(b->rows == out->rows && b->cols == out->cols,
+                "The destination is %llu x %llu, but the right-hand side is %llu x %llu.",
+                (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
+                (unsigned long long)b->cols);
 
     // Have to deal with every column in the same way
     for (uint64_t i_col = 0; i_col < b->cols; ++i_col)
@@ -168,12 +168,11 @@ static hybsol_result_t HYBSOL_FN(solve_diagonal)(hybsol_system_t *const sys, con
         return HYBSOL_ERROR_NOT_DECOMPOSED;
 
     const uint64_t block_size = hybsol_block_size(sys, idx);
-    HYBSOL_ASSERT(b->rows == block_size, "Block row %llu is %llu rows, but the right-hand side has %llu.",
-                  (unsigned long long)idx, (unsigned long long)block_size, (unsigned long long)b->rows);
-    HYBSOL_ASSERT(x->rows == b->rows && x->cols == b->cols,
-                  "The destination is %llu x %llu, but the right-hand side is %llu x %llu.",
-                  (unsigned long long)x->rows, (unsigned long long)x->cols, (unsigned long long)b->rows,
-                  (unsigned long long)b->cols);
+    CUTL_ASSERT(b->rows == block_size, "Block row %llu is %llu rows, but the right-hand side has %llu.",
+                (unsigned long long)idx, (unsigned long long)block_size, (unsigned long long)b->rows);
+    CUTL_ASSERT(x->rows == b->rows && x->cols == b->cols,
+                "The destination is %llu x %llu, but the right-hand side is %llu x %llu.", (unsigned long long)x->rows,
+                (unsigned long long)x->cols, (unsigned long long)b->rows, (unsigned long long)b->cols);
 
     const HYBSOL_VIEW mat_diag = HYBSOL_KERNEL(view)(block_size, block_size, (HYBSOL_SCALAR *)diag->vals);
     return HYBSOL_KERNEL(lu_solve)(&mat_diag, b, x);
@@ -188,8 +187,7 @@ static void HYBSOL_FN(apply_operations)(const hybsol_system_t *const sys, const 
 
         switch (op->type)
         {
-        case HYBSOL_OPERATION_ELIMINATE:
-        {
+        case HYBSOL_OPERATION_ELIMINATE: {
             uint64_t i_block;
             (void)hybsol_row_find(sys->rows + op->idx_row, op->idx_col, &i_block);
             const HYBSOL_VIEW block_mat =
@@ -203,8 +201,7 @@ static void HYBSOL_FN(apply_operations)(const hybsol_system_t *const sys, const 
         }
         break;
 
-        case HYBSOL_OPERATION_INVERT_DIAGONAL:
-        {
+        case HYBSOL_OPERATION_INVERT_DIAGONAL: {
             uint64_t i_block;
             (void)hybsol_row_find(sys->rows + op->idx_row, op->idx_row, &i_block);
             const HYBSOL_VIEW block_mat =

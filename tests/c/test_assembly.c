@@ -130,8 +130,8 @@ static void test_bulk_matches_add_block(void)
 
         hybsol_system_t *bulk = NULL;
         hybsol_system_t *single = NULL;
-        CHECK_OK(hybsol_system_create(p.n_blocks, p.sizes, &bulk));
-        CHECK_OK(hybsol_system_create(p.n_blocks, p.sizes, &single));
+        CHECK_OK(hybsol_system_create(p.n_blocks, p.sizes, &bulk, &CUTL_STD_ALLOCATOR));
+        CHECK_OK(hybsol_system_create(p.n_blocks, p.sizes, &single, &CUTL_STD_ALLOCATOR));
 
         CHECK_OK(hybsol_system_add_blocks(bulk, p.n_entries, p.rows, p.cols, p.data));
         CHECK(hybsol_system_is_valid(bulk));
@@ -168,7 +168,7 @@ static void test_bulk_accumulates_duplicates(void)
 {
     const uint64_t sizes[] = {2};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(1, sizes, &sys));
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     const uint64_t rows[] = {0, 0};
     const uint64_t cols[] = {0, 0};
@@ -188,7 +188,7 @@ static void test_reserve(void)
 {
     const uint64_t sizes[] = {1, 1, 1};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(3, sizes, &sys));
+    CHECK_OK(hybsol_system_create(3, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     const double one[1] = {1.0};
     CHECK_OK(hybsol_system_reserve(sys, 1, 3));

@@ -14,19 +14,35 @@ option(HYBSOL_ENABLE_OPENMP "Build the core with OpenMP support." ON)
 option(HYBSOL_BUILD_PYTHON "Build the Python bindings." ON)
 option(HYBSOL_BUILD_TESTS "Build the native test suite." OFF)
 
-# Preconditions are checked with HYBSOL_ASSERT, which compiles away entirely
-# unless this is on. Debug builds and the test suite turn it on so a violated
-# precondition aborts with a message instead of running into undefined
-# behaviour. For Release the choice is left to whoever consumes the core via
-# add_subdirectory(): define HYBSOL_ENABLE_ASSERTS yourself to keep the checks.
-if (NOT DEFINED HYBSOL_ENABLE_ASSERTS)
+# Preconditions are checked with cutl's CUTL_ASSERT, which turns into an
+# assumption the optimizer may exploit unless this is on. Debug builds and the
+# test suite turn it on so a violated precondition aborts with a message
+# instead of running into undefined behaviour. For Release the choice is left
+# to whoever consumes the core via add_subdirectory(): set CUTL_ASSERTS
+# yourself to keep the checks.
+if (NOT DEFINED CUTL_ASSERTS)
     if (CMAKE_BUILD_TYPE STREQUAL "Debug" OR HYBSOL_BUILD_TESTS)
-        set(HYBSOL_ENABLE_ASSERTS ON)
+        set(CUTL_ASSERTS ON)
     else ()
-        set(HYBSOL_ENABLE_ASSERTS OFF)
+        set(CUTL_ASSERTS OFF)
     endif ()
 endif ()
-message(STATUS "hybsol precondition asserts: ${HYBSOL_ENABLE_ASSERTS}")
+message(STATUS "hybsol precondition asserts: ${CUTL_ASSERTS}")
+
+# cutl supplies the core's allocator and its assertion macro. Both of these
+# have to be settled before add_subdirectory() so cutl's own defaults do not
+# apply, and as cache entries so a consumer that set them keeps its choice.
+#
+# CUTL_BUILD_TESTS defaults to ON, which additionally forces
+# CUTL_ALLOCATOR_GUARD_BYTES to 16 even in a Release build, and those guard
+# bytes are compiled into the library rather than only into its tests.
+#
+# CUTL_ASSERTS stays the single knob: cutl turns it into CUTL_ENABLE_ASSERTS,
+# which hybsol_core re-exports to its own consumers.
+set(CUTL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CUTL_ASSERTS ${CUTL_ASSERTS} CACHE BOOL "" FORCE)
+
+add_subdirectory(cutl EXCLUDE_FROM_ALL)
 
 if (HYBSOL_ENABLE_OPENMP)
     find_package(OpenMP COMPONENTS C)
@@ -49,7 +65,10 @@ add_library(hybsol::hybsol ALIAS hybsol_core)
 
 target_compile_features(hybsol_core PUBLIC c_std_17)
 
-target_compile_definitions(hybsol_core PUBLIC HYBSOL_ENABLE_ASSERTS=$<BOOL:${HYBSOL_ENABLE_ASSERTS}>)
+
+# PUBLIC: hybsol/types.h re-exports cutl_allocator_t, so a consumer that
+# includes the core headers needs cutl's headers too.
+target_link_libraries(hybsol_core PUBLIC cutl)
 target_include_directories(hybsol_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")

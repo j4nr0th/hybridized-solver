@@ -379,7 +379,8 @@ static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n
     self->system = NULL;
     self->n_live_views = 0;
 
-    const hybsol_result_t res = hybsol_system_create_with_precision((uint64_t)n, sizes, precision, &self->system);
+    const hybsol_result_t res =
+        hybsol_system_create_with_precision((uint64_t)n, sizes, precision, &self->system, &CUTL_STD_ALLOCATOR);
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(self);

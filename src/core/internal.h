@@ -12,9 +12,10 @@
 
 #include <hybsol/hybsol.h>
 
+#include <cutl/allocators.h>
+#include <cutl/common_defs.h>
+
 #include <limits.h>
-#include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,54 +31,44 @@
 /* ------------------------------------------------------------------------- */
 /* Assertions                                                                 */
 /* ------------------------------------------------------------------------- */
-
-#ifndef HYBSOL_ENABLE_ASSERTS
-#define HYBSOL_ENABLE_ASSERTS 0
-#endif
-
-#ifdef __GNUC__
-#define HYBSOL_NORETURN __attribute__((noreturn))
-#define HYBSOL_PRINTF(fmt_idx, arg_idx) __attribute__((format(printf, fmt_idx, arg_idx)))
-#else
-#define HYBSOL_NORETURN
-#define HYBSOL_PRINTF(fmt_idx, arg_idx)
-#endif
-
-#if HYBSOL_ENABLE_ASSERTS
-/**
- * Abort the process after printing an internal invariant failure.
+/*
+ * Preconditions are checked with cutl's CUTL_ASSERT, which reports the file,
+ * line, function and the failed condition before aborting.
  *
- * Only called through :c:macro:`HYBSOL_ASSERT`; never directly.
+ * Without CUTL_ENABLE_ASSERTS it degrades to CUTL_ASSUME, which lets the
+ * optimizer assume the condition holds and may delete the expression
+ * outright. Never put a side effect in a CUTL_ASSERT condition: write it to
+ * a variable first and assert on that variable.
  */
-HYBSOL_NORETURN HYBSOL_PRINTF(5, 6) void hybsol_assert_fail(const char *file, int line, const char *func,
-                                                            const char *cond, const char *fmt, ...);
-
-#define HYBSOL_ASSERT(cond, fmt, ...)                                                                                  \
-    ((cond) ? (void)0 : hybsol_assert_fail(__FILE__, __LINE__, __func__, #cond, fmt, ##__VA_ARGS__))
-#else
-#define HYBSOL_ASSERT(cond, fmt, ...) ((void)0)
+#ifndef CUTL_ENABLE_ASSERTS
+#define CUTL_ENABLE_ASSERTS 0
 #endif
 
 /* ------------------------------------------------------------------------- */
 /* Allocation                                                                 */
 /* ------------------------------------------------------------------------- */
 
-/** The active allocator; replaced by :c:func:`hybsol_set_allocator`. */
-extern hybsol_allocator_t hybsol_current_allocator;
-
-static inline void *hybsol_alloc(const size_t size)
+/*
+ * The three allocation helpers every core file goes through. They take the
+ * allocator explicitly rather than reading a global, which is what lets two
+ * systems use different allocators and keeps concurrent use safe.
+ *
+ * A zero size yields NULL, matching what cutl's allocators already do, so the
+ * `== NULL` checks callers make for out-of-memory stay correct.
+ */
+static inline void *hybsol_alloc(const cutl_allocator_t *const alloc, const size_t size)
 {
-    return size == 0 ? NULL : hybsol_current_allocator.malloc_fn(size);
+    return cutl_alloc(alloc, size);
 }
 
-static inline void *hybsol_grow(void *const ptr, const size_t size)
+static inline void *hybsol_grow(const cutl_allocator_t *const alloc, void *const ptr, const size_t size)
 {
-    return size == 0 ? NULL : hybsol_current_allocator.realloc_fn(ptr, size);
+    return cutl_realloc(alloc, ptr, size);
 }
 
-static inline void hybsol_free(void *const ptr)
+static inline void hybsol_free(const cutl_allocator_t *const alloc, void *const ptr)
 {
-    hybsol_current_allocator.free_fn(ptr);
+    cutl_dealloc(alloc, ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -104,6 +95,14 @@ typedef struct hybsol_row_entry
 /** The stored blocks of a single block row, kept sorted by column. */
 typedef struct hybsol_row
 {
+    /**
+     * Allocator this row's entries were allocated from.
+     *
+     * Stored per row rather than read from the system so the row helpers,
+     * which only ever receive a `hybsol_row_t *`, can allocate. It is the
+     * owning system's allocator, copied at creation and never changed.
+     */
+    const cutl_allocator_t *allocator;
     /** Number of entries in use. */
     uint64_t count;
     /** Number of entry slots allocated in ``entries``. */
@@ -114,6 +113,13 @@ typedef struct hybsol_row
 
 struct hybsol_system
 {
+    /**
+     * Allocator every allocation of this system goes through.
+     *
+     * Chosen at creation and never changed, so reading it is safe from any
+     * thread. Always non-NULL for a system that exists.
+     */
+    const cutl_allocator_t *allocator;
     /** Number of blocks per dimension. */
     uint64_t n;
     /** ``n + 1`` offsets into the underlying matrix; ``block_offsets[0] == 0``. */
@@ -199,10 +205,10 @@ hybsol_result_t hybsol_require_mutable(const hybsol_system_t *sys);
  */
 static inline void hybsol_require_precision(const hybsol_system_t *const sys, const hybsol_precision_t precision)
 {
-    HYBSOL_ASSERT(sys->precision == precision,
-                  "This is the %s spelling but the system stores %s; use the matching function.",
-                  precision == HYBSOL_PRECISION_DOUBLE ? "double" : "single precision",
-                  sys->precision == HYBSOL_PRECISION_DOUBLE ? "doubles" : "floats");
+    CUTL_ASSERT(sys->precision == precision,
+                "This is the %s spelling but the system stores %s; use the matching function.",
+                precision == HYBSOL_PRECISION_DOUBLE ? "double" : "single precision",
+                sys->precision == HYBSOL_PRECISION_DOUBLE ? "doubles" : "floats");
 }
 
 /**
@@ -213,8 +219,8 @@ static inline void hybsol_require_precision(const hybsol_system_t *const sys, co
  */
 static inline void hybsol_require_index(const hybsol_system_t *const sys, const uint64_t idx)
 {
-    HYBSOL_ASSERT(idx < sys->n, "Block index %llu is outside [0, %llu).", (unsigned long long)idx,
-                  (unsigned long long)sys->n);
+    CUTL_ASSERT(idx < sys->n, "Block index %llu is outside [0, %llu).", (unsigned long long)idx,
+                (unsigned long long)sys->n);
 }
 
 /** Mark row ``idx`` as needing a fresh LU factorization. */

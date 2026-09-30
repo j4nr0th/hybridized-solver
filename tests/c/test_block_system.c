@@ -65,7 +65,7 @@ static void test_create_and_query(void)
 {
     const uint64_t sizes[] = {2, 3, 1};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(3, sizes, &sys));
+    CHECK_OK(hybsol_system_create(3, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     CHECK(hybsol_system_n_blocks(sys) == 3);
     CHECK(hybsol_system_total_size(sys) == 6);
@@ -87,7 +87,7 @@ static void test_rows_and_blocks(void)
 {
     const uint64_t sizes[] = {1, 1, 1};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(3, sizes, &sys));
+    CHECK_OK(hybsol_system_create(3, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double two[1] = {2.0}, three[1] = {3.0}, one[1] = {1.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 1, 1, one));
@@ -137,7 +137,7 @@ static void test_add_block_accumulates(void)
 {
     const uint64_t sizes[] = {2};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(1, sizes, &sys));
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double first[4] = {1.0, 2.0, 3.0, 4.0};
     double second[4] = {10.0, 20.0, 30.0, 40.0};
@@ -156,7 +156,7 @@ static void test_dense_export(void)
 {
     const uint64_t sizes[] = {2, 1};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double full[MAX_DIM][MAX_DIM] = {{0}};
     fill_sequential(3, full);
@@ -180,7 +180,7 @@ static void test_copy(void)
 {
     const uint64_t sizes[] = {2, 2};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double full[MAX_DIM][MAX_DIM] = {{0}};
     fill_sequential(4, full);
@@ -212,7 +212,7 @@ static void test_is_valid(void)
     double one[1] = {1.0};
 
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(3, sizes, &sys));
+    CHECK_OK(hybsol_system_create(3, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     // A row that only has entries below the diagonal is not valid either.
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 1, 1, one));
@@ -227,7 +227,7 @@ static void test_is_valid(void)
 
     // ... and a row without any diagonal block is still invalid.
     hybsol_system_t *other = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &other));
+    CHECK_OK(hybsol_system_create(2, sizes, &other, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(other, 0, 1, 1, 1, one));
     CHECK_OK(hybsol_system_add_block(other, 1, 0, 1, 1, one));
     CHECK(!hybsol_system_is_valid(other));
@@ -240,7 +240,7 @@ static void test_row_operations(void)
 {
     const uint64_t sizes[] = {2, 2};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double full[MAX_DIM][MAX_DIM] = {{0}};
     fill_sequential(4, full);
@@ -295,7 +295,7 @@ static void test_block_storage_creates_and_reuses(void)
 {
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[3] = {2, 3, 1};
-    CHECK_OK(hybsol_system_create(3, sizes, &sys));
+    CHECK_OK(hybsol_system_create(3, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     hybsol_matrix_t view;
     CHECK_OK(hybsol_system_block_storage(sys, 0, 1, &view));
@@ -348,7 +348,7 @@ static void test_block_storage_invalidates_diagonal(void)
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[2] = {2, 2};
     const double diag[4] = {4.0, 0.0, 0.0, 4.0};
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
 
     CHECK_OK(hybsol_system_decompose_diagonal(sys, 0));
@@ -367,7 +367,7 @@ static void test_block_storage_rejects_decomposed(void)
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[1] = {2};
     const double diag[4] = {4.0, 0.0, 0.0, 4.0};
-    CHECK_OK(hybsol_system_create(1, sizes, &sys));
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
     CHECK_OK(hybsol_system_decompose(sys, 1));
 

@@ -96,7 +96,7 @@ static void build_random_system(rng_t *const r, random_system_t *const s)
     }
 
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(s->n_blocks, sizes, &sys));
+    CHECK_OK(hybsol_system_create(s->n_blocks, sizes, &sys, &CUTL_STD_ALLOCATOR));
     s->sys = sys;
 
     for (uint64_t i = 0; i < s->n_blocks; ++i)
@@ -221,7 +221,7 @@ static void test_rejects_invalid_and_singular(void)
 
     // Asymmetric pattern.
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
     double block[4] = {2.0, 1.0, 1.0, 2.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, block));
     CHECK_OK(hybsol_system_add_block(sys, 0, 1, 2, 2, block));
@@ -230,7 +230,7 @@ static void test_rejects_invalid_and_singular(void)
     hybsol_system_destroy(sys);
 
     // Exactly singular diagonal block.
-    CHECK_OK(hybsol_system_create(1, sizes, &sys));
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
     double zero[4] = {0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, zero));
     CHECK(hybsol_system_is_valid(sys));
@@ -291,7 +291,7 @@ static void test_diagonal_helpers(void)
 {
     const uint64_t sizes[] = {2};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(1, sizes, &sys));
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double values[4] = {4.0, 1.0, 1.0, 3.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, values));

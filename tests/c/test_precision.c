@@ -16,7 +16,7 @@ static hybsol_system_t *build_system(const hybsol_precision_t precision, const u
                                      double out[MAX_DIM][MAX_DIM])
 {
     hybsol_system_t *sys = NULL;
-    if (hybsol_system_create_with_precision(n_block, sizes, precision, &sys) != HYBSOL_SUCCESS)
+    if (hybsol_system_create_with_precision(n_block, sizes, precision, &sys, &CUTL_STD_ALLOCATOR) != HYBSOL_SUCCESS)
     {
         return NULL;
     }
@@ -71,18 +71,18 @@ static void test_create_precision(void)
     const uint64_t sizes[2] = {2, 3};
 
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_SINGLE, &sys));
+    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_SINGLE, &sys, &CUTL_STD_ALLOCATOR));
     CHECK(hybsol_system_precision(sys) == HYBSOL_PRECISION_SINGLE);
     hybsol_system_destroy(sys);
 
     sys = NULL;
-    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_DOUBLE, &sys));
+    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_DOUBLE, &sys, &CUTL_STD_ALLOCATOR));
     CHECK(hybsol_system_precision(sys) == HYBSOL_PRECISION_DOUBLE);
     hybsol_system_destroy(sys);
 
     // The default spelling is the double one.
     hybsol_system_t *plain = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &plain));
+    CHECK_OK(hybsol_system_create(2, sizes, &plain, &CUTL_STD_ALLOCATOR));
     CHECK(hybsol_system_precision(plain) == HYBSOL_PRECISION_DOUBLE);
     hybsol_system_destroy(plain);
 }
@@ -91,7 +91,7 @@ static void test_single_assembly_and_readback(void)
 {
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[2] = {2, 3};
-    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_SINGLE, &sys));
+    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_SINGLE, &sys, &CUTL_STD_ALLOCATOR));
 
     const float vals[6] = {1.0f, -2.0f, 3.0f, -4.0f, 5.0f, -6.0f};
     CHECK_OK(hybsol_system_add_block_f32(sys, 0, 1, 2, 3, vals));
@@ -129,7 +129,7 @@ static void test_copy_preserves_precision(void)
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[2] = {2, 2};
     const float vals[4] = {4.0f, 1.0f, 1.0f, 4.0f};
-    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_SINGLE, &sys));
+    CHECK_OK(hybsol_system_create_with_precision(2, sizes, HYBSOL_PRECISION_SINGLE, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block_f32(sys, 0, 0, 2, 2, vals));
     CHECK_OK(hybsol_system_add_block_f32(sys, 1, 1, 2, 2, vals));
 
@@ -209,7 +209,7 @@ static void test_single_decompose_and_solve(void)
     hybsol_system_t *diag = NULL;
     const uint64_t one[1] = {2};
     const float entries[4] = {4.0f, 0.0f, 0.0f, 4.0f};
-    CHECK_OK(hybsol_system_create_with_precision(1, one, HYBSOL_PRECISION_SINGLE, &diag));
+    CHECK_OK(hybsol_system_create_with_precision(1, one, HYBSOL_PRECISION_SINGLE, &diag, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block_f32(diag, 0, 0, 2, 2, entries));
     CHECK_OK(hybsol_system_decompose_diagonal(diag, 0));
 

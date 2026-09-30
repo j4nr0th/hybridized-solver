@@ -26,10 +26,10 @@ HYBSOL_VIEW HYBSOL_FN(view)(const uint64_t rows, const uint64_t cols, HYBSOL_SCA
 
 void HYBSOL_FN(multiply)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *const b, const HYBSOL_VIEW *const out)
 {
-    HYBSOL_ASSERT(a->cols == b->rows,
-                  "Matrix multiplication: number of columns of A (%llu) does not match number of rows of B (%llu).",
-                  (unsigned long long)a->cols, (unsigned long long)b->rows);
-    HYBSOL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
+    CUTL_ASSERT(a->cols == b->rows,
+                "Matrix multiplication: number of columns of A (%llu) does not match number of rows of B (%llu).",
+                (unsigned long long)a->cols, (unsigned long long)b->rows);
+    CUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
 
     const HYBSOL_SCALAR *const restrict ptr_a = a->data;
     const HYBSOL_SCALAR *const restrict ptr_b = b->data;
@@ -62,9 +62,9 @@ void HYBSOL_FN(multiply)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *const b,
 void HYBSOL_FN(multiply_sub_inplace)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *const b,
                                      const HYBSOL_VIEW *const out)
 {
-    HYBSOL_ASSERT(a->cols == b->rows, "Columns of A must match the rows of B (%llu vs %llu).",
-                  (unsigned long long)a->cols, (unsigned long long)b->rows);
-    HYBSOL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
+    CUTL_ASSERT(a->cols == b->rows, "Columns of A must match the rows of B (%llu vs %llu).",
+                (unsigned long long)a->cols, (unsigned long long)b->rows);
+    CUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
 
     // Compute A @ B and subtract the result from whatever is in OUT
     const HYBSOL_SCALAR *const restrict ptr_a = a->data;
@@ -85,15 +85,15 @@ void HYBSOL_FN(multiply_sub_inplace)(const HYBSOL_VIEW *const a, const HYBSOL_VI
 
 void HYBSOL_FN(subtract_inplace)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *const b)
 {
-    HYBSOL_ASSERT(a->rows == b->rows && a->cols == b->cols, "Matrices have different dimensions.");
+    CUTL_ASSERT(a->rows == b->rows && a->cols == b->cols, "Matrices have different dimensions.");
     for (uint64_t i = 0; i < a->rows * a->cols; ++i)
         a->data[i] -= b->data[i];
 }
 
 hybsol_result_t HYBSOL_FN(lu_decompose)(const HYBSOL_VIEW *const m)
 {
-    HYBSOL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
-                  (unsigned long long)m->rows, (unsigned long long)m->cols);
+    CUTL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
+                (unsigned long long)m->rows, (unsigned long long)m->cols);
 
     for (uint64_t i = 0; i < m->rows; ++i)
     {
@@ -131,14 +131,14 @@ hybsol_result_t HYBSOL_FN(lu_decompose)(const HYBSOL_VIEW *const m)
 hybsol_result_t HYBSOL_FN(lu_solve)(const HYBSOL_VIEW *const m, const HYBSOL_VIEW *const b,
                                     const HYBSOL_VIEW *const out)
 {
-    HYBSOL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
-                  (unsigned long long)m->rows, (unsigned long long)m->cols);
-    HYBSOL_ASSERT(m->rows == b->rows, "The right-hand side has %llu rows, but the factors have %llu.",
-                  (unsigned long long)b->rows, (unsigned long long)m->rows);
-    HYBSOL_ASSERT(b->rows == out->rows && b->cols == out->cols,
-                  "The destination is %llu x %llu, but the right-hand side is %llu x %llu.",
-                  (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
-                  (unsigned long long)b->cols);
+    CUTL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
+                (unsigned long long)m->rows, (unsigned long long)m->cols);
+    CUTL_ASSERT(m->rows == b->rows, "The right-hand side has %llu rows, but the factors have %llu.",
+                (unsigned long long)b->rows, (unsigned long long)m->rows);
+    CUTL_ASSERT(b->rows == out->rows && b->cols == out->cols,
+                "The destination is %llu x %llu, but the right-hand side is %llu x %llu.",
+                (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
+                (unsigned long long)b->cols);
 
     // Have to deal with every column in the same way
     for (uint64_t i_col = 0; i_col < b->cols; ++i_col)

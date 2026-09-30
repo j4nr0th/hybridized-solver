@@ -44,8 +44,8 @@ uint64_t hybsol_row_find_geq(const hybsol_row_t *const row, const uint64_t val)
         }
     }
 
-    HYBSOL_ASSERT(lo + len <= size, "Internal error: lo + len > size (%llu + %llu <= %llu).", (unsigned long long)lo,
-                  (unsigned long long)len, (unsigned long long)size);
+    CUTL_ASSERT(lo + len <= size, "Internal error: lo + len > size (%llu + %llu <= %llu).", (unsigned long long)lo,
+                (unsigned long long)len, (unsigned long long)size);
     for (uint64_t idx = lo; idx < lo + len; ++idx)
     {
         if (array[idx]->col >= val)
@@ -84,7 +84,7 @@ hybsol_result_t hybsol_row_reserve(hybsol_row_t *const row, const uint64_t neede
     if (new_capacity > SIZE_MAX / sizeof(*row->entries))
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
-    hybsol_row_entry_t **const ptr = hybsol_grow(row->entries, (size_t)new_capacity * sizeof(*ptr));
+    hybsol_row_entry_t **const ptr = hybsol_grow(row->allocator, row->entries, (size_t)new_capacity * sizeof(*ptr));
     if (!ptr)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
@@ -122,10 +122,10 @@ static void row_place_entry(hybsol_row_t *const row, const uint64_t idx, hybsol_
 {
     if (idx < row->count)
     {
-        HYBSOL_ASSERT(row->entries[idx]->col > entry->col,
-                      "Binary search was WRONG: %llu is not greater than the column %llu at index %llu.",
-                      (unsigned long long)entry->col, (unsigned long long)row->entries[idx]->col,
-                      (unsigned long long)idx);
+        CUTL_ASSERT(row->entries[idx]->col > entry->col,
+                    "Binary search was WRONG: %llu is not greater than the column %llu at index %llu.",
+                    (unsigned long long)entry->col, (unsigned long long)row->entries[idx]->col,
+                    (unsigned long long)idx);
         memmove(row->entries + idx + 1, row->entries + idx, (size_t)(row->count - idx) * sizeof(*row->entries));
     }
 
@@ -143,9 +143,10 @@ static void row_place_entry(hybsol_row_t *const row, const uint64_t idx, hybsol_
  *
  * :returns: The entry, or ``NULL`` when out of memory.
  */
-static hybsol_row_entry_t *row_new_entry(const uint64_t col, const uint64_t n_values, const size_t elem_size)
+static hybsol_row_entry_t *row_new_entry(const cutl_allocator_t *const alloc, const uint64_t col,
+                                         const uint64_t n_values, const size_t elem_size)
 {
-    hybsol_row_entry_t *const entry = hybsol_alloc(sizeof(*entry) + (size_t)n_values * elem_size);
+    hybsol_row_entry_t *const entry = hybsol_alloc(alloc, sizeof(*entry) + (size_t)n_values * elem_size);
     if (entry == NULL)
         return NULL;
     entry->col = col;
@@ -173,7 +174,7 @@ static hybsol_result_t row_find_or_create(hybsol_row_t *const row, const uint64_
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    hybsol_row_entry_t *const entry = row_new_entry(col, n_values, elem_size);
+    hybsol_row_entry_t *const entry = row_new_entry(row->allocator, col, n_values, elem_size);
     if (entry == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
@@ -216,10 +217,10 @@ static void free_row(hybsol_row_t *const row)
 {
     for (uint64_t i = 0; i < row->count; ++i)
     {
-        hybsol_free(row->entries[i]);
+        hybsol_free(row->allocator, row->entries[i]);
         row->entries[i] = NULL;
     }
-    hybsol_free(row->entries);
+    hybsol_free(row->allocator, row->entries);
     row->entries = NULL;
     row->count = 0;
     row->capacity = 0;
@@ -227,34 +228,36 @@ static void free_row(hybsol_row_t *const row)
 
 hybsol_result_t hybsol_system_create_with_precision(const uint64_t n_blocks,
                                                     const uint64_t block_sizes[static n_blocks],
-                                                    const hybsol_precision_t precision, hybsol_system_t **const out)
+                                                    const hybsol_precision_t precision, hybsol_system_t **const out,
+                                                    const cutl_allocator_t *const allocator)
 {
-    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
-    HYBSOL_ASSERT(n_blocks >= 1, "A system needs at least one block, but %llu were requested.",
-                  (unsigned long long)n_blocks);
-    HYBSOL_ASSERT(precision == HYBSOL_PRECISION_DOUBLE || precision == HYBSOL_PRECISION_SINGLE,
-                  "Precision must be one of the enumerators, but was %d.", (int)precision);
+    CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    CUTL_ASSERT(allocator != NULL, "The allocator must not be NULL; pass &CUTL_STD_ALLOCATOR for the default.");
+    CUTL_ASSERT(n_blocks >= 1, "A system needs at least one block, but %llu were requested.",
+                (unsigned long long)n_blocks);
+    CUTL_ASSERT(precision == HYBSOL_PRECISION_DOUBLE || precision == HYBSOL_PRECISION_SINGLE,
+                "Precision must be one of the enumerators, but was %d.", (int)precision);
 
     // The sizes are validated up front so that no failure path can run on a
     // partially initialised system.
     for (uint64_t i = 0; i < n_blocks; ++i)
     {
-        HYBSOL_ASSERT(block_sizes[i] > 0, "Block %llu has size 0; every block must be non-empty.",
-                      (unsigned long long)i);
+        CUTL_ASSERT(block_sizes[i] > 0, "Block %llu has size 0; every block must be non-empty.", (unsigned long long)i);
     }
 
     *out = NULL;
 
-    hybsol_system_t *const sys = hybsol_alloc(sizeof(*sys));
+    hybsol_system_t *const sys = hybsol_alloc(allocator, sizeof(*sys));
     if (sys == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     *sys = (hybsol_system_t){0};
+    sys->allocator = allocator;
     sys->n = n_blocks;
     sys->precision = precision;
 
-    sys->block_offsets = hybsol_alloc(sizeof(*sys->block_offsets) * (size_t)(n_blocks + 1));
-    sys->rows = hybsol_alloc(sizeof(*sys->rows) * (size_t)n_blocks);
-    sys->diag_decomposed = hybsol_alloc(sizeof(*sys->diag_decomposed) * (size_t)n_blocks);
+    sys->block_offsets = hybsol_alloc(allocator, sizeof(*sys->block_offsets) * (size_t)(n_blocks + 1));
+    sys->rows = hybsol_alloc(allocator, sizeof(*sys->rows) * (size_t)n_blocks);
+    sys->diag_decomposed = hybsol_alloc(allocator, sizeof(*sys->diag_decomposed) * (size_t)n_blocks);
     if (sys->block_offsets == NULL || sys->rows == NULL || sys->diag_decomposed == NULL)
     {
         hybsol_system_destroy(sys);
@@ -265,7 +268,7 @@ hybsol_result_t hybsol_system_create_with_precision(const uint64_t n_blocks,
     for (uint64_t i = 0; i < n_blocks; ++i)
     {
         sys->block_offsets[i + 1] = sys->block_offsets[i] + block_sizes[i];
-        sys->rows[i] = (hybsol_row_t){0};
+        sys->rows[i] = (hybsol_row_t){.allocator = allocator};
         sys->diag_decomposed[i] = 0;
     }
 
@@ -274,9 +277,9 @@ hybsol_result_t hybsol_system_create_with_precision(const uint64_t n_blocks,
 }
 
 hybsol_result_t hybsol_system_create(const uint64_t n_blocks, const uint64_t block_sizes[static n_blocks],
-                                     hybsol_system_t **const out)
+                                     hybsol_system_t **const out, const cutl_allocator_t *const allocator)
 {
-    return hybsol_system_create_with_precision(n_blocks, block_sizes, HYBSOL_PRECISION_DOUBLE, out);
+    return hybsol_system_create_with_precision(n_blocks, block_sizes, HYBSOL_PRECISION_DOUBLE, out, allocator);
 }
 
 hybsol_precision_t hybsol_system_precision(const hybsol_system_t *const sys)
@@ -295,31 +298,32 @@ void hybsol_system_destroy(hybsol_system_t *const sys)
             free_row(sys->rows + i);
     }
 
-    hybsol_free(sys->rows);
-    hybsol_free(sys->block_offsets);
-    hybsol_free(sys->diag_decomposed);
-    hybsol_free(sys->ops);
-    hybsol_free(sys);
+    hybsol_free(sys->allocator, sys->rows);
+    hybsol_free(sys->allocator, sys->block_offsets);
+    hybsol_free(sys->allocator, sys->diag_decomposed);
+    hybsol_free(sys->allocator, sys->ops);
+    hybsol_free(sys->allocator, sys);
 }
 
 hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_system_t **const out)
 {
-    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
 
-    hybsol_system_t *const dst = hybsol_alloc(sizeof(*dst));
+    hybsol_system_t *const dst = hybsol_alloc(sys->allocator, sizeof(*dst));
     if (dst == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     *dst = (hybsol_system_t){0};
+    dst->allocator = sys->allocator;
     dst->n = sys->n;
     dst->precision = sys->precision;
     dst->decomposed = sys->decomposed;
     dst->n_ops = sys->n_ops;
     dst->ops_capacity = sys->n_ops;
 
-    dst->block_offsets = hybsol_alloc(sizeof(*dst->block_offsets) * (size_t)(sys->n + 1));
-    dst->rows = hybsol_alloc(sizeof(*dst->rows) * (size_t)sys->n);
-    dst->diag_decomposed = hybsol_alloc(sizeof(*dst->diag_decomposed) * (size_t)sys->n);
+    dst->block_offsets = hybsol_alloc(sys->allocator, sizeof(*dst->block_offsets) * (size_t)(sys->n + 1));
+    dst->rows = hybsol_alloc(sys->allocator, sizeof(*dst->rows) * (size_t)sys->n);
+    dst->diag_decomposed = hybsol_alloc(sys->allocator, sizeof(*dst->diag_decomposed) * (size_t)sys->n);
     if (dst->block_offsets == NULL || dst->rows == NULL || dst->diag_decomposed == NULL)
     {
         hybsol_system_destroy(dst);
@@ -329,7 +333,7 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
     memcpy(dst->block_offsets, sys->block_offsets, sizeof(*dst->block_offsets) * (size_t)(sys->n + 1));
     memcpy(dst->diag_decomposed, sys->diag_decomposed, sizeof(*dst->diag_decomposed) * (size_t)sys->n);
     for (uint64_t i = 0; i < sys->n; ++i)
-        dst->rows[i] = (hybsol_row_t){0};
+        dst->rows[i] = (hybsol_row_t){.allocator = sys->allocator};
 
     for (uint64_t i = 0; i < sys->n; ++i)
     {
@@ -339,7 +343,7 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
         if (src->count == 0)
             continue;
 
-        tgt->entries = hybsol_alloc(sizeof(*tgt->entries) * (size_t)src->count);
+        tgt->entries = hybsol_alloc(sys->allocator, sizeof(*tgt->entries) * (size_t)src->count);
         if (tgt->entries == NULL)
         {
             hybsol_system_destroy(dst);
@@ -355,7 +359,7 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
             const hybsol_row_entry_t *const entry = src->entries[j];
             const uint64_t n_values = hybsol_block_size(sys, i) * hybsol_block_size(sys, entry->col);
 
-            hybsol_row_entry_t *const copy = hybsol_alloc(sizeof(*copy) + (size_t)n_values * elem_size);
+            hybsol_row_entry_t *const copy = hybsol_alloc(sys->allocator, sizeof(*copy) + (size_t)n_values * elem_size);
             if (copy == NULL)
             {
                 hybsol_system_destroy(dst);
@@ -370,7 +374,7 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
 
     if (sys->n_ops > 0)
     {
-        dst->ops = hybsol_alloc(sizeof(*dst->ops) * (size_t)sys->n_ops);
+        dst->ops = hybsol_alloc(sys->allocator, sizeof(*dst->ops) * (size_t)sys->n_ops);
         if (dst->ops == NULL)
         {
             hybsol_system_destroy(dst);
@@ -462,9 +466,9 @@ hybsol_result_t hybsol_system_row_indices(const hybsol_system_t *const sys, cons
     const hybsol_row_t *const r = sys->rows + row;
     if (n_written)
         *n_written = r->count;
-    HYBSOL_ASSERT(out != NULL, "The output array must not be NULL.");
-    HYBSOL_ASSERT(capacity >= r->count, "The destination holds %llu indices, but the row has %llu.",
-                  (unsigned long long)capacity, (unsigned long long)r->count);
+    CUTL_ASSERT(out != NULL, "The output array must not be NULL.");
+    CUTL_ASSERT(capacity >= r->count, "The destination holds %llu indices, but the row has %llu.",
+                (unsigned long long)capacity, (unsigned long long)r->count);
 
     for (uint64_t i = 0; i < r->count; ++i)
         out[i] = r->entries[i]->col;
@@ -585,7 +589,7 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *const sys, const u
 hybsol_result_t hybsol_system_block_storage(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                             hybsol_matrix_t *const out)
 {
-    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_block_storage(sys, row, col, out);
@@ -594,7 +598,7 @@ hybsol_result_t hybsol_system_block_storage(hybsol_system_t *const sys, const ui
 hybsol_result_t hybsol_system_block_storage_f32(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                                 hybsol_fmatrix_t *const out)
 {
-    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_block_storage(sys, row, col, out);
@@ -650,7 +654,7 @@ hybsol_result_t hybsol_system_eliminate_row(hybsol_system_t *const sys, const ui
 
 hybsol_result_t hybsol_system_to_dense(const hybsol_system_t *const sys, double *const out)
 {
-    HYBSOL_ASSERT(out != NULL, "The output buffer must not be NULL.");
+    CUTL_ASSERT(out != NULL, "The output buffer must not be NULL.");
     hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_to_dense(sys, out);
@@ -658,7 +662,7 @@ hybsol_result_t hybsol_system_to_dense(const hybsol_system_t *const sys, double 
 
 hybsol_result_t hybsol_system_to_dense_f32(const hybsol_system_t *const sys, float *const out)
 {
-    HYBSOL_ASSERT(out != NULL, "The output buffer must not be NULL.");
+    CUTL_ASSERT(out != NULL, "The output buffer must not be NULL.");
     hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_to_dense(sys, out);

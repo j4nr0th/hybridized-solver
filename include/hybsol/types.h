@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cutl/allocators.h>
+
 /**
  * Error codes returned by the fallible functions of the hybsol API.
  *
@@ -103,39 +105,15 @@ typedef enum hybsol_precision
 #define HYBSOL_IN(type, name, n) const type name[static n]
 #endif
 
-/**
- * Allocator used by the library.
+/*
+ * Allocations go through a `cutl` allocator, chosen per system rather than
+ * globally: `hybsol_system_create` takes the one to use and the system keeps
+ * it for its whole lifetime. `cutl` ships an arena allocator, a fixed-size
+ * pool, and a validating allocator for tracking bookkeeping separately from
+ * the default, so the spelling is re-exported here rather than duplicated.
  *
- * All three members must be set. The default allocator is plain
- * ``malloc``/``realloc``/``free``.
+ * Pass `&CUTL_STD_ALLOCATOR` for plain `malloc`/`realloc`/`free`.
  */
-typedef struct hybsol_allocator
-{
-    /** Allocate ``size`` bytes, or return ``NULL``. Must not return ``NULL`` for ``size == 0``. */
-    void *(*malloc_fn)(size_t size);
-    /** Grow or shrink a previous allocation; may return ``NULL`` and leave ``ptr`` intact. */
-    void *(*realloc_fn)(void *ptr, size_t size);
-    /** Release memory obtained from ``malloc_fn``/``realloc_fn``. ``NULL`` must be a no-op. */
-    void (*free_fn)(void *ptr);
-} hybsol_allocator_t;
-
-/**
- * Install a custom allocator for all hybsol allocations.
- *
- * This must be called before any system is created, and the allocator must
- * remain valid for as long as any hybsol object is alive. It is not
- * thread-safe with respect to concurrent allocation.
- *
- * :param allocator: The allocator to install, or ``NULL`` to restore the
- *     default ``malloc``-based allocator.
- */
-void hybsol_set_allocator(const hybsol_allocator_t *allocator);
-
-/**
- * Get the allocator currently in use.
- *
- * :returns: A pointer to the active allocator; never ``NULL``.
- */
-const hybsol_allocator_t *hybsol_get_allocator(void);
+typedef cutl_allocator_t hybsol_allocator_t;
 
 #endif /* HYBSOL_TYPES_H */

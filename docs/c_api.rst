@@ -30,21 +30,25 @@ decompose.
 Conditions the caller can be asked to guarantee are *preconditions* instead:
 index ranges, non-``NULL`` output pointers, matching shapes, using the
 precision spelling the system stores, passing a real permutation, a row that
-has its diagonal block. These are checked with ``HYBSOL_ASSERT``, which aborts
-with a diagnostic naming the violated condition, and each function documents
-them with its parameters.
+has its diagonal block. These are checked with cutl's ``CUTL_ASSERT``, which
+aborts with a diagnostic naming the violated condition, and each function
+documents them with its parameters.
 
 The checks are compiled in for Debug builds and for the test suite. Release
-builds leave them off so nothing is paid for at runtime; define
-``HYBSOL_ENABLE_ASSERTS`` when configuring to override either way. Code that
-must not abort — the Python bindings, most obviously — checks the same
-conditions itself and raises instead.
+builds leave them off so nothing is paid for at runtime; set ``CUTL_ASSERTS``
+when configuring to override either way. Code that must not abort — the Python
+bindings, most obviously — checks the same conditions itself and raises instead.
 
-Memory is allocated with ``malloc``/``realloc``/``free`` unless
-:c:func:`hybsol_set_allocator` installs a replacement before the first system
-is created. Indices and counts are ``uint64_t`` throughout, and a system is an
-opaque :c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds
-and :c:func:`hybsol_system_destroy` releases.
+Memory is allocated through a `cutl <https://github.com/j4nr0th/cutl>`_
+allocator, chosen per system rather than globally:
+:c:func:`hybsol_system_create` takes the one to use and the system keeps it
+until :c:func:`hybsol_system_destroy` returns, so systems can use different
+allocators and a bare ``malloc`` pointer may be handed to the library. Pass
+``&CUTL_STD_ALLOCATOR`` for plain ``malloc``/``realloc``/``free``; cutl also
+provides arena, fixed-size-pool and validating allocators. Indices and counts
+are ``uint64_t`` throughout, and a system is an opaque
+:c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds and
+:c:func:`hybsol_system_destroy` releases.
 
 The headers
 -----------

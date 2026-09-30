@@ -114,8 +114,8 @@ static hybsol_result_t compute_ordering_first(const uint64_t n, const hybsol_row
                 goto color_check;
             }
         }
-        HYBSOL_ASSERT(color <= color_count, "Color chosen for row %llu was %llu, which is out of bounds!",
-                      (unsigned long long)i, (unsigned long long)color);
+        CUTL_ASSERT(color <= color_count, "Color chosen for row %llu was %llu, which is out of bounds!",
+                    (unsigned long long)i, (unsigned long long)color);
 
         ordering[i] = color;
         const hybsol_result_t res = update_color_counts(max_colors, &color_count, counts, color);
@@ -160,8 +160,8 @@ static hybsol_result_t compute_ordering_ranked(const uint64_t n, const hybsol_ro
             }
         }
         const uint64_t color = color_order[i_color];
-        HYBSOL_ASSERT(i_color <= color_count, "Color chosen for row %llu was %llu, which is out of bounds!",
-                      (unsigned long long)i, (unsigned long long)color);
+        CUTL_ASSERT(i_color <= color_count, "Color chosen for row %llu was %llu, which is out of bounds!",
+                    (unsigned long long)i, (unsigned long long)color);
 
         const hybsol_result_t res = update_color_counts(max_colors, &color_count, counts, color);
         if (res != HYBSOL_SUCCESS)
@@ -204,14 +204,14 @@ static hybsol_result_t compute_ordering_ranked(const uint64_t n, const hybsol_ro
         }
     }
 
-#if HYBSOL_ENABLE_ASSERTS
+#if CUTL_ENABLE_ASSERTS
     for (uint64_t color = 0; color < color_count; ++color)
     {
         uint64_t counted = 0;
         for (uint64_t i = 0; i < n; ++i)
             counted += (ordering[i] == color);
-        HYBSOL_ASSERT(counted == counts[color], "Color %llu had %llu entries, but counted %llu!",
-                      (unsigned long long)color, (unsigned long long)counts[color], (unsigned long long)counted);
+        CUTL_ASSERT(counted == counts[color], "Color %llu had %llu entries, but counted %llu!",
+                    (unsigned long long)color, (unsigned long long)counts[color], (unsigned long long)counted);
     }
 #endif
 
@@ -223,10 +223,10 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
                                                  const hybsol_ordering_strategy_t strategy, uint64_t max_colors,
                                                  uint64_t *const out_ordering)
 {
-    HYBSOL_ASSERT(out_ordering != NULL, "The output array must not be NULL.");
-    HYBSOL_ASSERT(strategy == HYBSOL_ORDERING_FIRST || strategy == HYBSOL_ORDERING_GREEDY ||
-                      strategy == HYBSOL_ORDERING_BALANCED,
-                  "Strategy must be one of the enumerators, but was %d.", (int)strategy);
+    CUTL_ASSERT(out_ordering != NULL, "The output array must not be NULL.");
+    CUTL_ASSERT(strategy == HYBSOL_ORDERING_FIRST || strategy == HYBSOL_ORDERING_GREEDY ||
+                    strategy == HYBSOL_ORDERING_BALANCED,
+                "Strategy must be one of the enumerators, but was %d.", (int)strategy);
 
     const uint64_t n = sys->n;
     if (n == 0)
@@ -245,7 +245,7 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
             max_colors = 1;
     }
 
-    uint64_t *const color_buffer = hybsol_alloc(sizeof(*color_buffer) * (size_t)max_colors * 2);
+    uint64_t *const color_buffer = hybsol_alloc(sys->allocator, sizeof(*color_buffer) * (size_t)max_colors * 2);
     if (color_buffer == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
@@ -267,7 +267,7 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
         break;
     }
 
-    hybsol_free(color_buffer);
+    hybsol_free(sys->allocator, color_buffer);
     return res;
 }
 
@@ -281,23 +281,23 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     hybsol_result_t res = hybsol_require_mutable(sys);
     if (res != HYBSOL_SUCCESS)
         return res;
-    HYBSOL_ASSERT(new_order != NULL, "The permutation must not be NULL.");
+    CUTL_ASSERT(new_order != NULL, "The permutation must not be NULL.");
 
     const uint64_t n = sys->n;
 
     // The ordering has to be a permutation of [0, n)
-    uint8_t *const seen = hybsol_alloc((size_t)n * sizeof(*seen));
+    uint8_t *const seen = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*seen));
     if (seen == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     memset(seen, 0, (size_t)n * sizeof(*seen));
     for (uint64_t i = 0; i < n; ++i)
     {
-        HYBSOL_ASSERT(new_order[i] < n && !seen[new_order[i]],
-                      "new_order must be a permutation of [0, %llu), but it repeats %llu at position %llu.",
-                      (unsigned long long)n, (unsigned long long)new_order[i], (unsigned long long)i);
+        CUTL_ASSERT(new_order[i] < n && !seen[new_order[i]],
+                    "new_order must be a permutation of [0, %llu), but it repeats %llu at position %llu.",
+                    (unsigned long long)n, (unsigned long long)new_order[i], (unsigned long long)i);
         seen[new_order[i]] = 1;
     }
-    hybsol_free(seen);
+    hybsol_free(sys->allocator, seen);
 
     // A scratch buffer per thread lets every row be re-sorted in parallel
     // without allocating from inside the parallel region.
@@ -309,31 +309,31 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
         max_entries = 1;
 
     const int threads = hybsol_resolve_threads(n_threads);
-    hybsol_row_entry_t ***const scratch = hybsol_alloc((size_t)threads * sizeof(*scratch));
-    hybsol_row_t *const new_rows = hybsol_alloc((size_t)n * sizeof(*new_rows));
-    uint64_t *const new_sizes = hybsol_alloc((size_t)n * sizeof(*new_sizes));
-    uint8_t *const new_flags = hybsol_alloc((size_t)n * sizeof(*new_flags));
+    hybsol_row_entry_t ***const scratch = hybsol_alloc(sys->allocator, (size_t)threads * sizeof(*scratch));
+    hybsol_row_t *const new_rows = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*new_rows));
+    uint64_t *const new_sizes = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*new_sizes));
+    uint8_t *const new_flags = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*new_flags));
     if (scratch == NULL || new_rows == NULL || new_sizes == NULL || new_flags == NULL)
     {
-        hybsol_free(scratch);
-        hybsol_free(new_rows);
-        hybsol_free(new_sizes);
-        hybsol_free(new_flags);
+        hybsol_free(sys->allocator, scratch);
+        hybsol_free(sys->allocator, new_rows);
+        hybsol_free(sys->allocator, new_sizes);
+        hybsol_free(sys->allocator, new_flags);
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     }
     for (int t = 0; t < threads; ++t)
         scratch[t] = NULL;
     for (int t = 0; t < threads; ++t)
     {
-        scratch[t] = hybsol_alloc((size_t)max_entries * sizeof(*scratch[t]));
+        scratch[t] = hybsol_alloc(sys->allocator, (size_t)max_entries * sizeof(*scratch[t]));
         if (scratch[t] == NULL)
         {
             for (int u = 0; u < threads; ++u)
-                hybsol_free(scratch[u]);
-            hybsol_free(scratch);
-            hybsol_free(new_rows);
-            hybsol_free(new_sizes);
-            hybsol_free(new_flags);
+                hybsol_free(sys->allocator, scratch[u]);
+            hybsol_free(sys->allocator, scratch);
+            hybsol_free(sys->allocator, new_rows);
+            hybsol_free(sys->allocator, new_sizes);
+            hybsol_free(sys->allocator, new_flags);
             return HYBSOL_ERROR_OUT_OF_MEMORY;
         }
     }
@@ -368,21 +368,15 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
                         smallest = entry;
                     }
                 }
-                HYBSOL_ASSERT(smallest != NULL, "There should be at least one more in the array.");
+                // Each pass removes exactly one entry from entry_buffer, so with
+                // `inserted` passes done there are `row->count - inserted` left
+                // and the loop stops before the last one. The search below can
+                // therefore not come up empty; stating it lets the optimizer drop
+                // the NULL checks instead of printing from inside the region.
+                CUTL_ASSUME(smallest != NULL);
                 row->entries[inserted] = smallest;
                 inserted += 1;
             }
-
-#if HYBSOL_ENABLE_ASSERTS
-            for (uint64_t j = 1; j < row->count; ++j)
-            {
-                HYBSOL_ASSERT(row->entries[j - 1]->col < row->entries[j]->col,
-                              "Entries should be sorted by column, but in row %llu entries %llu and %llu had column "
-                              "indices %llu and %llu.",
-                              (unsigned long long)idx_row, (unsigned long long)(j - 1), (unsigned long long)j,
-                              (unsigned long long)row->entries[j - 1]->col, (unsigned long long)row->entries[j]->col);
-            }
-#endif
         }
 
         // Move the rows, their diagonal state and their sizes into place
@@ -403,18 +397,36 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
         }
     }
 
+#if CUTL_ENABLE_ASSERTS
+    // Checked serially: CUTL_ASSERT prints to stderr, which a parallel
+    // region declaring `default(none)` may not reference. The rows are final
+    // by now, so this still verifies what the region wrote.
+    for (uint64_t i = 0; i < n; ++i)
+    {
+        const hybsol_row_t *const row = sys->rows + i;
+        for (uint64_t j = 1; j < row->count; ++j)
+        {
+            CUTL_ASSERT(row->entries[j - 1]->col < row->entries[j]->col,
+                        "Entries should be sorted by column, but in row %llu entries %llu and %llu had column indices "
+                        "%llu and %llu.",
+                        (unsigned long long)i, (unsigned long long)(j - 1), (unsigned long long)j,
+                        (unsigned long long)row->entries[j - 1]->col, (unsigned long long)row->entries[j]->col);
+        }
+    }
+#endif
+
     for (int t = 0; t < threads; ++t)
-        hybsol_free(scratch[t]);
-    hybsol_free(scratch);
-    hybsol_free(new_rows);
-    hybsol_free(new_flags);
+        hybsol_free(sys->allocator, scratch[t]);
+    hybsol_free(sys->allocator, scratch);
+    hybsol_free(sys->allocator, new_rows);
+    hybsol_free(sys->allocator, new_flags);
 
     // Turn the shuffled sizes back into offsets
     sys->block_offsets[0] = 0;
     for (uint64_t i = 0; i < n; ++i)
         sys->block_offsets[i + 1] = sys->block_offsets[i] + new_sizes[i];
 
-    hybsol_free(new_sizes);
+    hybsol_free(sys->allocator, new_sizes);
     return HYBSOL_SUCCESS;
 }
 
@@ -425,7 +437,7 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
 void hybsol_system_reorder_vector(const hybsol_system_t *const sys, const uint64_t *const new_order,
                                   const double *const in, double *const out)
 {
-    HYBSOL_ASSERT(new_order != NULL && in != NULL && out != NULL, "The permutation and both vectors must not be NULL.");
+    CUTL_ASSERT(new_order != NULL && in != NULL && out != NULL, "The permutation and both vectors must not be NULL.");
 
     uint64_t offset = 0;
     for (uint64_t i_block = 0; i_block < sys->n; ++i_block)
@@ -442,7 +454,7 @@ void hybsol_system_reorder_vector(const hybsol_system_t *const sys, const uint64
 void hybsol_system_unorder_vector(const hybsol_system_t *const sys, const uint64_t *const new_order,
                                   const double *const in, double *const out)
 {
-    HYBSOL_ASSERT(new_order != NULL && in != NULL && out != NULL, "The permutation and both vectors must not be NULL.");
+    CUTL_ASSERT(new_order != NULL && in != NULL && out != NULL, "The permutation and both vectors must not be NULL.");
 
     uint64_t offset = 0;
     for (uint64_t i_block = 0; i_block < sys->n; ++i_block)

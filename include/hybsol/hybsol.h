@@ -23,9 +23,9 @@
  *    states.
  *
  *    Callers that must not abort — the Python bindings, most obviously —
- *    check these conditions themselves and raise instead. Define
- *    ``HYBSOL_ENABLE_ASSERTS`` when building the core to enable the checks;
- *    see the build options for the default.
+ *    check these conditions themselves and raise instead. Preconditions are
+ *    checked with cutl's ``CUTL_ASSERT``; set ``CUTL_ASSERTS`` when building
+ *    the core to enable the checks, see the build options for the default.
  */
 
 #ifndef HYBSOL_HYBSOL_H

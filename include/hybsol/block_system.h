@@ -35,11 +35,15 @@ typedef struct hybsol_system hybsol_system_t;
  * :param n_blocks: Number of blocks per dimension; asserted at least 1.
  * :param block_sizes: Array of ``n_blocks`` sizes; asserted non-zero.
  * :param out: Receives the new system. Must not be ``NULL``.
+ * :param allocator: Allocator every allocation of this system goes through.
+ *     Must not be ``NULL``; pass ``&CUTL_STD_ALLOCATOR`` for plain
+ *     ``malloc``/``realloc``/``free``. The allocator must stay valid until
+ *     :c:func:`hybsol_system_destroy` returns.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_create(uint64_t n_blocks, HYBSOL_IN(uint64_t, block_sizes, n_blocks),
-                                     hybsol_system_t **out);
+                                     hybsol_system_t **out, const hybsol_allocator_t *allocator);
 
 /**
  * Create an empty system that stores its blocks in a chosen type.
@@ -65,11 +69,16 @@ hybsol_result_t hybsol_system_create(uint64_t n_blocks, HYBSOL_IN(uint64_t, bloc
  * :param block_sizes: Array of ``n_blocks`` sizes; asserted non-zero.
  * :param precision: Storage type, asserted one of :c:type:`hybsol_precision_t`.
  * :param out: Receives the new system. Must not be ``NULL``.
+ * :param allocator: Allocator every allocation of this system goes through.
+ *     Must not be ``NULL``; pass ``&CUTL_STD_ALLOCATOR`` for plain
+ *     ``malloc``/``realloc``/``free``. The allocator must stay valid until
+ *     :c:func:`hybsol_system_destroy` returns.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_create_with_precision(uint64_t n_blocks, HYBSOL_IN(uint64_t, block_sizes, n_blocks),
-                                                    hybsol_precision_t precision, hybsol_system_t **out);
+                                                    hybsol_precision_t precision, hybsol_system_t **out,
+                                                    const hybsol_allocator_t *allocator);
 
 /**
  * Report how a system stores its blocks.

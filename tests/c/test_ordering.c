@@ -55,7 +55,7 @@ static void build_random_system(rng_t *const r, random_system_t *const s)
     s->dim = offsets[s->n_blocks];
 
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(s->n_blocks, sizes, &sys));
+    CHECK_OK(hybsol_system_create(s->n_blocks, sizes, &sys, &CUTL_STD_ALLOCATOR));
     s->sys = sys;
 
     double block[16];
@@ -349,7 +349,7 @@ static void test_reorder_and_vector_shuffle(void)
     // bounded coloring can actually fail.
     const uint64_t sizes[] = {1, 1};
     hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
 
     double one[1] = {1.0}, two[1] = {2.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 1, 1, one));
