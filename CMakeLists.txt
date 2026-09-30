@@ -14,6 +14,20 @@ option(HYBSOL_ENABLE_OPENMP "Build the core with OpenMP support." ON)
 option(HYBSOL_BUILD_PYTHON "Build the Python bindings." ON)
 option(HYBSOL_BUILD_TESTS "Build the native test suite." OFF)
 
+# Preconditions are checked with HYBSOL_ASSERT, which compiles away entirely
+# unless this is on. Debug builds and the test suite turn it on so a violated
+# precondition aborts with a message instead of running into undefined
+# behaviour. For Release the choice is left to whoever consumes the core via
+# add_subdirectory(): define HYBSOL_ENABLE_ASSERTS yourself to keep the checks.
+if (NOT DEFINED HYBSOL_ENABLE_ASSERTS)
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug" OR HYBSOL_BUILD_TESTS)
+        set(HYBSOL_ENABLE_ASSERTS ON)
+    else ()
+        set(HYBSOL_ENABLE_ASSERTS OFF)
+    endif ()
+endif ()
+message(STATUS "hybsol precondition asserts: ${HYBSOL_ENABLE_ASSERTS}")
+
 if (HYBSOL_ENABLE_OPENMP)
     find_package(OpenMP COMPONENTS C)
     if (NOT OpenMP_C_FOUND)
@@ -34,6 +48,8 @@ add_library(hybsol_core STATIC
 add_library(hybsol::hybsol ALIAS hybsol_core)
 
 target_compile_features(hybsol_core PUBLIC c_std_17)
+
+target_compile_definitions(hybsol_core PUBLIC HYBSOL_ENABLE_ASSERTS=$<BOOL:${HYBSOL_ENABLE_ASSERTS}>)
 target_include_directories(hybsol_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")

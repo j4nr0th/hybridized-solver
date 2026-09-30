@@ -79,10 +79,9 @@ void hybsol_matrix_subtract_inplace(const hybsol_matrix_t *a, const hybsol_matri
  *    :c:enumerator:`HYBSOL_ERROR_SINGULAR`; matrices that are merely
  *    ill-conditioned are *not* detected and will produce inaccurate results.
  *
- * :param m: Square matrix to factor in place.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`, :c:enumerator:`HYBSOL_ERROR_SINGULAR`
- *     if a zero pivot was encountered, or :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`
- *     if the matrix is not square.
+ * :param m: Square matrix to factor in place. Asserted square.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
+ *     :c:enumerator:`HYBSOL_ERROR_SINGULAR` if a zero pivot was encountered.
  */
 hybsol_result_t hybsol_matrix_lu_decompose(const hybsol_matrix_t *m);
 
@@ -90,11 +89,10 @@ hybsol_result_t hybsol_matrix_lu_decompose(const hybsol_matrix_t *m);
  * Solve ``m @ x = b`` using a factorization produced by
  * :c:func:`hybsol_matrix_lu_decompose`.
  *
- * :param m: The LU factors; square.
+ * :param m: The LU factors; asserted square.
  * :param b: Right-hand side with ``m->rows`` rows.
  * :param out: Destination for ``x`` with the same shape as ``b``. May alias ``b``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`
- *     for incompatible shapes.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_matrix_lu_solve(const hybsol_matrix_t *m, const hybsol_matrix_t *b, const hybsol_matrix_t *out);
 
@@ -164,10 +162,9 @@ void hybsol_fmatrix_subtract_inplace(const hybsol_fmatrix_t *a, const hybsol_fma
  * :c:func:`hybsol_matrix_lu_decompose` — with ``float`` pivots, so a matrix
  * that survives the double spelling can still come out singular here.
  *
- * :param m: Square matrix to factor in place.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`, :c:enumerator:`HYBSOL_ERROR_SINGULAR`
- *     if a zero pivot was encountered, or :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`
- *     if the matrix is not square.
+ * :param m: Square matrix to factor in place. Asserted square.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
+ *     :c:enumerator:`HYBSOL_ERROR_SINGULAR` if a zero pivot was encountered.
  */
 hybsol_result_t hybsol_fmatrix_lu_decompose(const hybsol_fmatrix_t *m);
 
@@ -175,11 +172,10 @@ hybsol_result_t hybsol_fmatrix_lu_decompose(const hybsol_fmatrix_t *m);
  * Solve ``m @ x = b`` using a factorization produced by
  * :c:func:`hybsol_fmatrix_lu_decompose`.
  *
- * :param m: The LU factors; square.
+ * :param m: The LU factors; asserted square.
  * :param b: Right-hand side with ``m->rows`` rows.
  * :param out: Destination for ``x`` with the same shape as ``b``. May alias ``b``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`
- *     for incompatible shapes.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_fmatrix_lu_solve(const hybsol_fmatrix_t *m, const hybsol_fmatrix_t *b,
                                         const hybsol_fmatrix_t *out);

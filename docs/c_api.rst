@@ -23,6 +23,23 @@ Conventions
 
 Fallible functions return a result code instead of setting ``errno``;
 :c:func:`hybsol_result_str` turns a code into a short, stable description.
+Those codes cover conditions that are outcomes of the data rather than
+mistakes — allocation failure, a singular matrix, a system that does not
+decompose.
+
+Conditions the caller can be asked to guarantee are *preconditions* instead:
+index ranges, non-``NULL`` output pointers, matching shapes, using the
+precision spelling the system stores, passing a real permutation, a row that
+has its diagonal block. These are checked with ``HYBSOL_ASSERT``, which aborts
+with a diagnostic naming the violated condition, and each function documents
+them with its parameters.
+
+The checks are compiled in for Debug builds and for the test suite. Release
+builds leave them off so nothing is paid for at runtime; define
+``HYBSOL_ENABLE_ASSERTS`` when configuring to override either way. Code that
+must not abort — the Python bindings, most obviously — checks the same
+conditions itself and raises instead.
+
 Memory is allocated with ``malloc``/``realloc``/``free`` unless
 :c:func:`hybsol_set_allocator` installs a replacement before the first system
 is created. Indices and counts are ``uint64_t`` throughout, and a system is an

@@ -23,8 +23,8 @@
  * inclusion is well defined.
  */
 
-static hybsol_result_t HYBSOL_FN(row_insert_block)(hybsol_row_t *const row, const uint64_t col,
-                                                   const uint64_t n_values, const HYBSOL_SCALAR *const vals)
+static hybsol_result_t HYBSOL_FN(row_insert_block)(hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
+                                                   const HYBSOL_SCALAR *const vals)
 {
     const uint64_t idx = hybsol_row_find_geq(row, col);
     if (idx < row->count && row->entries[idx]->col == col)
@@ -53,21 +53,19 @@ static hybsol_result_t HYBSOL_FN(add_block)(hybsol_system_t *const sys, const ui
                                             const uint64_t n_rows, const uint64_t n_cols,
                                             const HYBSOL_SCALAR *const vals)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-    res = hybsol_check_index(sys, col);
+    hybsol_require_index(sys, row);
+    hybsol_require_index(sys, col);
+
+    hybsol_result_t res = hybsol_require_mutable(sys);
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    if (n_rows != hybsol_block_size(sys, row) || n_cols != hybsol_block_size(sys, col))
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (vals == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(n_rows == hybsol_block_size(sys, row) && n_cols == hybsol_block_size(sys, col),
+                  "Block (%llu, %llu) is %llu x %llu in the system, but %llu x %llu was given.",
+                  (unsigned long long)row, (unsigned long long)col, (unsigned long long)hybsol_block_size(sys, row),
+                  (unsigned long long)hybsol_block_size(sys, col), (unsigned long long)n_rows,
+                  (unsigned long long)n_cols);
+    HYBSOL_ASSERT(vals != NULL, "The block values must not be NULL.");
 
     res = HYBSOL_FN(row_insert_block)(sys->rows + row, col, n_rows * n_cols, vals);
     if (res != HYBSOL_SUCCESS)
@@ -86,8 +84,7 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
 {
     if (n_entries == 0)
         return HYBSOL_SUCCESS;
-    if (data == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(data != NULL, "The block values must not be NULL.");
 
     hybsol_result_t res = hybsol_require_mutable(sys);
     if (res != HYBSOL_SUCCESS)
@@ -95,12 +92,8 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
 
     for (uint64_t k = 0; k < n_entries; ++k)
     {
-        res = hybsol_check_index(sys, rows[k]);
-        if (res != HYBSOL_SUCCESS)
-            return res;
-        res = hybsol_check_index(sys, cols[k]);
-        if (res != HYBSOL_SUCCESS)
-            return res;
+        hybsol_require_index(sys, rows[k]);
+        hybsol_require_index(sys, cols[k]);
     }
 
     // Count how many blocks each row is about to receive so that every row
@@ -144,14 +137,10 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
 static hybsol_result_t HYBSOL_FN(block_storage)(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                                 HYBSOL_VIEW *const out)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-    res = hybsol_check_index(sys, col);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, row);
+    hybsol_require_index(sys, col);
 
-    res = hybsol_require_mutable(sys);
+    hybsol_result_t res = hybsol_require_mutable(sys);
     if (res != HYBSOL_SUCCESS)
         return res;
 
@@ -171,29 +160,30 @@ static hybsol_result_t HYBSOL_FN(block_storage)(hybsol_system_t *const sys, cons
     return HYBSOL_SUCCESS;
 }
 
-static hybsol_result_t HYBSOL_FN(lookup_block)(const hybsol_system_t *const sys, const uint64_t row,
-                                               const uint64_t col, HYBSOL_VIEW *const out)
+static void HYBSOL_FN(lookup_block)(const hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
+                                    HYBSOL_VIEW *const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (row >= sys->n || col >= sys->n)
-        return HYBSOL_ERROR_INDEX_OUT_OF_RANGE;
+    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    hybsol_require_index(sys, row);
+    hybsol_require_index(sys, col);
 
     uint64_t idx;
-    if (!hybsol_row_find(sys->rows + row, col, &idx))
-        return HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM;
+    HYBSOL_ASSERT(hybsol_row_find(sys->rows + row, col, &idx), "The system does not contain the block (%llu, %llu).",
+                  (unsigned long long)row, (unsigned long long)col);
 
     *out = HYBSOL_KERNEL(view)(hybsol_block_size(sys, row), hybsol_block_size(sys, col),
                                (HYBSOL_SCALAR *)sys->rows[row].entries[idx]->vals);
-    return HYBSOL_SUCCESS;
 }
 
-static hybsol_result_t HYBSOL_FN(multiply_row)(hybsol_system_t *const sys, const uint64_t row,
-                                               const uint64_t start_col, const HYBSOL_VIEW *const mat)
+static hybsol_result_t HYBSOL_FN(multiply_row)(hybsol_system_t *const sys, const uint64_t row, const uint64_t start_col,
+                                               const HYBSOL_VIEW *const mat)
 {
     const uint64_t n_rows = hybsol_block_size(sys, row);
-    if (mat == NULL || mat->rows != mat->cols || mat->rows != n_rows)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(mat != NULL, "The multiplier matrix must not be NULL.");
+    HYBSOL_ASSERT(mat->rows == mat->cols && mat->rows == n_rows,
+                  "The multiplier must be %llu x %llu to match block row %llu, but was %llu x %llu.",
+                  (unsigned long long)n_rows, (unsigned long long)n_rows, (unsigned long long)row,
+                  (unsigned long long)mat->rows, (unsigned long long)mat->cols);
 
     hybsol_row_t *const r = sys->rows + row;
 
@@ -220,8 +210,8 @@ static hybsol_result_t HYBSOL_FN(multiply_row)(hybsol_system_t *const sys, const
         if (entry->col < start_col)
             continue;
 
-        const HYBSOL_VIEW block = HYBSOL_KERNEL(view)(n_rows, hybsol_block_size(sys, entry->col),
-                                                      (HYBSOL_SCALAR *)entry->vals);
+        const HYBSOL_VIEW block =
+            HYBSOL_KERNEL(view)(n_rows, hybsol_block_size(sys, entry->col), (HYBSOL_SCALAR *)entry->vals);
         const HYBSOL_VIEW out = HYBSOL_KERNEL(view)(block.rows, block.cols, buffer);
 
         HYBSOL_KERNEL(multiply)(mat, &block, &out);
@@ -238,8 +228,10 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
 {
     const uint64_t size_tgt = hybsol_block_size(sys, row_tgt);
     const uint64_t size_src = hybsol_block_size(sys, row_src);
-    if (mat == NULL || mat->rows != size_tgt || mat->cols != size_src)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(mat != NULL, "The multiplier matrix must not be NULL.");
+    HYBSOL_ASSERT(mat->rows == size_tgt && mat->cols == size_src,
+                  "The multiplier must be %llu x %llu, but was %llu x %llu.", (unsigned long long)size_tgt,
+                  (unsigned long long)size_src, (unsigned long long)mat->rows, (unsigned long long)mat->cols);
 
     hybsol_row_t *const row_t = sys->rows + row_tgt;
     const hybsol_row_t *const row_s = sys->rows + row_src;
@@ -279,8 +271,9 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
             max_cols = block_size;
     }
 
-    if (row_t->entries[pos_tgt - 1]->col != row_src && row_s->entries[pos_src - 1]->col != row_src)
-        return HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM;
+    HYBSOL_ASSERT(row_t->entries[pos_tgt - 1]->col == row_src || row_s->entries[pos_src - 1]->col == row_src,
+                  "Neither row contains column %llu, so there is nothing to eliminate with.",
+                  (unsigned long long)row_src);
 
     const uint64_t needed_size = unique_cols + pos_tgt;
 
@@ -386,19 +379,13 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
 static hybsol_result_t HYBSOL_FN(eliminate_row)(hybsol_system_t *const sys, const uint64_t row_tgt,
                                                 const uint64_t row_src)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row_tgt);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-    res = hybsol_check_index(sys, row_src);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, row_tgt);
+    hybsol_require_index(sys, row_src);
 
     // The multiplier is the block the system already stores, so this spelling
     // needs no operand of its own and works for either precision.
     HYBSOL_VIEW mat;
-    res = HYBSOL_FN(lookup_block)(sys, row_tgt, row_src, &mat);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    HYBSOL_FN(lookup_block)(sys, row_tgt, row_src, &mat);
 
     return HYBSOL_FN(eliminate_row_with)(sys, row_tgt, row_src, &mat);
 }

@@ -343,7 +343,7 @@ static void test_reordered_system_solves_consistently(void)
     }
 }
 
-static void test_reorder_rejects_non_permutations(void)
+static void test_reorder_and_vector_shuffle(void)
 {
     // Two coupled blocks need two colors, which makes this a system where a
     // bounded coloring can actually fail.
@@ -364,9 +364,6 @@ static void test_reorder_rejects_non_permutations(void)
     CHECK_OK(hybsol_system_compute_reordering(sys, HYBSOL_ORDERING_FIRST, 2, order));
     CHECK_RESULT(hybsol_system_compute_reordering(sys, HYBSOL_ORDERING_FIRST, 1, order), HYBSOL_ERROR_MAX_COLORS);
 
-    const uint64_t duplicate[] = {0, 0};
-    CHECK_RESULT(hybsol_system_reorder_blocks(sys, duplicate, 1), HYBSOL_ERROR_INVALID_ARGUMENT);
-
     hybsol_system_reorder_vector(sys, order, vector, out);
     CHECK(out[0] == 1.0 && out[1] == 2.0);
 
@@ -379,6 +376,6 @@ int main(void)
     test_coloring_property();
     test_reorder_roundtrip();
     test_reordered_system_solves_consistently();
-    test_reorder_rejects_non_permutations();
+    test_reorder_and_vector_shuffle();
     return test_report("test_ordering");
 }

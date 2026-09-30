@@ -92,8 +92,8 @@ void HYBSOL_FN(subtract_inplace)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *
 
 hybsol_result_t HYBSOL_FN(lu_decompose)(const HYBSOL_VIEW *const m)
 {
-    if (m->rows != m->cols)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
+                  (unsigned long long)m->rows, (unsigned long long)m->cols);
 
     for (uint64_t i = 0; i < m->rows; ++i)
     {
@@ -128,12 +128,17 @@ hybsol_result_t HYBSOL_FN(lu_decompose)(const HYBSOL_VIEW *const m)
     return HYBSOL_SUCCESS;
 }
 
-hybsol_result_t HYBSOL_FN(lu_solve)(const HYBSOL_VIEW *const m, const HYBSOL_VIEW *const b, const HYBSOL_VIEW *const out)
+hybsol_result_t HYBSOL_FN(lu_solve)(const HYBSOL_VIEW *const m, const HYBSOL_VIEW *const b,
+                                    const HYBSOL_VIEW *const out)
 {
-    if (m->rows != m->cols || m->rows != b->rows)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (b->rows != out->rows || b->cols != out->cols)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(m->rows == m->cols, "LU needs a square matrix, but this one is %llu x %llu.",
+                  (unsigned long long)m->rows, (unsigned long long)m->cols);
+    HYBSOL_ASSERT(m->rows == b->rows, "The right-hand side has %llu rows, but the factors have %llu.",
+                  (unsigned long long)b->rows, (unsigned long long)m->rows);
+    HYBSOL_ASSERT(b->rows == out->rows && b->cols == out->cols,
+                  "The destination is %llu x %llu, but the right-hand side is %llu x %llu.",
+                  (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
+                  (unsigned long long)b->cols);
 
     // Have to deal with every column in the same way
     for (uint64_t i_col = 0; i_col < b->cols; ++i_col)

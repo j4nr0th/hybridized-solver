@@ -101,11 +101,6 @@ hybsol_result_t hybsol_require_mutable(const hybsol_system_t *const sys)
     return sys->decomposed ? HYBSOL_ERROR_ALREADY_DECOMPOSED : HYBSOL_SUCCESS;
 }
 
-hybsol_result_t hybsol_check_index(const hybsol_system_t *const sys, const uint64_t idx)
-{
-    return idx < sys->n ? HYBSOL_SUCCESS : HYBSOL_ERROR_INDEX_OUT_OF_RANGE;
-}
-
 void hybsol_invalidate_diagonal(hybsol_system_t *const sys, const uint64_t idx)
 {
     if (idx < sys->n)
@@ -234,21 +229,21 @@ hybsol_result_t hybsol_system_create_with_precision(const uint64_t n_blocks,
                                                     const uint64_t block_sizes[static n_blocks],
                                                     const hybsol_precision_t precision, hybsol_system_t **const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    *out = NULL;
-    if (n_blocks == 0)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (precision != HYBSOL_PRECISION_DOUBLE && precision != HYBSOL_PRECISION_SINGLE)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    HYBSOL_ASSERT(n_blocks >= 1, "A system needs at least one block, but %llu were requested.",
+                  (unsigned long long)n_blocks);
+    HYBSOL_ASSERT(precision == HYBSOL_PRECISION_DOUBLE || precision == HYBSOL_PRECISION_SINGLE,
+                  "Precision must be one of the enumerators, but was %d.", (int)precision);
 
     // The sizes are validated up front so that no failure path can run on a
     // partially initialised system.
     for (uint64_t i = 0; i < n_blocks; ++i)
     {
-        if (block_sizes[i] == 0)
-            return HYBSOL_ERROR_INVALID_ARGUMENT;
+        HYBSOL_ASSERT(block_sizes[i] > 0, "Block %llu has size 0; every block must be non-empty.",
+                      (unsigned long long)i);
     }
+
+    *out = NULL;
 
     hybsol_system_t *const sys = hybsol_alloc(sizeof(*sys));
     if (sys == NULL)
@@ -309,8 +304,7 @@ void hybsol_system_destroy(hybsol_system_t *const sys)
 
 hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_system_t **const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
 
     hybsol_system_t *const dst = hybsol_alloc(sizeof(*dst));
@@ -463,15 +457,14 @@ uint64_t hybsol_system_row_count(const hybsol_system_t *const sys, const uint64_
 hybsol_result_t hybsol_system_row_indices(const hybsol_system_t *const sys, const uint64_t row, uint64_t *const out,
                                           const uint64_t capacity, uint64_t *const n_written)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, row);
 
     const hybsol_row_t *const r = sys->rows + row;
     if (n_written)
         *n_written = r->count;
-    if (out == NULL || capacity < r->count)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output array must not be NULL.");
+    HYBSOL_ASSERT(capacity >= r->count, "The destination holds %llu indices, but the row has %llu.",
+                  (unsigned long long)capacity, (unsigned long long)r->count);
 
     for (uint64_t i = 0; i < r->count; ++i)
         out[i] = r->entries[i]->col;
@@ -489,26 +482,24 @@ int hybsol_system_has_block(const hybsol_system_t *const sys, const uint64_t row
 hybsol_result_t hybsol_system_get_block(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                         hybsol_matrix_t *const out)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
-    return hybsol_f64_lookup_block(sys, row, col, out);
+    hybsol_f64_lookup_block(sys, row, col, out);
+    return HYBSOL_SUCCESS;
 }
 
 hybsol_result_t hybsol_system_get_block_f32(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                             hybsol_fmatrix_t *const out)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
-    return hybsol_f32_lookup_block(sys, row, col, out);
+    hybsol_f32_lookup_block(sys, row, col, out);
+    return HYBSOL_SUCCESS;
 }
 
 hybsol_result_t hybsol_system_first_column(const hybsol_system_t *const sys, const uint64_t row, uint64_t *const out)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, row);
 
     const hybsol_row_t *const r = sys->rows + row;
     if (r->count == 0)
@@ -522,9 +513,7 @@ hybsol_result_t hybsol_system_first_column(const hybsol_system_t *const sys, con
 hybsol_result_t hybsol_system_next_column(const hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                           uint64_t *const out)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, row);
 
     const hybsol_row_t *const r = sys->rows + row;
     if (r->count == 0)
@@ -550,11 +539,9 @@ void hybsol_system_no_lower_connections(const hybsol_system_t *const sys, uint8_
 
 hybsol_result_t hybsol_system_reserve(hybsol_system_t *const sys, const uint64_t row, const uint64_t capacity)
 {
-    hybsol_result_t res = hybsol_check_index(sys, row);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, row);
 
-    res = hybsol_require_mutable(sys);
+    const hybsol_result_t res = hybsol_require_mutable(sys);
     if (res != HYBSOL_SUCCESS)
         return res;
 
@@ -564,8 +551,7 @@ hybsol_result_t hybsol_system_reserve(hybsol_system_t *const sys, const uint64_t
 hybsol_result_t hybsol_system_add_block(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                         const uint64_t n_rows, const uint64_t n_cols, const double *const vals)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_add_block(sys, row, col, n_rows, n_cols, vals);
 }
@@ -573,8 +559,7 @@ hybsol_result_t hybsol_system_add_block(hybsol_system_t *const sys, const uint64
 hybsol_result_t hybsol_system_add_block_f32(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                             const uint64_t n_rows, const uint64_t n_cols, const float *const vals)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_add_block(sys, row, col, n_rows, n_cols, vals);
 }
@@ -583,8 +568,7 @@ hybsol_result_t hybsol_system_add_blocks(hybsol_system_t *const sys, const uint6
                                          const uint64_t rows[static n_entries], const uint64_t cols[static n_entries],
                                          const double *const data)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_add_blocks(sys, n_entries, rows, cols, data);
 }
@@ -593,8 +577,7 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *const sys, const u
                                              const uint64_t rows[static n_entries],
                                              const uint64_t cols[static n_entries], const float *const data)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_add_blocks(sys, n_entries, rows, cols, data);
 }
@@ -602,10 +585,8 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *const sys, const u
 hybsol_result_t hybsol_system_block_storage(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                             hybsol_matrix_t *const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_block_storage(sys, row, col, out);
 }
@@ -613,10 +594,8 @@ hybsol_result_t hybsol_system_block_storage(hybsol_system_t *const sys, const ui
 hybsol_result_t hybsol_system_block_storage_f32(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
                                                 hybsol_fmatrix_t *const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_block_storage(sys, row, col, out);
 }
@@ -628,8 +607,7 @@ hybsol_result_t hybsol_system_block_storage_f32(hybsol_system_t *const sys, cons
 hybsol_result_t hybsol_system_multiply_row(hybsol_system_t *const sys, const uint64_t row, const uint64_t start_col,
                                            const hybsol_matrix_t *const mat)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_multiply_row(sys, row, start_col, mat);
 }
@@ -637,8 +615,7 @@ hybsol_result_t hybsol_system_multiply_row(hybsol_system_t *const sys, const uin
 hybsol_result_t hybsol_system_multiply_row_f32(hybsol_system_t *const sys, const uint64_t row, const uint64_t start_col,
                                                const hybsol_fmatrix_t *const mat)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_multiply_row(sys, row, start_col, mat);
 }
@@ -646,8 +623,7 @@ hybsol_result_t hybsol_system_multiply_row_f32(hybsol_system_t *const sys, const
 hybsol_result_t hybsol_system_eliminate_row_with(hybsol_system_t *const sys, const uint64_t row_tgt,
                                                  const uint64_t row_src, const hybsol_matrix_t *const mat)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_eliminate_row_with(sys, row_tgt, row_src, mat);
 }
@@ -655,8 +631,7 @@ hybsol_result_t hybsol_system_eliminate_row_with(hybsol_system_t *const sys, con
 hybsol_result_t hybsol_system_eliminate_row_with_f32(hybsol_system_t *const sys, const uint64_t row_tgt,
                                                      const uint64_t row_src, const hybsol_fmatrix_t *const mat)
 {
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_eliminate_row_with(sys, row_tgt, row_src, mat);
 }
@@ -675,20 +650,16 @@ hybsol_result_t hybsol_system_eliminate_row(hybsol_system_t *const sys, const ui
 
 hybsol_result_t hybsol_system_to_dense(const hybsol_system_t *const sys, double *const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output buffer must not be NULL.");
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_to_dense(sys, out);
 }
 
 hybsol_result_t hybsol_system_to_dense_f32(const hybsol_system_t *const sys, float *const out)
 {
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out != NULL, "The output buffer must not be NULL.");
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_to_dense(sys, out);
 }

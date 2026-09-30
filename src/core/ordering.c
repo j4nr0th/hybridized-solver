@@ -223,8 +223,10 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
                                                  const hybsol_ordering_strategy_t strategy, uint64_t max_colors,
                                                  uint64_t *const out_ordering)
 {
-    if (out_ordering == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(out_ordering != NULL, "The output array must not be NULL.");
+    HYBSOL_ASSERT(strategy == HYBSOL_ORDERING_FIRST || strategy == HYBSOL_ORDERING_GREEDY ||
+                      strategy == HYBSOL_ORDERING_BALANCED,
+                  "Strategy must be one of the enumerators, but was %d.", (int)strategy);
 
     const uint64_t n = sys->n;
     if (n == 0)
@@ -260,7 +262,8 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
         res = compute_ordering_ranked(n, sys->rows, out_ordering, max_colors, color_buffer, 0);
         break;
     default:
-        res = HYBSOL_ERROR_INVALID_ARGUMENT;
+        // Unreachable: `strategy` is asserted to be an enumerator above.
+        res = HYBSOL_ERROR_INTERNAL;
         break;
     }
 
@@ -278,8 +281,7 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     hybsol_result_t res = hybsol_require_mutable(sys);
     if (res != HYBSOL_SUCCESS)
         return res;
-    if (new_order == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(new_order != NULL, "The permutation must not be NULL.");
 
     const uint64_t n = sys->n;
 
@@ -290,11 +292,9 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     memset(seen, 0, (size_t)n * sizeof(*seen));
     for (uint64_t i = 0; i < n; ++i)
     {
-        if (new_order[i] >= n || seen[new_order[i]])
-        {
-            hybsol_free(seen);
-            return HYBSOL_ERROR_INVALID_ARGUMENT;
-        }
+        HYBSOL_ASSERT(new_order[i] < n && !seen[new_order[i]],
+                      "new_order must be a permutation of [0, %llu), but it repeats %llu at position %llu.",
+                      (unsigned long long)n, (unsigned long long)new_order[i], (unsigned long long)i);
         seen[new_order[i]] = 1;
     }
     hybsol_free(seen);
@@ -425,6 +425,8 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
 void hybsol_system_reorder_vector(const hybsol_system_t *const sys, const uint64_t *const new_order,
                                   const double *const in, double *const out)
 {
+    HYBSOL_ASSERT(new_order != NULL && in != NULL && out != NULL, "The permutation and both vectors must not be NULL.");
+
     uint64_t offset = 0;
     for (uint64_t i_block = 0; i_block < sys->n; ++i_block)
     {
@@ -440,6 +442,8 @@ void hybsol_system_reorder_vector(const hybsol_system_t *const sys, const uint64
 void hybsol_system_unorder_vector(const hybsol_system_t *const sys, const uint64_t *const new_order,
                                   const double *const in, double *const out)
 {
+    HYBSOL_ASSERT(new_order != NULL && in != NULL && out != NULL, "The permutation and both vectors must not be NULL.");
+
     uint64_t offset = 0;
     for (uint64_t i_block = 0; i_block < sys->n; ++i_block)
     {

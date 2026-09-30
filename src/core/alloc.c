@@ -13,14 +13,6 @@ const char *hybsol_result_str(const hybsol_result_t result)
         return "success";
     case HYBSOL_ERROR_OUT_OF_MEMORY:
         return "out of memory";
-    case HYBSOL_ERROR_INVALID_ARGUMENT:
-        return "invalid argument";
-    case HYBSOL_ERROR_INDEX_OUT_OF_RANGE:
-        return "index out of range";
-    case HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM:
-        return "block not in system";
-    case HYBSOL_ERROR_MISSING_DIAGONAL:
-        return "row has no diagonal block";
     case HYBSOL_ERROR_EMPTY_ROW:
         return "row has no entries";
     case HYBSOL_ERROR_NO_MORE_COLUMNS:

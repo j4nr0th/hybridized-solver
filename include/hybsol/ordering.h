@@ -29,19 +29,18 @@ typedef enum hybsol_ordering_strategy
  * Compute a coloring-based reordering of the blocks.
  *
  * :param sys: The system to analyze; it is not modified.
- * :param strategy: Which coloring strategy to use.
+ * :param strategy: Which coloring strategy; asserted one of
+ *     :c:type:`hybsol_ordering_strategy_t`.
  * :param max_colors: Upper bound on the number of colors, or ``0`` to let
  *     the library pick one (the number of blocks in the densest row, which
  *     is always sufficient).
  * :param out_ordering: Destination for ``n_blocks`` entries. Entry ``i``
  *     holds the new index of old block ``i``; the result is always a
- *     permutation of ``[0, n_blocks)``.
+ *     permutation of ``[0, n_blocks)``. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` if a valid ordering was written,
  *     :c:enumerator:`HYBSOL_ERROR_MAX_COLORS` if ``max_colors`` was too
- *     small (``out_ordering`` is then left unspecified),
- *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` or
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` if ``out_ordering`` is
- *     too small because ``max_colors`` was ``0`` on an empty system.
+ *     small (``out_ordering`` is then left unspecified), or
+ *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *sys, hybsol_ordering_strategy_t strategy,
                                                  uint64_t max_colors, uint64_t *out_ordering);
@@ -54,12 +53,12 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *sys, hyb
  * stays structurally identical up to the relabelling.
  *
  * :param sys: The system to reorder.
- * :param new_order: ``n_blocks`` entries forming a permutation; entry ``i``
- *     is the new index of old block ``i``.
+ * :param new_order: ``n_blocks`` entries forming a permutation of
+ *     ``[0, n_blocks)``; entry ``i`` is the new index of old block ``i``.
+ *     Asserted to be a permutation.
  * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
  *     default and ``1`` runs serially.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (duplicate index),
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */

@@ -32,11 +32,10 @@ typedef struct hybsol_system hybsol_system_t;
  * The resulting system has no blocks at all; populate it with
  * :c:func:`hybsol_system_add_block` or :c:func:`hybsol_system_add_blocks`.
  *
- * :param n_blocks: Number of blocks per dimension; must be at least 1.
- * :param block_sizes: Array of ``n_blocks`` strictly positive sizes.
- * :param out: Receives the new system on success. Set to ``NULL`` on failure.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` or
+ * :param n_blocks: Number of blocks per dimension; asserted at least 1.
+ * :param block_sizes: Array of ``n_blocks`` sizes; asserted non-zero.
+ * :param out: Receives the new system. Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_create(uint64_t n_blocks, HYBSOL_IN(uint64_t, block_sizes, n_blocks),
@@ -59,16 +58,14 @@ hybsol_result_t hybsol_system_create(uint64_t n_blocks, HYBSOL_IN(uint64_t, bloc
  * Precision cannot be changed afterwards, and every function that carries
  * values has a matching spelling — the unsuffixed one for a
  * :c:enumerator:`HYBSOL_PRECISION_DOUBLE` system and ``_f32`` for a
- * :c:enumerator:`HYBSOL_PRECISION_SINGLE` one. Using the wrong spelling is
- * rejected with :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` rather than
- * converted behind the caller's back.
+ * :c:enumerator:`HYBSOL_PRECISION_SINGLE` one. Using the wrong spelling
+ * asserts rather than converting behind the caller's back.
  *
- * :param n_blocks: Number of blocks per dimension; must be at least 1.
- * :param block_sizes: Array of ``n_blocks`` strictly positive sizes.
- * :param precision: Storage type, one of :c:type:`hybsol_precision_t`.
- * :param out: Receives the new system on success. Set to ``NULL`` on failure.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` or
+ * :param n_blocks: Number of blocks per dimension; asserted at least 1.
+ * :param block_sizes: Array of ``n_blocks`` sizes; asserted non-zero.
+ * :param precision: Storage type, asserted one of :c:type:`hybsol_precision_t`.
+ * :param out: Receives the new system. Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_create_with_precision(uint64_t n_blocks, HYBSOL_IN(uint64_t, block_sizes, n_blocks),
@@ -169,16 +166,13 @@ uint64_t hybsol_system_row_count(const hybsol_system_t *sys, uint64_t row);
  * The indices come back in increasing order, as stored.
  *
  * :param sys: The system.
- * :param row: Block row index.
- * :param out: Destination for ``capacity`` indices; nothing is written if
- *     ``capacity`` is too small.
- * :param capacity: Number of indices ``out`` can hold.
- * :param n_written: Receives the number of indices the row holds, which may
- *     be larger than ``capacity``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE` or
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` if ``out`` is ``NULL``
- *     or ``capacity`` was too small for the row.
+ * :param row: Block row index; asserted in range.
+ * :param out: Destination for ``capacity`` indices. Must not be ``NULL``.
+ * :param capacity: Number of indices ``out`` can hold; asserted large enough
+ *     for the row.
+ * :param n_written: Receives the number of indices the row holds. May be
+ *     ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_system_row_indices(const hybsol_system_t *sys, uint64_t row, uint64_t *out, uint64_t capacity,
                                           uint64_t *n_written);
@@ -202,29 +196,24 @@ int hybsol_system_has_block(const hybsol_system_t *sys, uint64_t row, uint64_t c
  * not change the block's shape.
  *
  * :param sys: The system.
- * :param row: Block row index.
- * :param col: Block column index.
- * :param out: Receives the view.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`, or
- *     :c:enumerator:`HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM` if the block is absent.
+ * :param row: Block row index; asserted in range.
+ * :param col: Block column index; asserted in range and present in the row.
+ * :param out: Receives the view. Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_system_get_block(hybsol_system_t *sys, uint64_t row, uint64_t col, hybsol_matrix_t *out);
 
 /**
  * The single-precision spelling of :c:func:`hybsol_system_get_block`.
  *
- * Hand it a system that stores doubles and it returns
- * :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` rather than widening the
- * blocks silently; :c:func:`hybsol_system_get_block` is its double twin.
+ * Hand it a system that stores doubles and it asserts rather than widening
+ * the blocks silently; :c:func:`hybsol_system_get_block` is its double twin.
  *
  * :param sys: The system.
- * :param row: Block row index.
- * :param col: Block column index.
- * :param out: Receives the copy on success.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE` or
- *     :c:enumerator:`HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM`.
+ * :param row: Block row index; asserted in range.
+ * :param col: Block column index; asserted in range and present in the row.
+ * :param out: Receives the view. Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_system_get_block_f32(hybsol_system_t *sys, uint64_t row, uint64_t col, hybsol_fmatrix_t *out);
 
@@ -268,10 +257,9 @@ void hybsol_system_no_lower_connections(const hybsol_system_t *sys, uint8_t *out
  * this once per row to avoid repeated reallocation.
  *
  * :param sys: The system.
- * :param row: Block row index.
+ * :param row: Block row index; asserted in range.
  * :param capacity: Number of blocks the row should be able to hold.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -284,14 +272,12 @@ hybsol_result_t hybsol_system_reserve(hybsol_system_t *sys, uint64_t row, uint64
  * new entry is inserted at the correct position in the row.
  *
  * :param sys: The system.
- * :param row: Block row index.
- * :param col: Block column index.
- * :param n_rows: Number of rows of ``vals``; must equal the size of ``row``.
- * :param n_cols: Number of columns of ``vals``; must equal the size of ``col``.
- * :param vals: Row-major values, read but not modified.
+ * :param row: Block row index; asserted in range.
+ * :param col: Block column index; asserted in range.
+ * :param n_rows: Number of rows of ``vals``; asserted equal to the size of ``row``.
+ * :param n_cols: Number of columns of ``vals``; asserted equal to the size of ``col``.
+ * :param vals: Row-major values, read but not modified. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (wrong shape),
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -303,16 +289,14 @@ hybsol_result_t hybsol_system_add_block(hybsol_system_t *sys, uint64_t row, uint
  * ``float`` values and requiring a system created with
  * :c:enumerator:`HYBSOL_PRECISION_SINGLE`.
  *
- * :param sys: The system.
- * :param row: Block row index.
- * :param col: Block column index.
- * :param n_rows: Number of rows of ``vals``; must equal the size of ``row``.
- * :param n_cols: Number of columns of ``vals``; must equal the size of ``col``.
- * :param vals: Row-major values, read but not modified.
+ * :param sys: The system; asserted to store ``float``.
+ * :param row: Block row index; asserted in range.
+ * :param col: Block column index; asserted in range.
+ * :param n_rows: Number of rows of ``vals``; asserted equal to the size of ``row``.
+ * :param n_cols: Number of columns of ``vals``; asserted equal to the size of ``col``.
+ * :param vals: Row-major values, read but not modified. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (wrong shape or wrong
- *     precision), :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_add_block_f32(hybsol_system_t *sys, uint64_t row, uint64_t col, uint64_t n_rows,
@@ -331,13 +315,11 @@ hybsol_result_t hybsol_system_add_block_f32(hybsol_system_t *sys, uint64_t row, 
  *
  * :param sys: The system.
  * :param n_entries: Number of blocks being added.
- * :param rows: Block row indices, ``n_entries`` entries.
- * :param cols: Block column indices, ``n_entries`` entries.
+ * :param rows: Block row indices, ``n_entries`` entries; asserted in range.
+ * :param cols: Block column indices, ``n_entries`` entries; asserted in range.
  * :param data: Row-major block values concatenated in the order implied by
- *     ``rows`` and ``cols``.
+ *     ``rows`` and ``cols``. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`,
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -347,14 +329,12 @@ hybsol_result_t hybsol_system_add_blocks(hybsol_system_t *sys, uint64_t n_entrie
 /**
  * The single-precision spelling of :c:func:`hybsol_system_add_blocks`.
  *
- * :param sys: The system.
+ * :param sys: The system; asserted to store ``float``.
  * :param n_entries: Number of blocks to add.
- * :param rows: Block row indices.
- * :param cols: Block column indices.
- * :param data: Concatenated, row-major block values.
+ * :param rows: Block row indices; asserted in range.
+ * :param cols: Block column indices; asserted in range.
+ * :param data: Concatenated, row-major block values. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (wrong precision),
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -386,12 +366,10 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *sys, uint64_t n_en
  * invalidates that row's cached factorization.
  *
  * :param sys: The system.
- * :param row: Block row index.
- * :param col: Block column index.
- * :param out: Receives the view on success. Set to ``NULL`` on failure.
+ * :param row: Block row index; asserted in range.
+ * :param col: Block column index; asserted in range.
+ * :param out: Receives the view. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (``out`` is ``NULL``),
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -405,14 +383,11 @@ hybsol_result_t hybsol_system_block_storage(hybsol_system_t *sys, uint64_t row, 
  * rows are rebuilt. The difference is the type of the buffer handed back and
  * the precision the system has to store.
  *
- * :param sys: The system.
- * :param row: Block row index.
- * :param col: Block column index.
- * :param out: Receives the view on success. Set to ``NULL`` on failure.
+ * :param sys: The system; asserted to store ``float``.
+ * :param row: Block row index; asserted in range.
+ * :param col: Block column index; asserted in range.
+ * :param out: Receives the view. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (``out`` is ``NULL`` or
- *     the system stores doubles),
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -427,13 +402,11 @@ hybsol_result_t hybsol_system_block_storage_f32(hybsol_system_t *sys, uint64_t r
  * lets a caller skip columns that have already been eliminated.
  *
  * :param sys: The system.
- * :param row: Block row index.
+ * :param row: Block row index; asserted in range.
  * :param start_col: First block column (inclusive) to transform.
- * :param mat: Square matrix of the same size as ``row``.
+ * :param mat: Square matrix asserted to be ``size(row)`` by ``size(row)``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (``mat`` not square and
- *     of the right size), :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_multiply_row(hybsol_system_t *sys, uint64_t row, uint64_t start_col,
@@ -442,14 +415,12 @@ hybsol_result_t hybsol_system_multiply_row(hybsol_system_t *sys, uint64_t row, u
 /**
  * The single-precision spelling of :c:func:`hybsol_system_multiply_row`.
  *
- * :param sys: The system.
- * :param row: Block row index.
+ * :param sys: The system; asserted to store ``float``.
+ * :param row: Block row index; asserted in range.
  * :param start_col: First block column to touch.
- * :param mat: Square multiplier, ``block_size(row)`` by ``block_size(row)``.
+ * :param mat: Square multiplier asserted to be ``block_size(row)`` square.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (wrong shape or wrong
- *     precision), :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_multiply_row_f32(hybsol_system_t *sys, uint64_t row, uint64_t start_col,
@@ -462,19 +433,17 @@ hybsol_result_t hybsol_system_multiply_row_f32(hybsol_system_t *sys, uint64_t ro
  * with a column index at or below ``row_src`` are assumed to have been
  * eliminated already and are left alone.
  *
- * Both rows must contain their block in column ``row_src``, and the
+ * The target row must contain its block in column ``row_src``. The
  * resulting row must be able to hold the union of the two sparsity
  * patterns; if a later allocation fails the target row is emptied rather
  * than left half-updated.
  *
  * :param sys: The system.
- * :param row_tgt: Row to update.
+ * :param row_tgt: Row to update; asserted to hold column ``row_src``.
  * :param row_src: Row to eliminate with.
- * :param mat: Multiplier, ``size(row_tgt) x size(row_src)``.
+ * :param mat: Multiplier asserted to be ``size(row_tgt) x size(row_src)``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`,
+ *     :c:enumerator:`HYBSOL_ERROR_EMPTY_ROW`,
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -484,16 +453,13 @@ hybsol_result_t hybsol_system_eliminate_row_with(hybsol_system_t *sys, uint64_t 
 /**
  * The single-precision spelling of :c:func:`hybsol_system_eliminate_row_with`.
  *
- * :param sys: The system.
- * :param row_tgt: Row to update.
+ * :param sys: The system; asserted to store ``float``.
+ * :param row_tgt: Row to update; asserted to hold column ``row_src``.
  * :param row_src: Row to eliminate with.
- * :param mat: Square multiplier, ``block_size(row_tgt)`` by ``block_size(row_src)``.
+ * :param mat: Multiplier asserted to be ``size(row_tgt) x size(row_src)``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` (wrong shape or wrong
- *     precision), :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`,
  *     :c:enumerator:`HYBSOL_ERROR_EMPTY_ROW`,
- *     :c:enumerator:`HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM` or
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_eliminate_row_with_f32(hybsol_system_t *sys, uint64_t row_tgt, uint64_t row_src,
@@ -506,7 +472,7 @@ hybsol_result_t hybsol_system_eliminate_row_with_f32(hybsol_system_t *sys, uint6
  * taken from the system itself, which is what the decomposition needs.
  *
  * :param sys: The system.
- * :param row_tgt: Row to update.
+ * :param row_tgt: Row to update; asserted to hold column ``row_src``.
  * :param row_src: Row to eliminate with.
  * :returns: The result codes of :c:func:`hybsol_system_eliminate_row_with`.
  */
@@ -518,7 +484,8 @@ hybsol_result_t hybsol_system_eliminate_row(hybsol_system_t *sys, uint64_t row_t
  * Missing blocks are written as zeros.
  *
  * :param sys: The system.
- * :param out: Destination for ``total_size * total_size`` row-major doubles.
+ * :param out: Destination for ``total_size * total_size`` row-major
+ *     doubles. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_system_to_dense(const hybsol_system_t *sys, double *out);
@@ -527,10 +494,10 @@ hybsol_result_t hybsol_system_to_dense(const hybsol_system_t *sys, double *out);
  * The single-precision spelling of :c:func:`hybsol_system_to_dense`, writing
  * ``total * total`` floats.
  *
- * :param sys: The system.
+ * :param sys: The system; asserted to store ``float``.
  * :param out: Row-major destination of at least ``total * total`` floats.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`.
+ *     Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
 hybsol_result_t hybsol_system_to_dense_f32(const hybsol_system_t *sys, float *out);
 

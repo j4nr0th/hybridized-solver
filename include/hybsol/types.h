@@ -15,6 +15,13 @@
 /**
  * Error codes returned by the fallible functions of the hybsol API.
  *
+ * These cover the conditions that are outcomes of the data, not caller
+ * mistakes: allocation failure, a singular matrix, a system that does not
+ * decompose, and the solver's other runtime states. Conditions the caller
+ * can be asked to guarantee — index ranges, non-``NULL`` pointers, matching
+ * shapes — are preconditions instead, checked with ``HYBSOL_ASSERT``; see
+ * :c:file:`hybsol/hybsol.h`.
+ *
  * The enumerator names are spelled out in full so that they can be used
  * safely from other translation units; :c:func:`hybsol_result_str` turns a
  * code into a short human-readable description.
@@ -25,14 +32,6 @@ typedef enum hybsol_result
     HYBSOL_SUCCESS = 0,
     /** A memory allocation failed. */
     HYBSOL_ERROR_OUT_OF_MEMORY,
-    /** An argument was well-formed but not usable (wrong size, duplicate entry, ...). */
-    HYBSOL_ERROR_INVALID_ARGUMENT,
-    /** A block or row index was outside ``[0, n_blocks)``. */
-    HYBSOL_ERROR_INDEX_OUT_OF_RANGE,
-    /** The requested block is not present in the system's sparsity pattern. */
-    HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM,
-    /** The row has no diagonal block, which the operation requires. */
-    HYBSOL_ERROR_MISSING_DIAGONAL,
     /** The row contains no blocks at all. */
     HYBSOL_ERROR_EMPTY_ROW,
     /** The row contains no block with a column index greater than the given one. */
@@ -73,9 +72,8 @@ const char *hybsol_result_str(hybsol_result_t result);
  * The two flavours of every value-carrying function are spelled out by
  * suffix: the unsuffixed spelling is the double one and takes
  * :c:type:`hybsol_matrix_t`, while ``_f32`` is the single-precision one and
- * takes :c:type:`hybsol_fmatrix_t`. Mixing them up is rejected with
- * :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` rather than converted
- * silently.
+ * takes :c:type:`hybsol_fmatrix_t`. Mixing them up asserts rather than
+ * converting silently.
  */
 typedef enum hybsol_precision
 {

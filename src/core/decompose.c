@@ -54,21 +54,17 @@ const hybsol_operation_t *hybsol_system_operations(const hybsol_system_t *const 
 /* Diagonal block work                                                       */
 /* ------------------------------------------------------------------------- */
 
-static hybsol_result_t find_diagonal(hybsol_system_t *const sys, const uint64_t idx, hybsol_row_entry_t **const out)
+static void find_diagonal(hybsol_system_t *const sys, const uint64_t idx, hybsol_row_entry_t **const out)
 {
-    hybsol_result_t res = hybsol_check_index(sys, idx);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_require_index(sys, idx);
 
     hybsol_row_t *const row = sys->rows + idx;
     uint64_t i_diag;
-    if (!hybsol_row_find(row, idx, &i_diag))
-        return HYBSOL_ERROR_MISSING_DIAGONAL;
+    HYBSOL_ASSERT(hybsol_row_find(row, idx, &i_diag), "Row %llu has no diagonal block; every row must contain one.",
+                  (unsigned long long)idx);
 
     *out = row->entries[i_diag];
-    return HYBSOL_SUCCESS;
 }
-
 /* ------------------------------------------------------------------------- */
 /* The value-carrying half, instantiated once per precision                   */
 /* ------------------------------------------------------------------------- */
@@ -116,10 +112,8 @@ hybsol_result_t hybsol_system_apply_diagonal_inverse(hybsol_system_t *const sys,
 hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *const sys, const uint64_t idx,
                                              const hybsol_matrix_t *const b, const hybsol_matrix_t *const x)
 {
-    if (b == NULL || x == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(b != NULL && x != NULL, "The right-hand side and destination must not be NULL.");
+    hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
     return hybsol_f64_solve_diagonal(sys, idx, b, x);
 }
@@ -127,10 +121,8 @@ hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *const sys, const u
 hybsol_result_t hybsol_system_solve_diagonal_f32(hybsol_system_t *const sys, const uint64_t idx,
                                                  const hybsol_fmatrix_t *const b, const hybsol_fmatrix_t *const x)
 {
-    if (b == NULL || x == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(b != NULL && x != NULL, "The right-hand side and destination must not be NULL.");
+    hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
     return hybsol_f32_solve_diagonal(sys, idx, b, x);
 }
@@ -157,8 +149,7 @@ hybsol_result_t hybsol_system_solve(hybsol_system_t *const sys, double *const ve
 {
     if (!sys->decomposed)
         return HYBSOL_ERROR_NOT_DECOMPOSED;
-    if (vec == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(vec != NULL, "The solution vector must not be NULL.");
 
     hybsol_system_apply_operations(sys, sys->n_ops, sys->ops, vec);
     hybsol_system_solve_upper(sys, vec);

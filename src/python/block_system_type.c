@@ -63,6 +63,47 @@ static int check_block_indices(const hybsol_system_t *const sys, const Py_ssize_
     return 0;
 }
 
+/**
+ * Reject a row that has no diagonal block.
+ *
+ * The core asserts on this rather than returning a code, so any method that
+ * takes a row index has to rule the condition out before calling.
+ *
+ * :param sys: The system.
+ * :param idx: The validated block index.
+ * :returns: ``0`` if the row has its diagonal block, ``-1`` otherwise.
+ */
+static int require_diagonal(const hybsol_system_t *const sys, const Py_ssize_t idx)
+{
+    if (hybsol_system_has_block(sys, (uint64_t)idx, (uint64_t)idx))
+    {
+        return 0;
+    }
+    PyErr_Format(PyExc_ValueError, "Row %zd has no diagonal entry.", idx);
+    return -1;
+}
+
+/**
+ * Reject a block the system does not store.
+ *
+ * The core asserts on this rather than returning a code, so lookups have to
+ * confirm the block is present before asking for it.
+ *
+ * :param sys: The system.
+ * :param row: The validated block row index.
+ * :param col: The validated block column index.
+ * :returns: ``0`` if the block is stored, ``-1`` otherwise.
+ */
+static int require_block(const hybsol_system_t *const sys, const Py_ssize_t row, const Py_ssize_t col)
+{
+    if (hybsol_system_has_block(sys, (uint64_t)row, (uint64_t)col))
+    {
+        return 0;
+    }
+    PyErr_Format(PyExc_ValueError, "The system does not contain the block (%zd, %zd).", row, col);
+    return -1;
+}
+
 static int ensure_not_decomposed(const hybsol_system_t *const sys)
 {
     if (!hybsol_system_is_decomposed(sys))
@@ -177,12 +218,45 @@ static int optional_array(PyObject *const obj, PyArrayObject **const out)
 /**
  * Turn ``new_order`` into a validated ``uint64`` array of length ``n``.
  *
+ * Beyond the dtype and length, the entries must form a permutation of
+ * ``[0, n)``. That is a precondition of every core function taking a
+ * permutation, so it is checked here rather than left to an abort there.
+ *
  * :returns: ``0`` and a new reference in ``*arr_out``, or ``-1``.
  */
 static int get_order_array(PyObject *const obj, const Py_ssize_t n, PyArrayObject **const arr_out)
 {
     const npy_intp dim = n;
-    return hybsol_index_array(obj, 1, &dim, "new_order", arr_out);
+    if (hybsol_index_array(obj, 1, &dim, "new_order", arr_out) < 0)
+    {
+        return -1;
+    }
+
+    const uint64_t *const order = (const uint64_t *)PyArray_DATA(*arr_out);
+    char *const seen = PyMem_Calloc(n > 0 ? (size_t)n : 1, sizeof(*seen));
+    if (seen == NULL)
+    {
+        Py_DECREF(*arr_out);
+        return -1;
+    }
+
+    for (Py_ssize_t i = 0; i < n; ++i)
+    {
+        if (order[i] >= (uint64_t)n || seen[order[i]])
+        {
+            PyErr_Format(PyExc_ValueError,
+                         "Argument \"new_order\" must be a permutation of [0, %zd), but it repeats or exceeds "
+                         "%llu at entry %zd.",
+                         n, (unsigned long long)order[i], i);
+            PyMem_Free(seen);
+            Py_DECREF(*arr_out);
+            return -1;
+        }
+        seen[order[i]] = 1;
+    }
+
+    PyMem_Free(seen);
+    return 0;
 }
 
 static int check_n_threads(const Py_ssize_t n_threads)
@@ -569,7 +643,8 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
         return NULL;
     }
     if (check_block_indices(this->system, row_idx, "Row index") < 0 ||
-        check_block_indices(this->system, col_idx, "Col index") < 0)
+        check_block_indices(this->system, col_idx, "Col index") < 0 ||
+        require_block(this->system, row_idx, col_idx) < 0)
     {
         return NULL;
     }
@@ -579,11 +654,6 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
         hybsol_fmatrix_t mat;
         const hybsol_result_t res =
             hybsol_system_get_block_f32(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
-        if (res == HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM)
-        {
-            PyErr_Format(PyExc_ValueError, "The system does not contain the block (%zd, %zd).", row_idx, col_idx);
-            return NULL;
-        }
         if (res != HYBSOL_SUCCESS)
         {
             return hybsol_raise("get_block", res);
@@ -593,11 +663,7 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
 
     hybsol_matrix_t mat;
     const hybsol_result_t res = hybsol_system_get_block(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
-    if (res == HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM)
-    {
-        PyErr_Format(PyExc_ValueError, "The system does not contain the block (%zd, %zd).", row_idx, col_idx);
-        return NULL;
-    }
+
     if (res != HYBSOL_SUCCESS)
     {
         return hybsol_raise("get_block", res);
@@ -1299,8 +1365,13 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
         return NULL;
     }
     if (check_block_indices(this->system, i_row_src, "Row index source") < 0 ||
-        check_block_indices(this->system, i_row_tgt, "Row index target") < 0)
+        check_block_indices(this->system, i_row_tgt, "Row index target") < 0 ||
+        require_block(this->system, i_row_tgt, i_row_src) < 0)
     {
+        if (!PyErr_Occurred())
+            PyErr_Format(PyExc_ValueError,
+                         "The target row %zd must contain the block in column %zd to eliminate with it.", i_row_tgt,
+                         i_row_src);
         return NULL;
     }
 
@@ -1331,12 +1402,6 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
     Py_END_ALLOW_THREADS;
 
     Py_DECREF(arr);
-    if (res == HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM)
-    {
-        PyErr_Format(PyExc_ValueError, "Source and target blocks must both contain the diagonal block for the row %zd.",
-                     i_row_src);
-        return NULL;
-    }
     if (res != HYBSOL_SUCCESS)
     {
         return hybsol_raise("eliminate_row", res);
@@ -1385,17 +1450,12 @@ static PyObject *block_system_object_decompose_diagonal(PyObject *const self, Py
     {
         return NULL;
     }
-    if (check_block_indices(this->system, i_row, "Block index") < 0)
+    if (check_block_indices(this->system, i_row, "Block index") < 0 || require_diagonal(this->system, i_row) < 0)
     {
         return NULL;
     }
 
     const hybsol_result_t res = hybsol_system_decompose_diagonal(this->system, (uint64_t)i_row);
-    if (res == HYBSOL_ERROR_MISSING_DIAGONAL)
-    {
-        PyErr_Format(PyExc_ValueError, "Row %zd has no diagonal entry.", i_row);
-        return NULL;
-    }
     if (res != HYBSOL_SUCCESS)
     {
         return hybsol_raise("decompose_diagonal", res);
@@ -1450,7 +1510,7 @@ static PyObject *block_system_object_solve_diagonal(PyObject *const self, PyType
     {
         return NULL;
     }
-    if (check_block_indices(this->system, i_block, "Block index") < 0)
+    if (check_block_indices(this->system, i_block, "Block index") < 0 || require_diagonal(this->system, i_block) < 0)
     {
         return NULL;
     }
@@ -1536,7 +1596,7 @@ static PyObject *block_system_object_row_apply_decomposition(PyObject *const sel
     {
         return NULL;
     }
-    if (check_block_indices(this->system, i_row, "Row index") < 0)
+    if (check_block_indices(this->system, i_row, "Row index") < 0 || require_diagonal(this->system, i_row) < 0)
     {
         return NULL;
     }
@@ -1545,11 +1605,6 @@ static PyObject *block_system_object_row_apply_decomposition(PyObject *const sel
     if (res == HYBSOL_ERROR_EMPTY_ROW)
     {
         PyErr_Format(PyExc_ValueError, "Row %zd has no entries.", i_row);
-        return NULL;
-    }
-    if (res == HYBSOL_ERROR_MISSING_DIAGONAL)
-    {
-        PyErr_Format(PyExc_ValueError, "Row %zd has no diagonal entry.", i_row);
         return NULL;
     }
     if (res != HYBSOL_SUCCESS)

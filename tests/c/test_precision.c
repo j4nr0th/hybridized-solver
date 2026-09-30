@@ -1,6 +1,6 @@
 /** @file test_precision.c
- * The single-precision spelling: creation, assembly, readback, mismatch
- * rejection and a small end-to-end decomposition and solve.
+ * The single-precision spelling: creation, assembly, readback and a small
+ * end-to-end decomposition and solve.
  */
 
 #include "test_util.h"
@@ -85,12 +85,6 @@ static void test_create_precision(void)
     CHECK_OK(hybsol_system_create(2, sizes, &plain));
     CHECK(hybsol_system_precision(plain) == HYBSOL_PRECISION_DOUBLE);
     hybsol_system_destroy(plain);
-
-    // A precision outside the enumeration is refused, not truncated.
-    sys = NULL;
-    CHECK_RESULT(hybsol_system_create_with_precision(2, sizes, (hybsol_precision_t)7, &sys),
-                 HYBSOL_ERROR_INVALID_ARGUMENT);
-    CHECK(sys == NULL);
 }
 
 static void test_single_assembly_and_readback(void)
@@ -108,17 +102,6 @@ static void test_single_assembly_and_readback(void)
     for (uint64_t i = 0; i < 6; ++i)
         CHECK(block.data[i] == vals[i]);
 
-    // The double spelling refuses to read float storage and the other way round.
-    hybsol_matrix_t as_double;
-    CHECK_RESULT(hybsol_system_get_block(sys, 0, 1, &as_double), HYBSOL_ERROR_INVALID_ARGUMENT);
-    const double double_vals[6] = {1.0, -2.0, 3.0, -4.0, 5.0, -6.0};
-    CHECK_RESULT(hybsol_system_add_block(sys, 0, 1, 2, 3, double_vals), HYBSOL_ERROR_INVALID_ARGUMENT);
-    hybsol_system_t *doubles = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &doubles));
-    CHECK_RESULT(hybsol_system_add_block_f32(doubles, 0, 1, 2, 3, vals), HYBSOL_ERROR_INVALID_ARGUMENT);
-    CHECK_RESULT(hybsol_system_get_block_f32(doubles, 0, 1, &block), HYBSOL_ERROR_INVALID_ARGUMENT);
-    hybsol_system_destroy(doubles);
-
     // In-place storage hands back a zeroed float view and keeps it stable.
     hybsol_fmatrix_t view;
     CHECK_OK(hybsol_system_block_storage_f32(sys, 1, 1, &view));
@@ -131,17 +114,12 @@ static void test_single_assembly_and_readback(void)
     CHECK_OK(hybsol_system_block_storage_f32(sys, 1, 1, &again));
     CHECK(again.data == view.data);
     CHECK(again.data[4] == 4.5f);
-    CHECK_RESULT(hybsol_system_block_storage(sys, 1, 1, &as_double), HYBSOL_ERROR_INVALID_ARGUMENT);
 
     float dense[MAX_DIM * MAX_DIM] = {0};
     CHECK_OK(hybsol_system_to_dense_f32(sys, dense));
     // Block (0, 1) sits at rows 0..1, columns 2..4 of the 5 x 5 dense matrix.
     CHECK(dense[0 * 5 + 2] == 1.0f && dense[1 * 5 + 4] == -6.0f);
     CHECK(dense[2 * 5 + 2] == 0.5f && dense[4 * 5 + 4] == 8.5f);
-
-    // The double spelling of the dense export is just as wrong here.
-    double wide[MAX_DIM * MAX_DIM];
-    CHECK_RESULT(hybsol_system_to_dense(sys, wide), HYBSOL_ERROR_INVALID_ARGUMENT);
 
     hybsol_system_destroy(sys);
 }
@@ -242,10 +220,6 @@ static void test_single_decompose_and_solve(void)
     CHECK_OK(hybsol_system_solve_diagonal_f32(diag, 0, &b, &x));
     CHECK_NEAR(x_f[0], 2.0f, 1e-6);
     CHECK_NEAR(x_f[1], 1.0f, 1e-6);
-
-    hybsol_matrix_t wide_b = hybsol_matrix_view(2, 1, (double[2]){8.0, 4.0});
-    hybsol_matrix_t wide_x = hybsol_matrix_view(2, 1, (double[2]){0.0, 0.0});
-    CHECK_RESULT(hybsol_system_solve_diagonal(diag, 0, &wide_b, &wide_x), HYBSOL_ERROR_INVALID_ARGUMENT);
 
     hybsol_system_destroy(diag);
     hybsol_system_destroy(sys);

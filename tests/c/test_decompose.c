@@ -309,16 +309,6 @@ static void test_diagonal_helpers(void)
     CHECK_NEAR(x.data[0], 1.0 / 11.0, 1e-12);
     CHECK_NEAR(x.data[1], 7.0 / 11.0, 1e-12);
 
-    CHECK_RESULT(hybsol_system_decompose_diagonal(sys, 1), HYBSOL_ERROR_INDEX_OUT_OF_RANGE);
-
-    // Incompatible right-hand sides and destinations are refused.
-    double wide[6] = {0};
-    hybsol_matrix_t b23 = hybsol_matrix_view(2, 3, wide);
-    hybsol_matrix_t x32 = hybsol_matrix_view(3, 2, wide);
-    hybsol_matrix_t x22 = hybsol_matrix_view(2, 2, wide);
-    CHECK_RESULT(hybsol_system_solve_diagonal(sys, 0, &b23, &x32), HYBSOL_ERROR_INVALID_ARGUMENT);
-    CHECK_RESULT(hybsol_system_solve_diagonal(sys, 0, &b, &x22), HYBSOL_ERROR_INVALID_ARGUMENT);
-
     hybsol_system_destroy(sys);
 }
 

@@ -1,0 +1,241 @@
+"""Tests that precondition violations raise instead of aborting the interpreter.
+
+The C core checks preconditions with ``HYBSOL_ASSERT``, which aborts the
+process. Every one of them therefore has to be caught by the bindings and
+turned into an exception first. Each test here calls a method with an argument
+that violates a precondition; if a guard is missing the interpreter dies and
+the whole run is lost, which is exactly the failure these tests exist to catch.
+"""
+
+import numpy as np
+import pytest
+from hybsol import BlockSystem, Precision
+
+
+def full_system(n: int = 2) -> BlockSystem:
+    """Build a complete, decomposable system of ``n`` blocks of size 2.
+
+    Returns
+    -------
+    BlockSystem
+        A system with every diagonal block present, so the structural
+        preconditions hold and only the argument under test is at fault.
+    """
+    sys = BlockSystem(2, n)
+    for i in range(n):
+        for j in range(n):
+            sys.add_block(i, j, np.eye(2) * 4.0)
+    return sys
+
+
+class TestIndexPreconditions:
+    """Every block index must be inside ``[0, n_blocks)``."""
+
+    @pytest.mark.parametrize("index", [-1, 2, 99])
+    def test_get_block_rejects_bad_indices(self, index: int) -> None:
+        """An index outside ``[0, n_blocks)`` is a ValueError, not an abort."""
+        sys = full_system()
+        with pytest.raises(ValueError, match="range"):
+            sys.get_block(index, 0)
+        with pytest.raises(ValueError, match="range"):
+            sys.get_block(0, index)
+
+    @pytest.mark.parametrize("index", [-1, 2, 99])
+    def test_block_storage_rejects_bad_indices(self, index: int) -> None:
+        """Storage is not allocated for an out-of-range index."""
+        sys = full_system()
+        with pytest.raises(ValueError, match="range"):
+            sys.block_storage(index, 0)
+
+    @pytest.mark.parametrize("index", [-1, 2, 99])
+    def test_single_index_methods_reject_bad_indices(self, index: int) -> None:
+        """Every method taking a bare row index validates it first."""
+        sys = full_system()
+        with pytest.raises(ValueError, match="range"):
+            sys.reserve(index, 4)
+        with pytest.raises(ValueError, match="range"):
+            sys.first_column(index)
+        with pytest.raises(ValueError, match="range"):
+            sys.get_next_column_index(index, 0)
+        with pytest.raises(ValueError, match="range"):
+            sys.decompose_diagonal(index)
+        with pytest.raises(ValueError, match="range"):
+            sys.row_apply_decomposition(index)
+        with pytest.raises(ValueError, match="range"):
+            sys.solve_diagonal(index, np.zeros(2))
+        with pytest.raises(ValueError, match="range"):
+            sys.multiply_row(index, np.eye(2))
+
+    def test_solve_accepts_a_valid_index(self) -> None:
+        """An in-range index still works, so the guard is not blanket-rejecting."""
+        sys = full_system()
+        sys.decompose_diagonal(1)
+        assert sys.solve_diagonal(1, np.ones(2)).shape == (2,)
+
+
+class TestShapePreconditions:
+    """Block and multiplier shapes must match what the system implies."""
+
+    def test_add_block_rejects_wrong_shape(self) -> None:
+        """A block must have the size the system gives it."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.add_block(0, 0, np.ones((3, 2)))
+        with pytest.raises(ValueError):
+            sys.add_block(0, 0, np.ones((2, 5)))
+
+    def test_multiply_row_rejects_wrong_size(self) -> None:
+        """The multiplier must be square and match the block row."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.multiply_row(0, np.eye(5))
+        with pytest.raises(ValueError):
+            sys.multiply_row(0, np.ones((2, 3)))
+
+    def test_solve_diagonal_rejects_wrong_shapes(self) -> None:
+        """Right-hand side and destination must match the diagonal's size."""
+        sys = full_system()
+        sys.decompose_diagonal(0)
+        with pytest.raises(ValueError):
+            sys.solve_diagonal(0, np.zeros(5))
+        with pytest.raises(ValueError):
+            sys.solve_diagonal(0, np.zeros(2), np.zeros(7))
+
+    def test_add_blocks_rejects_out_of_range_index(self) -> None:
+        """Bulk assembly validates every index in the arrays."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.add_blocks(np.array([0, 99]), np.array([0, 0]), np.ones(8))
+
+    def test_block_size_of_a_valid_system_still_works(self) -> None:
+        """A correctly shaped call must succeed, proving the guards are narrow."""
+        sys = full_system()
+        sys.multiply_row(0, np.eye(2))
+        assert sys.get_block(0, 0).shape == (2, 2)
+
+
+class TestOrderingPreconditions:
+    """A reordering must be a genuine permutation of ``[0, n_blocks)``."""
+
+    @pytest.mark.parametrize("order", [[0, 0], [1, 1], [0, 5], [0, 3]])
+    def test_reorder_blocks_rejects_non_permutations(self, order: list[int]) -> None:
+        """A repeated or out-of-range index is not a permutation."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.reorder_blocks(np.array(order))
+
+    def test_reorder_blocks_rejects_negative_index(self) -> None:
+        """Negative indices are rejected before the unsigned conversion."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.reorder_blocks(np.array([-1, 1]))
+
+    def test_reorder_blocks_rejects_wrong_length(self) -> None:
+        """The permutation must have exactly one entry per block."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.reorder_blocks(np.array([0]))
+
+    def test_reorder_vector_rejects_wrong_length(self) -> None:
+        """The vector must match the system's total size."""
+        sys = full_system()
+        with pytest.raises(ValueError):
+            sys.reorder_vector(np.array([0, 1]), np.zeros(3))
+
+    def test_a_real_permutation_is_still_accepted(self) -> None:
+        """A genuine permutation still reorders, so the check is not too strict."""
+        sys = full_system()
+        sys.reorder_blocks(np.array([1, 0]))
+        assert sys.n_blocks == 2
+
+
+class TestStructuralPreconditions:
+    """Rows must have their diagonal block where one is required."""
+
+    def test_decompose_rejects_a_system_missing_a_diagonal(self) -> None:
+        """An invalid pattern is a returned error, not an assert."""
+        sys = BlockSystem(2, 2)
+        sys.add_block(0, 0, np.eye(2))
+        sys.add_block(0, 1, np.eye(2))
+        with pytest.raises(ValueError):
+            sys.decompose()
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda s: s.decompose_diagonal(1),
+            lambda s: s.row_apply_decomposition(1),
+            lambda s: s.solve_diagonal(1, np.zeros(2)),
+        ],
+    )
+    def test_methods_reject_a_row_without_a_diagonal(self, call) -> None:
+        """Each diagonal-using method checks the row has its diagonal first."""
+        sys = BlockSystem(2, 2)
+        sys.add_block(0, 0, np.eye(2))
+        with pytest.raises(ValueError, match="diagonal"):
+            call(sys)
+
+    def test_eliminate_row_requires_the_source_column(self) -> None:
+        """The target row must actually hold the column being eliminated."""
+        sys = BlockSystem(2, 2)
+        sys.add_block(0, 0, np.eye(2))
+        sys.add_block(1, 1, np.eye(2))
+        with pytest.raises(ValueError):
+            sys.eliminate_row(1, 0, np.eye(2))
+
+    def test_get_block_rejects_an_absent_block(self) -> None:
+        """Looking up a block the system does not store raises."""
+        sys = BlockSystem(2, 2)
+        sys.add_block(0, 0, np.eye(2))
+        with pytest.raises(ValueError, match="does not contain"):
+            sys.get_block(0, 1)
+
+
+class TestCreationPreconditions:
+    """Block sizes must be positive and finite."""
+
+    @pytest.mark.parametrize("sizes", [(2, 0), (2, -1), (0,), (3, 0, 2)])
+    def test_create_rejects_non_positive_sizes(self, sizes: tuple[int, ...]) -> None:
+        """Zero and negative block sizes are refused at construction."""
+        with pytest.raises(ValueError):
+            BlockSystem(*sizes)
+
+
+class TestPrecisionIsHandledNotAborted:
+    """Precision is converted at the boundary, so no spelling mismatch escapes.
+
+    A ``float64`` array handed to a single-precision system is converted, which
+    means the core's precision precondition is unreachable from Python. This
+    pins that behaviour down rather than leaving it to chance.
+    """
+
+    def test_double_values_are_converted_for_a_single_system(self) -> None:
+        """float64 input to a single-precision system is converted, not rejected."""
+        sys = BlockSystem(2, 2, precision=Precision.SINGLE)
+        sys.add_block(0, 0, np.eye(2))  # float64 input
+
+        block = sys.get_block(0, 0)
+        assert block.dtype == np.float32
+        assert np.allclose(block, np.eye(2))
+
+    def test_single_values_are_converted_for_a_double_system(self) -> None:
+        """float32 input to a double system is converted, not rejected."""
+        sys = BlockSystem(2, 2)
+        sys.add_block(0, 0, np.eye(2, dtype=np.float32))
+
+        block = sys.get_block(0, 0)
+        assert block.dtype == np.float64
+        assert np.allclose(block, np.eye(2))
+
+    def test_a_single_system_still_solves(self) -> None:
+        """The converted path must remain correct, not merely non-crashing."""
+        sys = BlockSystem(2, 2, precision=Precision.SINGLE)
+        for i in range(2):
+            for j in range(2):
+                sys.add_block(i, j, np.eye(2) * (4.0 if i == j else 1.0))
+        sys.decompose()
+
+        # The dense operator is [[4, 1], [1, 4]], so a right-hand side of
+        # ones has the constant solution 1 / 5 in every component.
+        solution = sys.solve(np.ones(4))
+        assert np.allclose(solution, np.full(4, 0.2), atol=1e-5)

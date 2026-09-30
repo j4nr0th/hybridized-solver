@@ -187,26 +187,35 @@ hybsol_result_t hybsol_row_reserve(hybsol_row_t *row, uint64_t needed);
 hybsol_result_t hybsol_require_mutable(const hybsol_system_t *sys);
 
 /**
- * Reject a call whose operand type does not match how the system stores blocks.
+ * Assert that the caller used the spelling matching how the system stores.
  *
  * Every value-carrying function has an unsuffixed double spelling and an
  * ``_f32`` single-precision twin. This is what makes handing the wrong one a
- * system a clean error instead of a silent narrowing conversion — and a
- * buffer over-read, since the two spellings size their buffers differently.
+ * system fail loudly rather than silently narrow the blocks — and over-read
+ * the buffer, since the two spellings size it differently.
  *
  * :param sys: The system.
  * :param precision: The spelling the caller chose.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`.
  */
-static inline hybsol_result_t hybsol_check_precision(const hybsol_system_t *const sys,
-                                                     const hybsol_precision_t precision)
+static inline void hybsol_require_precision(const hybsol_system_t *const sys, const hybsol_precision_t precision)
 {
-    return sys->precision == precision ? HYBSOL_SUCCESS : HYBSOL_ERROR_INVALID_ARGUMENT;
+    HYBSOL_ASSERT(sys->precision == precision,
+                  "This is the %s spelling but the system stores %s; use the matching function.",
+                  precision == HYBSOL_PRECISION_DOUBLE ? "double" : "single precision",
+                  sys->precision == HYBSOL_PRECISION_DOUBLE ? "doubles" : "floats");
 }
 
-/** Validate a block row/column index pair. */
-hybsol_result_t hybsol_check_index(const hybsol_system_t *sys, uint64_t idx);
+/**
+ * Assert that a block index names one of the system's blocks.
+ *
+ * :param sys: The system.
+ * :param idx: The block index to check.
+ */
+static inline void hybsol_require_index(const hybsol_system_t *const sys, const uint64_t idx)
+{
+    HYBSOL_ASSERT(idx < sys->n, "Block index %llu is outside [0, %llu).", (unsigned long long)idx,
+                  (unsigned long long)sys->n);
+}
 
 /** Mark row ``idx`` as needing a fresh LU factorization. */
 void hybsol_invalidate_diagonal(hybsol_system_t *sys, uint64_t idx);

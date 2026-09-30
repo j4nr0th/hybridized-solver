@@ -23,8 +23,9 @@ PyObject *hybsol_exception_type(const hybsol_result_t res)
     case HYBSOL_ERROR_ALREADY_DECOMPOSED:
         return PyExc_RuntimeError;
 
-    // Everything else describes an argument the caller supplied, so it is a
-    // ValueError rather than some more exotic type.
+    // Everything else is a condition detected in the data rather than a
+    // caller mistake (an empty row, a singular block, too many colors), so
+    // it is a ValueError rather than some more exotic type.
     default:
         return PyExc_ValueError;
     }

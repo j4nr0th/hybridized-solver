@@ -184,26 +184,6 @@ static void test_bulk_accumulates_duplicates(void)
     hybsol_system_destroy(sys);
 }
 
-static void test_bulk_rejects_bad_input(void)
-{
-    const uint64_t sizes[] = {2, 2};
-    hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys));
-
-    const uint64_t rows[] = {0, 5};
-    const uint64_t cols[] = {0, 0};
-    const double data[8] = {0};
-
-    CHECK_RESULT(hybsol_system_add_blocks(sys, 2, rows, cols, data), HYBSOL_ERROR_INDEX_OUT_OF_RANGE);
-
-    // `data` is not a `static` parameter, so handing it a null pointer is a
-    // normal (if useless) call and has to be reported as an invalid argument.
-    const double *const missing = NULL;
-    CHECK_RESULT(hybsol_system_add_blocks(sys, 2, rows, cols, missing), HYBSOL_ERROR_INVALID_ARGUMENT);
-
-    hybsol_system_destroy(sys);
-}
-
 static void test_reserve(void)
 {
     const uint64_t sizes[] = {1, 1, 1};
@@ -216,8 +196,6 @@ static void test_reserve(void)
     CHECK_OK(hybsol_system_add_block(sys, 1, 2, 1, 1, one));
     CHECK(hybsol_system_row_count(sys, 1) == 2);
 
-    CHECK_RESULT(hybsol_system_reserve(sys, 3, 1), HYBSOL_ERROR_INDEX_OUT_OF_RANGE);
-
     hybsol_system_destroy(sys);
 }
 
@@ -225,7 +203,6 @@ int main(void)
 {
     test_bulk_matches_add_block();
     test_bulk_accumulates_duplicates();
-    test_bulk_rejects_bad_input();
     test_reserve();
     return test_report("test_assembly");
 }

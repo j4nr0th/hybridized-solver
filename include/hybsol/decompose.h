@@ -101,10 +101,8 @@ const hybsol_operation_t *hybsol_system_operations(const hybsol_system_t *sys);
  * Replace a diagonal block with its LU factorization.
  *
  * :param sys: The system.
- * :param idx: Block row index.
+ * :param idx: Block row index; asserted in range and to have a diagonal block.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_MISSING_DIAGONAL`,
  *     :c:enumerator:`HYBSOL_ERROR_SINGULAR` or
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`.
  */
@@ -119,10 +117,8 @@ hybsol_result_t hybsol_system_decompose_diagonal(hybsol_system_t *sys, uint64_t 
  * :c:func:`hybsol_system_decompose_diagonal` for the same ``idx``.
  *
  * :param sys: The system.
- * :param idx: Block row index.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_MISSING_DIAGONAL` or
+ * :param idx: Block row index; asserted in range and to have a diagonal block.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_NOT_DECOMPOSED`.
  */
 hybsol_result_t hybsol_system_apply_diagonal_inverse(hybsol_system_t *sys, uint64_t idx);
@@ -131,14 +127,12 @@ hybsol_result_t hybsol_system_apply_diagonal_inverse(hybsol_system_t *sys, uint6
  * Solve with a previously decomposed diagonal block.
  *
  * :param sys: The system.
- * :param idx: Block row index of the diagonal to use.
- * :param b: Right-hand side with ``size(idx)`` rows.
- * :param x: Destination with the same shape as ``b``; may alias ``b``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_MISSING_DIAGONAL`,
- *     :c:enumerator:`HYBSOL_ERROR_NOT_DECOMPOSED` or
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`.
+ * :param idx: Block row index; asserted in range and to have a diagonal block.
+ * :param b: Right-hand side with ``size(idx)`` rows. Must not be ``NULL``.
+ * :param x: Destination with the same shape as ``b``; may alias ``b``. Must
+ *     not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
+ *     :c:enumerator:`HYBSOL_ERROR_NOT_DECOMPOSED`.
  */
 hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *sys, uint64_t idx, const hybsol_matrix_t *b,
                                              const hybsol_matrix_t *x);
@@ -146,19 +140,15 @@ hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *sys, uint64_t idx,
 /**
  * The single-precision spelling of :c:func:`hybsol_system_solve_diagonal`.
  *
- * ``b`` and ``x`` are floats here, and the system must have been created with
- * :c:enumerator:`HYBSOL_PRECISION_SINGLE` — the double spelling on such a
- * system returns :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` instead of
- * widening the factors.
+ * ``b`` and ``x`` are floats here, and the system is asserted to have been
+ * created with :c:enumerator:`HYBSOL_PRECISION_SINGLE` — the double spelling
+ * on such a system asserts rather than widening the factors.
  *
- * :param sys: The system.
- * :param idx: Block row index.
- * :param b: Right-hand side with ``block_size(idx)`` rows.
- * :param x: Destination for the solution, shaped like ``b``. May alias ``b``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`,
- *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
- *     :c:enumerator:`HYBSOL_ERROR_MISSING_DIAGONAL`,
+ * :param sys: The system; asserted to store ``float``.
+ * :param idx: Block row index; asserted in range and to have a diagonal block.
+ * :param b: Right-hand side with ``block_size(idx)`` rows. Must not be ``NULL``.
+ * :param x: Destination for the solution, shaped like ``b``. Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_NOT_DECOMPOSED`.
  */
 hybsol_result_t hybsol_system_solve_diagonal_f32(hybsol_system_t *sys, uint64_t idx, const hybsol_fmatrix_t *b,
@@ -195,7 +185,7 @@ void hybsol_system_solve_upper(const hybsol_system_t *sys, double *vec);
  *
  * :param sys: The decomposed system.
  * :param vec: Right-hand side of length :c:func:`hybsol_system_total_size`,
- *     replaced by the solution.
+ *     replaced by the solution. Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_NOT_DECOMPOSED`.
  */
