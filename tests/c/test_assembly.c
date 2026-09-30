@@ -38,8 +38,8 @@ typedef struct
     uint64_t n_entries;
     uint64_t rows[MAX_ENTRIES];
     uint64_t cols[MAX_ENTRIES];
-    /** Start of block ``k`` inside ``data``; the blocks are packed, which is
-     * what :c:func:`hybsol_system_add_blocks` expects. */
+    /** Start of block ``k`` inside ``data``; blocks are packed, as
+     * :c:func:`hybsol_system_add_blocks` expects. */
     uint64_t data_offset[MAX_ENTRIES];
     uint64_t data_end;
     double data[MAX_ENTRIES * MAX_SIZE * MAX_SIZE];
@@ -93,8 +93,7 @@ static void build_pattern(rng_t *const r, pattern_t *const p)
             block[k * n + k] += 4.0;
         pattern_store(p, offsets, i, i, block);
 
-        // Off-diagonal pairs are kept or dropped together, so the pattern
-        // stays symmetric below the diagonal.
+        // Off-diagonal pairs are kept or dropped together, so the pattern stays symmetric.
         for (uint64_t j = i + 1; j < p->n_blocks; ++j)
         {
             if (rng_next(r) < 0.5)
@@ -142,9 +141,7 @@ static void test_bulk_matches_add_block(void)
                                              p.data + p.data_offset[k]));
         }
 
-        // Both paths have to agree with each other and with the reference the
-        // entries were drawn from. `to_dense` writes rows back to back, so the
-        // buffers are flat with an explicit stride.
+        // Both paths must agree with each other and with the reference the entries were drawn from.
         const uint64_t total = hybsol_system_total_size(bulk);
         double a[MAX_DIM * MAX_DIM] = {0}, b[MAX_DIM * MAX_DIM] = {0};
         CHECK_OK(hybsol_system_to_dense(bulk, a));

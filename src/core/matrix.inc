@@ -3,20 +3,19 @@
  *
  * Deliberately unguarded: ``matrix.c`` includes this file twice, once for the
  * double spelling of the public API and once for the single-precision one.
- * Before each inclusion it defines:
+ * Before each inclusion it defines
  *
  *   HYBSOL_SCALAR   the type the elements are stored in
  *   HYBSOL_ACC      the type the product loops accumulate in
  *   HYBSOL_VIEW     the view type spelling those elements
  *   HYBSOL_FN(name) the name the resulting function gets
  *
- * ``HYBSOL_ACC`` is kept separate from ``HYBSOL_SCALAR`` so that storing
- * single precision while accumulating in double later does not need this file
- * restructured: casts to it are no-ops for the double instantiation, so that
- * spelling stays bit-for-bit what it was when this was one hand-written file.
+ * ``HYBSOL_ACC`` is separate from ``HYBSOL_SCALAR`` so that accumulating in
+ * double while storing single needs no restructuring: casts to it are no-ops
+ * for the double instantiation, which stays bit-for-bit what it was.
  *
- * Every macro is undefined at the bottom, which is what makes a second
- * inclusion of this file in the same translation unit well-defined.
+ * Every macro is undefined at the bottom, which makes a second inclusion in
+ * the same translation unit well-defined.
  */
 
 HYBSOL_VIEW HYBSOL_FN(view)(const uint64_t rows, const uint64_t cols, HYBSOL_SCALAR *const data)
@@ -35,14 +34,12 @@ void HYBSOL_FN(multiply)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *const b,
     const HYBSOL_SCALAR *const restrict ptr_b = b->data;
     HYBSOL_SCALAR *const restrict ptr_out = out->data;
 
-    // Ordered i-k-j rather than i-j-k. The inner loop then runs along a row of
-    // B and a row of out, both unit stride, so the compiler vectorizes it
-    // without being asked; in the i-j-k order it would have to gather B by
-    // columns, which is why that spelling ran at one element per cycle for
-    // float and double alike. Every out[i][j] still accumulates over k in
-    // ascending order, and the j-loop is elementwise rather than a reduction,
-    // so vectorizing it does not reassociate anything and the result is
-    // bit-for-bit what the i-j-k spelling produced.
+    // Ordered i-k-j rather than i-j-k: the inner loop then runs along a row of
+    // B and of out, both unit stride, so it vectorizes without being asked. In
+    // i-j-k the compiler would have to gather B by columns, which is why that
+    // spelling ran at one element per cycle. Every out[i][j] still accumulates
+    // over k in ascending order and the j-loop is elementwise, so nothing is
+    // reassociated and the result is bit-for-bit what i-j-k produced.
     for (uint64_t i = 0; i < a->rows; ++i)
     {
         for (uint64_t j = 0; j < out->cols; ++j)
@@ -66,7 +63,7 @@ void HYBSOL_FN(multiply_sub_inplace)(const HYBSOL_VIEW *const a, const HYBSOL_VI
                 (unsigned long long)a->cols, (unsigned long long)b->rows);
     CUTL_ASSERT(out->rows == a->rows && out->cols == b->cols, "Output matrix has incorrect dimensions.");
 
-    // Compute A @ B and subtract the result from whatever is in OUT
+    // Compute A @ B and subtract it from whatever is in OUT
     const HYBSOL_SCALAR *const restrict ptr_a = a->data;
     const HYBSOL_SCALAR *const restrict ptr_b = b->data;
     HYBSOL_SCALAR *const restrict ptr_out = out->data;
@@ -97,7 +94,7 @@ hybsol_result_t HYBSOL_FN(lu_decompose)(const HYBSOL_VIEW *const m)
 
     for (uint64_t i = 0; i < m->rows; ++i)
     {
-        // Compute a row of U
+        // One row of U
         for (uint64_t j = i; j < m->rows; ++j)
         {
             HYBSOL_ACC u_ij = (HYBSOL_ACC)m->data[i * m->cols + j];
@@ -113,7 +110,7 @@ hybsol_result_t HYBSOL_FN(lu_decompose)(const HYBSOL_VIEW *const m)
         if (pivot == 0)
             return HYBSOL_ERROR_SINGULAR;
 
-        // Compute a column of L (the first element is always implicitly 1, so skip it)
+        // One column of L; the first element is implicitly 1, so skip it
         for (uint64_t j = i + 1; j < m->cols; ++j)
         {
             HYBSOL_ACC l_ij = (HYBSOL_ACC)m->data[j * m->cols + i];
@@ -140,7 +137,7 @@ hybsol_result_t HYBSOL_FN(lu_solve)(const HYBSOL_VIEW *const m, const HYBSOL_VIE
                 (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
                 (unsigned long long)b->cols);
 
-    // Have to deal with every column in the same way
+    // Every column is solved the same way
     for (uint64_t i_col = 0; i_col < b->cols; ++i_col)
     {
         // Forward substitution to solve the L part (diagonal is 1)

@@ -3,13 +3,12 @@
  * The block-structured linear system the solver operates on.
  *
  * A system is a square ``n x n`` grid of dense blocks laid out on an
- * underlying ``size x size`` matrix (``size`` being the sum of the block
- * sizes). Only the blocks of the sparsity pattern are stored, sorted by
- * column within each row.
+ * underlying ``size x size`` matrix, ``size`` being the sum of the block
+ * sizes. Only the sparsity pattern is stored, sorted by column within each
+ * row.
  *
- * The pattern must be symmetric below the diagonal and every row must
- * contain its diagonal block; :c:func:`hybsol_system_is_valid` checks this
- * and :c:func:`hybsol_system_decompose` refuses to run on an invalid system.
+ * The pattern must be symmetric below the diagonal and every row must contain
+ * its diagonal block; :c:func:`hybsol_system_is_valid` checks this.
  */
 
 #ifndef HYBSOL_BLOCK_SYSTEM_H
@@ -48,22 +47,15 @@ hybsol_result_t hybsol_system_create(uint64_t n_blocks, HYBSOL_IN(uint64_t, bloc
 /**
  * Create an empty system that stores its blocks in a chosen type.
  *
- * Everything about the system follows from this: the blocks it is filled with,
- * the factors :c:func:`hybsol_system_decompose` produces from them and every
- * operation that touches them use ``precision``. Choosing
- * :c:enumerator:`HYBSOL_PRECISION_SINGLE` halves the memory and (on hardware
- * where FP32 is faster) the time of the factorization, at the cost of a
- * forward error of roughly ``cond * 1e-7`` instead of ``cond * eps``.
+ * ``HYBSOL_PRECISION_SINGLE`` halves the memory and, where FP32 is faster,
+ * the time of the factorization, at the cost of a forward error of roughly
+ * ``cond * 1e-7`` instead of ``cond * eps``. Vectors are unaffected: the
+ * solve and ordering functions keep taking doubles and convert at the
+ * boundary.
  *
- * Vectors are unaffected: :c:func:`hybsol_system_solve`,
- * :c:func:`hybsol_system_reorder_vector` and the ordering helpers keep taking
- * doubles for both precisions, converting at the boundary.
- *
- * Precision cannot be changed afterwards, and every function that carries
- * values has a matching spelling — the unsuffixed one for a
- * :c:enumerator:`HYBSOL_PRECISION_DOUBLE` system and ``_f32`` for a
- * :c:enumerator:`HYBSOL_PRECISION_SINGLE` one. Using the wrong spelling
- * asserts rather than converting behind the caller's back.
+ * Precision cannot be changed afterwards, and every function carrying values
+ * has a matching spelling; using the wrong one asserts rather than converting
+ * behind the caller's back.
  *
  * :param n_blocks: Number of blocks per dimension; asserted at least 1.
  * :param block_sizes: Array of ``n_blocks`` sizes; asserted non-zero.
@@ -124,10 +116,7 @@ uint64_t hybsol_system_total_size(const hybsol_system_t *sys);
 /**
  * Get the size of a block.
  *
- * Every block ``(row, col)`` has this many rows and
- * :c:func:`hybsol_system_block_size` ``(sys, col)`` columns, so the matrix
- * of the whole system is square with side
- * :c:func:`hybsol_system_total_size`.
+ * Block ``(row, col)`` has this many rows and ``block_size(col)`` columns.
  *
  * :param sys: The system.
  * :param idx: Block index.
@@ -315,12 +304,10 @@ hybsol_result_t hybsol_system_add_block_f32(hybsol_system_t *sys, uint64_t row, 
  * Add many blocks in a single pass.
  *
  * Block ``k`` occupies ``block_size(rows[k]) * block_size(cols[k])``
- * consecutive doubles of ``data``, in that order. Duplicate
- * ``(row, col)`` pairs accumulate, exactly as repeated calls to
- * :c:func:`hybsol_system_add_block` would.
- *
- * This is the fast assembly path: the index arrays are grouped and sorted
- * once, and each row allocates its storage a single time.
+ * consecutive doubles of ``data``, in that order. Duplicate ``(row, col)``
+ * pairs accumulate, exactly as repeated calls to
+ * :c:func:`hybsol_system_add_block` would. The index arrays are grouped and
+ * sorted once, so each row allocates its storage a single time.
  *
  * :param sys: The system.
  * :param n_entries: Number of blocks being added.
@@ -354,25 +341,16 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *sys, uint64_t n_en
 /**
  * Get writable storage for a block, creating it on first use.
  *
- * The shape of the block is implied by the system, so unlike
- * :c:func:`hybsol_system_add_block` there is nothing to specify: the caller
- * is handed a view of exactly the right size and fills it directly. This is
- * meant for assemblers that would otherwise have to build every element
- * matrix or constraint block in a temporary buffer only to have it copied in.
+ * The shape is implied by the system, so the caller gets a view of exactly the
+ * right size and fills it directly — no temporary buffer. An absent block is
+ * inserted into the pattern and zero-filled, so a partial scatter never sees
+ * stale bytes; a present one is returned as it stands, never cleared and never
+ * accumulated, so repeated calls hand back the same buffer.
  *
- * If the block is absent it is inserted into the row's sparsity pattern and
- * zero-filled, so a partial scatter never observes stale heap bytes. If the
- * block is already present it is returned exactly as it stands; the function
- * never clears or accumulates, and repeated calls hand back the same buffer.
- *
- * Writing through the view is allowed but must not change its shape. The
- * pointer stays valid while other blocks are added to the system, since each
- * block owns its own allocation, but it does not survive
- * :c:func:`hybsol_system_reorder_blocks` or :c:func:`hybsol_system_decompose`,
- * both of which rebuild the rows.
- *
- * As with :c:func:`hybsol_system_add_block`, writing the diagonal block
- * invalidates that row's cached factorization.
+ * The pointer stays valid while other blocks are added, since each block owns
+ * its allocation, but not across :c:func:`hybsol_system_reorder_blocks` or
+ * :c:func:`hybsol_system_decompose`, which rebuild the rows. Writing the
+ * diagonal block invalidates that row's cached factorization.
  *
  * :param sys: The system.
  * :param row: Block row index; asserted in range.
@@ -385,12 +363,8 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *sys, uint64_t n_en
 hybsol_result_t hybsol_system_block_storage(hybsol_system_t *sys, uint64_t row, uint64_t col, hybsol_matrix_t *out);
 
 /**
- * The single-precision spelling of :c:func:`hybsol_system_block_storage`.
- *
- * Everything said there holds: the block is created zero-filled on first use
- * and handed back untouched afterwards, and the view stays valid until the
- * rows are rebuilt. The difference is the type of the buffer handed back and
- * the precision the system has to store.
+ * The ``_f32`` spelling of :c:func:`hybsol_system_block_storage`; everything
+ * said there holds, with the buffer type and the required precision differing.
  *
  * :param sys: The system; asserted to store ``float``.
  * :param row: Block row index; asserted in range.
@@ -439,13 +413,11 @@ hybsol_result_t hybsol_system_multiply_row_f32(hybsol_system_t *sys, uint64_t ro
  * Eliminate a block row using another one, with an explicit multiplier.
  *
  * Computes ``row_tgt := row_tgt - mat @ row_src``. Entries of either row
- * with a column index at or below ``row_src`` are assumed to have been
- * eliminated already and are left alone.
+ * with a column index at or below ``row_src`` are assumed already eliminated
+ * and are left alone.
  *
- * The target row must contain its block in column ``row_src``. The
- * resulting row must be able to hold the union of the two sparsity
- * patterns; if a later allocation fails the target row is emptied rather
- * than left half-updated.
+ * The target row must contain its block in column ``row_src``. If a later
+ * allocation fails the target row is emptied rather than left half-updated.
  *
  * :param sys: The system.
  * :param row_tgt: Row to update; asserted to hold column ``row_src``.

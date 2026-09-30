@@ -14,8 +14,8 @@ void hybsol_ops_append(hybsol_system_t *const sys, const hybsol_operation_t op)
     //
     // `omp atomic capture` is deliberately not used: GCC does not treat its
     // structured-block form as a capture and silently loses updates. A relaxed
-    // fetch-add is the same lock-free bump and says exactly what it does --
-    // the slot contents are published by the release that ends the loop.
+    // fetch-add is the same lock-free bump; the slot contents are published by
+    // the release that ends the loop.
 #ifdef __GNUC__
     const uint64_t pos = __atomic_fetch_add(&sys->n_ops, 1, __ATOMIC_RELAXED);
 #else
@@ -51,8 +51,8 @@ static void find_diagonal(hybsol_system_t *const sys, const uint64_t idx, hybsol
 
     hybsol_row_t *const row = sys->rows + idx;
     uint64_t i_diag;
-    // The lookup must run for its side effect even with asserts compiled out,
-    // where CUTL_ASSERT degrades to an assumption the optimizer may delete.
+    // The lookup must run even with asserts compiled out, where CUTL_ASSERT
+    // degrades to an assumption the optimizer may delete.
     const int has_diag = hybsol_row_find(row, idx, &i_diag);
     CUTL_ASSERT(has_diag, "Row %llu has no diagonal block; every row must contain one.", (unsigned long long)idx);
 
@@ -65,8 +65,8 @@ static void find_diagonal(hybsol_system_t *const sys, const uint64_t idx, hybsol
 /*
  * Everything that touches block values is written once in
  * ``decompose_numeric.inc`` and instantiated here. Both instantiations are
- * private to this file: callers go through the spellings below, which pick
- * the right one for the system they were handed.
+ * private: callers go through the spellings below, which pick the right one
+ * for the system they were handed.
  */
 #define HYBSOL_SCALAR double
 #define HYBSOL_ACC double
@@ -165,8 +165,8 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
 
     // Everything the parallel regions touch is in place before they start: the
-    // operation list at its proven bound, and one bump region per thread. From
-    // here on nothing inside a region calls the allocator.
+    // operation list at its proven bound, and one bump region per thread.
+    // Nothing inside a region calls the allocator from here on.
     const uint64_t bound = hybsol_operation_bound(sys->n);
     if (sys->ops_capacity < bound)
     {
@@ -222,9 +222,9 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
         }
     }
 
-    // Every pass eliminates the rows whose blocking row is finished. Rows that
-    // are not done yet simply need another pass, and since the row a row waits
-    // for always has a strictly smaller index, the passes always make progress.
+    // Each pass eliminates the rows whose blocking row is finished; the rest
+    // need another pass. A row always waits on a strictly smaller index, so
+    // the passes make progress.
     while (shared_res == HYBSOL_SUCCESS)
     {
         uint64_t n_ready = 0;
@@ -262,8 +262,8 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
                     res = HYBSOL_ERROR_INTERNAL;
                 else if (row->entries[next]->col == i_tgt)
                 {
-                    // The diagonal is now first in the row, so the row is
-                    // finished and can act as a source in the next pass.
+                    // Diagonal is now first in the row: finished, usable as a
+                    // source in the next pass.
                     res = hybsol_system_decompose_diagonal(sys, i_tgt);
                     if (res == HYBSOL_SUCCESS)
                         res = hybsol_system_apply_diagonal_inverse(sys, i_tgt);
@@ -301,8 +301,8 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
         }
     }
 
-    // The regions stay alive: the entries carved out of them are the system's
-    // fill-in now, and are released with the system rather than individually.
+    // The regions stay alive: their entries are the system's fill-in now and
+    // are released with the system rather than individually.
     hybsol_thread_allocs_done(sys);
 
     if (shared_res != HYBSOL_SUCCESS)

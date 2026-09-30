@@ -31,7 +31,7 @@ static void order_from_colors(const uint64_t n, uint64_t ordering[const static n
         }
     }
 
-    // Turn the counts into offsets
+    // Counts become offsets
     uint64_t total_count = 0;
     for (uint64_t i = 0; i < color_count; ++i)
     {
@@ -40,7 +40,7 @@ static void order_from_colors(const uint64_t n, uint64_t ordering[const static n
         total_count += current_count;
     }
 
-    // Re-sort the offsets so they are ordered by color index again
+    // Re-sort the offsets by color index
     for (uint64_t i = 0; i + 1 < color_count; ++i)
     {
         for (uint64_t j = i + 1; j < color_count; ++j)
@@ -232,7 +232,7 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
     if (n == 0)
         return HYBSOL_SUCCESS;
 
-    // The number of colors can never exceed the densest row
+    // The color count can never exceed the densest row
     if (max_colors == 0)
     {
         for (uint64_t i = 0; i < n; ++i)
@@ -284,8 +284,7 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     CUTL_ASSERT(new_order != NULL, "The permutation must not be NULL.");
 
     const uint64_t n = sys->n;
-
-    // The ordering has to be a permutation of [0, n)
+    // `new_order` has to be a permutation of [0, n)
     uint8_t *const seen = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*seen));
     if (seen == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -299,8 +298,8 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     }
     hybsol_free(sys->allocator, seen);
 
-    // A scratch buffer per thread lets every row be re-sorted in parallel
-    // without allocating from inside the parallel region.
+    // A scratch buffer per thread, so re-sorting allocates nothing from
+    // inside the parallel region
     uint64_t max_entries = 0;
     for (uint64_t i = 0; i < n; ++i)
         if (sys->rows[i].count > max_entries)
@@ -368,11 +367,11 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
                         smallest = entry;
                     }
                 }
-                // Each pass removes exactly one entry from entry_buffer, so with
-                // `inserted` passes done there are `row->count - inserted` left
-                // and the loop stops before the last one. The search below can
-                // therefore not come up empty; stating it lets the optimizer drop
-                // the NULL checks instead of printing from inside the region.
+                // Each pass removes exactly one entry, so with `inserted`
+                // passes done `row->count - inserted` are left and the loop
+                // stops before the last one. The search can therefore not come
+                // up empty, which lets the optimizer drop the NULL checks
+                // instead of printing from inside the region.
                 CUTL_ASSUME(smallest != NULL);
                 row->entries[inserted] = smallest;
                 inserted += 1;
@@ -398,9 +397,8 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     }
 
 #if CUTL_ENABLE_ASSERTS
-    // Checked serially: CUTL_ASSERT prints to stderr, which a parallel
-    // region declaring `default(none)` may not reference. The rows are final
-    // by now, so this still verifies what the region wrote.
+    // Checked serially: CUTL_ASSERT prints to stderr, which a parallel region
+    // declaring `default(none)` may not reference. The rows are final by now.
     for (uint64_t i = 0; i < n; ++i)
     {
         const hybsol_row_t *const row = sys->rows + i;

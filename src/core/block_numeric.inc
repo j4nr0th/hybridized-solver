@@ -11,16 +11,13 @@
  *   HYBSOL_KERNEL(n) the dense-kernel name matching ``HYBSOL_VIEW``
  *   HYBSOL_FN(name)  the name the resulting function gets
  *
- * Only the arithmetic is instantiated. Index checks, the row bookkeeping and
- * the allocation sizes are shared: an entry is ``n_values *`` the size of
- * ``HYBSOL_SCALAR`` bytes either way, and the helpers this file reaches —
- * ``row_place_entry``, ``row_new_entry``, ``row_find_or_create`` — are the
- * same statics for both spellings.
+ * Only the arithmetic is instantiated: index checks, row bookkeeping and
+ * allocation sizes are shared, since an entry is ``n_values *`` the size of
+ * ``HYBSOL_SCALAR`` bytes either way.
  *
- * Everything here is ``static``: the two instantiations are private to
- * ``block_system.c`` and reached through its public spellings, which are what
- * own the precision check. Every macro is undefined at the bottom so a second
- * inclusion is well defined.
+ * Everything here is ``static``: the instantiations are private to
+ * ``block_system.c``, which owns the precision check. Every macro is undefined
+ * at the bottom so a second inclusion is well defined.
  */
 
 static hybsol_result_t HYBSOL_FN(row_insert_block)(const cutl_allocator_t *const alloc, hybsol_system_t *const sys,
@@ -30,7 +27,7 @@ static hybsol_result_t HYBSOL_FN(row_insert_block)(const cutl_allocator_t *const
     const uint64_t idx = hybsol_row_find_geq(row, col);
     if (idx < row->count && row->entries[idx]->col == col)
     {
-        // The block is already there, accumulate into it
+        // Already present: accumulate into it
         HYBSOL_SCALAR *const dst = (HYBSOL_SCALAR *)row->entries[idx]->vals;
         for (uint64_t i = 0; i < n_values; ++i)
             dst[i] += vals[i];
@@ -72,7 +69,7 @@ static hybsol_result_t HYBSOL_FN(add_block)(hybsol_system_t *const sys, const ui
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    // Touching the diagonal of this row invalidates a cached factorization
+    // Touching the diagonal invalidates the row's cached factorization
     if (row == col)
         hybsol_invalidate_diagonal(sys, row);
 
@@ -97,8 +94,7 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
         hybsol_require_index(sys, cols[k]);
     }
 
-    // Count how many blocks each row is about to receive so that every row
-    // grows its entry array exactly once.
+    // Count the blocks each row is about to receive, so every row grows once
     uint64_t *const counts = hybsol_alloc(sys->allocator, sizeof(*counts) * (size_t)sys->n);
     if (counts == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -155,7 +151,7 @@ static hybsol_result_t HYBSOL_FN(block_storage)(hybsol_system_t *const sys, cons
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    // Whoever writes through this view is replacing the diagonal block
+    // Writing through this view replaces the diagonal block
     if (row == col)
         hybsol_invalidate_diagonal(sys, row);
 
@@ -171,8 +167,8 @@ static void HYBSOL_FN(lookup_block)(const hybsol_system_t *const sys, const uint
     hybsol_require_index(sys, col);
 
     uint64_t idx;
-    // The lookup must run for its side effect even with asserts compiled out,
-    // where CUTL_ASSERT degrades to an assumption the optimizer may delete.
+    // The lookup must run even with asserts compiled out, where CUTL_ASSERT
+    // degrades to an assumption the optimizer may delete.
     const int found = hybsol_row_find(sys->rows + row, col, &idx);
     CUTL_ASSERT(found, "The system does not contain the block (%llu, %llu).", (unsigned long long)row,
                 (unsigned long long)col);
@@ -193,9 +189,8 @@ static hybsol_result_t HYBSOL_FN(multiply_row)(hybsol_system_t *const sys, const
 
     hybsol_row_t *const r = sys->rows + row;
 
-    // Find the largest block in the row to size the temporary buffer. An
-    // empty row has nothing to multiply (and would otherwise ask for a
-    // zero-sized buffer, which reads as an allocation failure).
+    // Size the temporary buffer by the largest block in the row. An empty row
+    // would ask for a zero-sized buffer, which reads as an allocation failure.
     uint64_t max_cols = 0;
     for (uint64_t i = 0; i < r->count; ++i)
     {
@@ -244,8 +239,8 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
     if (row_t->count == 0 || row_s->count == 0)
         return HYBSOL_ERROR_EMPTY_ROW;
 
-    // Find how big the buffer has to be for intermediate results, and how many
-    // entries the target row will hold once the two rows have been merged.
+    // Size the intermediate buffer, and count the entries the target row will
+    // hold once the two rows are merged.
     uint64_t unique_cols = 0, pos_tgt, pos_src;
     uint64_t max_cols = 0;
     for (pos_tgt = row_t->count, pos_src = row_s->count;; ++unique_cols)
@@ -289,9 +284,8 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
         return res;
 
     // `scratch` is the caller's per-thread block and is already large enough;
-    // without one -- the standalone eliminate entry points -- fall back to the
-    // allocator. `max_cols` is zero when there is nothing left to eliminate, in
-    // which case the buffer is never touched and is left alone.
+    // without one, fall back to the allocator. `max_cols == 0` means there is
+    // nothing left to eliminate, and the buffer is never touched.
     const size_t buffer_len = (size_t)max_cols * (size_t)size_tgt;
     HYBSOL_SCALAR *buffer = scratch;
     HYBSOL_SCALAR *owned = NULL;
@@ -303,10 +297,10 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
         buffer = owned;
     }
 
-    // Subtract the product of the multiplier and the source entries from the
-    // target entries, working backwards so untouched entries only move once.
-    // Allocations are made while the row is being rewritten; if one fails the
-    // whole target row is emptied so that the system at least stays walkable.
+    // Subtract the multiplier times the source entries from the target entries,
+    // working backwards so untouched entries move only once. An allocation
+    // failure part way through empties the target row, so the system at least
+    // stays walkable.
     uint64_t i, k;
     for (i = unique_cols, k = needed_size, pos_tgt = row_t->count, pos_src = row_s->count; i > 0; --i, --k)
     {
@@ -342,12 +336,11 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
                 hybsol_alloc(alloc, sizeof(*new_entry) + (size_t)out.rows * (size_t)out.cols * sizeof(HYBSOL_SCALAR));
             if (new_entry == NULL)
             {
-                // The row can not be brought back to a consistent state, so
-                // drop it entirely rather than leave a half-updated mess.
+                // The row can not be restored, so drop it entirely rather than
+                // leave a half-updated mess. Pooled entries are released with
+                // the system, not one by one.
                 for (uint64_t j = 0; j < row_t->capacity; ++j)
                 {
-                    // Entries carved out of a region belong to the system now,
-                    // so they are released with it rather than individually.
                     if (!hybsol_ptr_is_pooled(sys, row_t->entries[j]))
                         hybsol_free(row_t->allocator, row_t->entries[j]);
                     row_t->entries[j] = NULL;
@@ -395,8 +388,8 @@ static hybsol_result_t HYBSOL_FN(eliminate_row)(hybsol_system_t *const sys, cons
     hybsol_require_index(sys, row_tgt);
     hybsol_require_index(sys, row_src);
 
-    // The multiplier is the block the system already stores, so this spelling
-    // needs no operand of its own and works for either precision.
+    // The multiplier is a block the system already stores, so this spelling
+    // needs no operand and works for either precision.
     HYBSOL_VIEW mat;
     HYBSOL_FN(lookup_block)(sys, row_tgt, row_src, &mat);
 

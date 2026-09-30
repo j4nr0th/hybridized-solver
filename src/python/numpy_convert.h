@@ -3,7 +3,9 @@
  * Conversion between :c:type:`hybsol_matrix_t` and NumPy arrays.
  *
  * These are the only functions in the extension that know about both the
- * core's view type and NumPy's array type.
+ * core's view type and NumPy's array type. Unless a function says otherwise,
+ * it demands a C-contiguous, aligned array of a fixed dtype, and a ``dims``
+ * entry of ``0`` means "any size".
  */
 
 #pragma once
@@ -13,8 +15,7 @@
 /**
  * Read a matrix view out of a validated NumPy array.
  *
- * The array must be ``double``, C-contiguous and aligned; the caller keeps
- * its reference for at least as long as the view is used.
+ * The caller keeps its reference for at least as long as the view is used.
  *
  * :param arr: Array to describe, either 1-D (treated as a column) or 2-D.
  * :returns: A view borrowing ``arr``'s buffer.
@@ -23,8 +24,6 @@ hybsol_matrix_t hybsol_matrix_from_array(const PyArrayObject *arr);
 
 /**
  * Read a single-precision matrix view out of a validated NumPy array.
- *
- * The single-precision twin of :c:func:`hybsol_matrix_from_array`.
  *
  * :param arr: Array to describe, either 1-D (treated as a column) or 2-D.
  * :returns: A view borrowing ``arr``'s buffer.
@@ -42,9 +41,9 @@ PyArrayObject *hybsol_matrix_to_array(const hybsol_matrix_t *mat);
 /**
  * Wrap a matrix's existing storage as a writable 2-D ``double`` array.
  *
- * The array does not own its memory: ``base`` is recorded as the array's base
- * object so that whatever the storage belongs to stays alive for exactly as
- * long as the array can be written through.
+ * ``base`` is recorded as the array's base object, so whatever the storage
+ * belongs to stays alive for exactly as long as the array can be written
+ * through.
  *
  * :param mat: Matrix whose buffer is wrapped.
  * :param base: Object owning the storage. One reference to it is consumed
@@ -75,9 +74,8 @@ PyArrayObject *hybsol_fmatrix_wrap(const hybsol_fmatrix_t *mat, PyObject *base);
 /**
  * Convert an object to a ``double`` array with the required shape.
  *
- * This is ``PyArray_FROMANY`` plus :c:func:`check_input_array` in one step,
- * so callers cannot forget the validation (or leak the array when the
- * validation fails, as earlier versions of this module did).
+ * This is ``PyArray_FROMANY`` plus :c:func:`check_input_array` in one step, so
+ * callers cannot forget the validation or leak the array when it fails.
  *
  * :param obj: Anything array-like.
  * :param ndim: Required number of dimensions.
@@ -154,9 +152,8 @@ int hybsol_prepare_output(PyArrayObject *out, int ndim, const npy_intp *dims, in
 /**
  * Get a writable 1-D ``uint8`` array of at least ``min_bytes``.
  *
- * Used for buffers the library writes into rather than reads, such as a
- * decomposition workspace, so it demands the writeable flag the read-only
- * input helpers do not.
+ * Unlike the read-only input helpers above, the writeable flag is required:
+ * this is for buffers the library writes into rather than reads.
  *
  * @param obj Object to convert; anything NumPy accepts for a uint8 array.
  * @param ndim Number of dimensions; must be 1.

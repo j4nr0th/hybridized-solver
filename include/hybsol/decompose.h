@@ -69,14 +69,11 @@ uint64_t hybsol_system_operation_bound(const hybsol_system_t *sys);
 /**
  * Decompose the system in place, using scratch the caller supplies.
  *
- * This is :c:func:`hybsol_system_decompose` without the internal allocation:
- * every byte it needs up front is ``workspace_bytes``, sized by
- * :c:func:`hybsol_workspace_bytes`, and nothing is allocated from the system's
- * allocator once the parallel regions start.
- *
- * That holds even when the system's allocator is not thread-safe, because each
- * thread fills a region of its own. The fill-in the decomposition produces
- * lives in those regions and is released with the system, not here.
+ * Every byte it needs up front is ``workspace_bytes``, sized by
+ * :c:func:`hybsol_workspace_bytes`; nothing is allocated from the system's
+ * allocator once the parallel regions start, so it need not be thread-safe.
+ * Each thread fills a region of its own, and the fill-in those regions hold is
+ * released with the system rather than here.
  *
  * :param sys: The system to decompose. Must not be ``NULL``.
  * :param workspace: Buffer of at least ``workspace_bytes``; must not be
@@ -98,19 +95,14 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *sys, voi
 /**
  * Decompose the system in place.
  *
- * The system must be valid (see :c:func:`hybsol_system_is_valid`). On
- * success the diagonal blocks hold LU factors instead of their original
+ * On success the diagonal blocks hold LU factors instead of their original
  * values and the recorded operation list can be replayed with
  * :c:func:`hybsol_system_apply_operations`.
  *
- * The work is embarrassingly parallel up to the point where a row's
- * diagonal is complete; ``n_threads`` controls how many OpenMP threads are
- * used for that phase.
- *
- * This allocates the scratch :c:func:`hybsol_system_decompose_with_workspace`
- * would otherwise take from the caller, from ``sys``'s allocator. Callers that
- * decompose repeatedly, or that care where the memory comes from, should size
- * a buffer once with :c:func:`hybsol_workspace_bytes` and use that spelling.
+ * Allocates the scratch that :c:func:`hybsol_system_decompose_with_workspace`
+ * would take from the caller, out of ``sys``'s allocator. Callers decomposing
+ * repeatedly, or that care where the memory comes from, should size a buffer
+ * once and use that spelling instead.
  *
  * :param sys: The system to decompose.
  * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP

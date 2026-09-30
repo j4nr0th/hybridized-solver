@@ -365,7 +365,11 @@ class BlockSystem:
         """
         ...
 
-    def decompose(self, n_threads: int = 0) -> None:
+    def decompose(
+        self,
+        n_threads: int = 0,
+        workspace: npt.NDArray[np.uint8] | None = None,
+    ) -> None:
         """Decompose the block system.
 
         The system must be valid (see :meth:`is_valid`). After a successful
@@ -377,6 +381,26 @@ class BlockSystem:
         n_threads : int, default: 0
             Number of OpenMP threads to use. ``0`` selects the OpenMP default
             (usually every core) and ``1`` runs the decomposition serially.
+        workspace : numpy.typing.NDArray[numpy.uint8], optional
+            A writable 1-D array of at least :meth:`workspace_bytes` bytes.
+            Passing one keeps the scratch out of the library's allocator, so a
+            buffer can be reused across systems. Its contents are overwritten.
+            Omit it and the scratch is allocated internally.
+        """
+        ...
+
+    def workspace_bytes(self, n_threads: int = 0) -> int:
+        """Bytes of scratch :meth:`decompose` needs at this thread count.
+
+        Sizes the ``workspace`` array :meth:`decompose` accepts, so one buffer
+        can be allocated once and reused. It depends only on the block sizes,
+        the precision and the thread count, so it may be asked for before any
+        blocks are added.
+
+        Parameters
+        ----------
+        n_threads : int, default: 0
+            The thread count that will be passed to :meth:`decompose`.
         """
         ...
 

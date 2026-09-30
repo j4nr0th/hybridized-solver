@@ -16,14 +16,14 @@ uint64_t hybsol_row_find_geq(const hybsol_row_t *const row, const uint64_t val)
     if (size == 0)
         return 0;
 
-    // Quickly check the extremes
+    // Check the two extremes before searching
     if (array[0]->col >= val)
         return 0;
 
     if (array[size - 1]->col < val)
         return size;
 
-    // Use binary search until we are down to 8 values
+    // Binary search until down to 8 values
     uint64_t lo = 0, len = size;
 
     while (len > 8)
@@ -84,9 +84,8 @@ hybsol_result_t hybsol_row_reserve(hybsol_system_t *const sys, hybsol_row_t *con
     if (new_capacity > SIZE_MAX / sizeof(*row->entries))
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
-    // Not `realloc`: the old array may have come from the system's allocator
-    // while the new one comes from a decomposition's bump region, and the two
-    // must be told apart before the old block is released.
+    // Not `realloc`: the old array may come from a different allocator than
+    // the new one, so the release has to go through whichever owns it.
     const size_t old_bytes = (size_t)row->capacity * sizeof(*row->entries);
     hybsol_row_entry_t **const ptr = hybsol_alloc(hybsol_current_alloc(sys), (size_t)new_capacity * sizeof(*ptr));
     if (ptr == NULL)
@@ -124,9 +123,8 @@ void hybsol_invalidate_diagonal(hybsol_system_t *const sys, const uint64_t idx)
 /**
  * Insert ``entry`` into ``row`` at the slot ``idx`` it was found to belong in.
  *
- * Only the pointer array moves; the entries themselves are individually
- * allocated and never relocated, which is what lets a caller keep a pointer
- * into one block while further blocks are added to the same row.
+ * Only the pointer array moves; entries never relocate, which is what lets a
+ * caller hold a pointer into one block while more are added to the same row.
  */
 static void row_place_entry(hybsol_row_t *const row, const uint64_t idx, hybsol_row_entry_t *const entry)
 {
@@ -148,12 +146,8 @@ static hybsol_result_t row_find_or_create(const cutl_allocator_t *alloc, hybsol_
                                           uint64_t col, uint64_t n_values, size_t elem_size, hybsol_row_entry_t **out);
 
 /**
- * Allocate an entry for ``n_values`` elements of ``elem_size`` bytes and
- * stamp it with its column.
- *
- * Both insertion paths go through here so that an entry is never placed in a
- * row before its ``col`` has been set — the row's binary search reads it
- * immediately.
+ * Allocate an entry for ``n_values`` elements of ``elem_size`` bytes and stamp
+ * it with its column, which the row's binary search reads immediately.
  *
  * :returns: The entry, or ``NULL`` when out of memory.
  */
@@ -170,9 +164,8 @@ static hybsol_row_entry_t *row_new_entry(const cutl_allocator_t *const alloc, co
 /**
  * Find the entry for ``col``, creating it zero-filled when it is absent.
  *
- * An entry that is already present is handed back untouched: this never
- * clears and never accumulates, so a caller can re-fetch the same buffer
- * without losing whatever it wrote into it last time.
+ * An entry already present is handed back untouched: this never clears and
+ * never accumulates, so re-fetching a buffer keeps what was written into it.
  */
 static hybsol_result_t row_find_or_create(const cutl_allocator_t *const alloc, hybsol_system_t *const sys,
                                           hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
@@ -206,8 +199,8 @@ static hybsol_result_t row_find_or_create(const cutl_allocator_t *const alloc, h
 /*
  * Everything that touches block values is written once in
  * ``block_numeric.inc`` and instantiated here. Both instantiations are
- * private to this file: callers go through the spellings below, which are
- * what own the precision check.
+ * private: callers go through the spellings below, which own the precision
+ * check.
  */
 #define HYBSOL_SCALAR double
 #define HYBSOL_ACC double
@@ -231,8 +224,7 @@ static void free_row(const hybsol_system_t *const sys, hybsol_row_t *const row)
 {
     for (uint64_t i = 0; i < row->count; ++i)
     {
-        // A decomposition carves its fill-in out of a region the system owns
-        // outright, so those entries are not freed one by one.
+        // Pooled entries are released with the system, not one by one
         if (!hybsol_ptr_is_pooled(sys, row->entries[i]))
             hybsol_free(row->allocator, row->entries[i]);
         row->entries[i] = NULL;
@@ -256,8 +248,7 @@ hybsol_result_t hybsol_system_create_with_precision(const uint64_t n_blocks,
     CUTL_ASSERT(precision == HYBSOL_PRECISION_DOUBLE || precision == HYBSOL_PRECISION_SINGLE,
                 "Precision must be one of the enumerators, but was %d.", (int)precision);
 
-    // The sizes are validated up front so that no failure path can run on a
-    // partially initialised system.
+    // Validated up front, so no failure path runs on a partial system
     for (uint64_t i = 0; i < n_blocks; ++i)
     {
         CUTL_ASSERT(block_sizes[i] > 0, "Block %llu has size 0; every block must be non-empty.", (unsigned long long)i);
@@ -316,8 +307,7 @@ void hybsol_system_destroy(hybsol_system_t *const sys)
             free_row(sys, sys->rows + i);
     }
 
-    // The regions are released after the rows, because the pooled check the
-    // rows rely on reads them.
+    // Regions go after the rows: the pooled check the rows rely on reads them
     hybsol_thread_allocs_done(sys);
     hybsol_regions_free(sys);
 

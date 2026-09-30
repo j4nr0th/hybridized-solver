@@ -79,7 +79,7 @@ static void test_lu_roundtrip(void)
         const hybsol_matrix_t sol = hybsol_matrix_view(n, 1, x);
         CHECK_OK(hybsol_matrix_lu_solve(&m, &rhs, &sol));
 
-        // The solution has to reproduce the right-hand side of the original.
+        // Residual against the original matrix.
         for (uint64_t i = 0; i < n; ++i)
         {
             double acc = 0.0;

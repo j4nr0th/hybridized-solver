@@ -4,16 +4,13 @@
  * needs on them.
  *
  * A :c:struct:`hybsol_matrix_t` never owns its storage: it is a view onto
- * caller-provided memory (or onto a block stored inside a
- * :c:struct:`hybsol_system_t`). Keeping ``data`` aligned with ``rows`` is the
- * caller's responsibility.
+ * caller-provided memory, or onto a block inside a :c:struct:`hybsol_system_t`.
+ * Keeping ``data`` aligned with ``rows`` is the caller's responsibility.
  *
- * Everything below comes in a single-precision twin for systems created with
- * :c:enumerator:`HYBSOL_PRECISION_SINGLE`: :c:struct:`hybsol_matrix_t` and the
- * unsuffixed names carry doubles, :c:struct:`hybsol_fmatrix_t` and the
- * ``_f32``-suffixed names carry floats. The two spellings are written once and
- * instantiated together, so their semantics are the same apart from the type
- * they store.
+ * Everything comes in a single-precision twin for
+ * :c:enumerator:`HYBSOL_PRECISION_SINGLE` systems. The two spellings are
+ * written once and instantiated together, so their semantics are the same
+ * apart from the type they store.
  */
 
 #ifndef HYBSOL_MATRIX_H

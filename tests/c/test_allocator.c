@@ -3,11 +3,10 @@
  * Decomposing with a caller-supplied allocator that is deliberately *not*
  * thread-safe.
  *
- * The point of the per-thread bump regions is that a decomposition never calls
- * the system's allocator from inside a parallel region. Without them this test
- * is a race, and on a multi-core box it reliably faults; with them a plain
- * bump allocator -- no lock at all -- works, and gives the same answers the
- * standard allocator does.
+ * The per-thread bump regions mean a decomposition never calls the system's
+ * allocator from inside a parallel region. Without them this test is a race
+ * that reliably faults on a multi-core box; with them a plain bump allocator
+ * -- no lock at all -- works and gives the standard allocator's answers.
  */
 
 #include "test_util.h"
@@ -19,9 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------------- */
-/* A bump allocator with no locking whatsoever                                 */
-/* ------------------------------------------------------------------------- */
+/* A bump allocator with no locking whatsoever */
 
 typedef struct
 {
@@ -100,9 +97,7 @@ static void arena_release(void)
     g_arena.base = NULL;
 }
 
-/* ------------------------------------------------------------------------- */
-/* A well-conditioned block system                                            */
-/* ------------------------------------------------------------------------- */
+/* A well-conditioned block system */
 
 typedef struct
 {
@@ -118,9 +113,8 @@ typedef struct
 /**
  * Fill a COO description of a symmetric, strongly diagonally dominant system.
  *
- * Diagonal dominance matters: unpivoted LU must not hit a zero pivot, so a
- * corrupted system shows up as a wrong answer rather than a clean error that
- * would hide the race.
+ * Dominance keeps unpivoted LU off a zero pivot, so corruption shows up as a
+ * wrong answer rather than a clean error that would hide the race.
  */
 static int pattern_build(pattern_t *const p, const uint64_t n_blocks, const uint64_t block_size)
 {
@@ -201,8 +195,8 @@ static int pattern_system(const pattern_t *const p, const cutl_allocator_t *cons
 /**
  * Decompose and solve, then checksum the answer.
  *
- * The matrix is read before the decomposition, because decompose overwrites the
- * blocks in place with the LU factors.
+ * The matrix is read first: decompose overwrites the blocks in place with the
+ * LU factors.
  */
 static int solve_checksum(hybsol_system_t *const sys, const uint64_t n_threads, double *const checksum)
 {
@@ -245,14 +239,10 @@ static int solve_checksum(hybsol_system_t *const sys, const uint64_t n_threads, 
     return ok;
 }
 
-/* ------------------------------------------------------------------------- */
-/* Tests                                                                      */
-/* ------------------------------------------------------------------------- */
+/* Tests */
 
-/**
- * Serial work has to drive a caller-supplied allocator correctly at all,
- * including releasing everything through it.
- */
+/** Serial work must drive a caller-supplied allocator correctly, including
+ * releasing everything through it. */
 static void test_serial_with_lock_free_allocator(void)
 {
     pattern_t p;
@@ -269,8 +259,8 @@ static void test_serial_with_lock_free_allocator(void)
     CHECK_MSG(allocations > 0, "the supplied allocator was never called (%ld)", allocations);
     hybsol_system_destroy(sys);
 
-    /* Nothing should have been handed out twice; the arena is bump-only, so a
-     * double free or a use-after-free would show up as a fault above. */
+    // The arena is bump-only, so a double free or use-after-free would have
+    // faulted above; the size must not move on destroy.
     CHECK_MSG((long)g_arena.used == peak_used, "the arena grew while destroying (%ld -> %ld)", peak_used,
               (long)g_arena.used);
 
@@ -280,8 +270,8 @@ static void test_serial_with_lock_free_allocator(void)
 
 /**
  * The regression this file exists for: with the per-thread bump regions a
- * lock-free allocator is not raced by the parallel regions. Without them this
- * faults outright at more than one thread.
+ * lock-free allocator is not raced by the parallel regions. Without them it
+ * faults outright above one thread.
  */
 static void test_parallel_with_lock_free_allocator(void)
 {
@@ -321,10 +311,8 @@ static void test_parallel_with_lock_free_allocator(void)
     pattern_free(&p);
 }
 
-/**
- * The recorded operation list is sized to a proven bound, so a decomposition
- * must stay inside it rather than growing.
- */
+/** The operation list is sized to a proven bound, so a decomposition must stay
+ * inside it rather than grow. */
 static void test_operation_bound_holds(void)
 {
     pattern_t p;
@@ -349,10 +337,8 @@ static void test_operation_bound_holds(void)
     pattern_free(&p);
 }
 
-/**
- * A caller-supplied workspace must give the same answer as the internal one,
- * must actually be written to, and must be reusable.
- */
+/** A caller-supplied workspace must match the internal one, be written to, and
+ * be reusable. */
 static void test_workspace_matches_internal(void)
 {
     const uint64_t n_threads = 4;
@@ -389,8 +375,7 @@ static void test_workspace_matches_internal(void)
     }
 
     CHECK_OK(hybsol_system_decompose_with_workspace(sys, workspace, bytes, n_threads));
-    /* The header is written first, and its magic doubles as proof the caller's
-     * own buffer is what got used. */
+    // The header is written first, and its magic proves the caller's buffer is what got used.
     CHECK_MSG(memcmp(workspace, "1wlosbyh", 8) == 0, "the caller's workspace was not written to");
 
     CHECK_OK(hybsol_system_solve(sys, x));

@@ -121,8 +121,7 @@ static void test_ordering_is_a_permutation(void)
             for (uint64_t i = 0; i < s.n_blocks; ++i)
                 CHECK_MSG(seen[i] == 1, "index %llu was used %u times", (unsigned long long)i, seen[i]);
 
-            // The identity is a valid input to the coloring of an already
-            // reordered system, so computing it twice has to be stable.
+            // The identity is a valid input to coloring an already reordered system, so this must be stable.
             uint64_t again[MAX_BLOCKS];
             CHECK_OK(hybsol_system_compute_reordering(s.sys, strategies[k], 0, again));
             CHECK(memcmp(order, again, sizeof(uint64_t) * s.n_blocks) == 0);
@@ -149,10 +148,9 @@ static void test_coloring_property(void)
         for (uint64_t i = 0; i < s.n_blocks; ++i)
             where[order[i]] = i;
 
-        // Reconstruct the color groups: walk the rows in the reordered order
-        // and assign the lowest color none of the already-placed neighbours
-        // uses. The number of colors needed must never exceed what
-        // `compute_reordering` used when asked for a bounded coloring.
+        // Walk the rows in the reordered order and assign the lowest color no
+        // already-placed neighbour uses; `n_colors` is then exactly what a
+        // bounded coloring must accept.
         uint8_t color[MAX_BLOCKS] = {0};
         uint64_t n_colors = 0;
         for (uint64_t slot = 0; slot < s.n_blocks; ++slot)
@@ -227,8 +225,7 @@ static void test_reorder_roundtrip(void)
             order[j] = tmp;
         }
 
-        // The permutation the reordering applies, as a matrix, so the results
-        // can be checked against plain matrix products.
+        // The permutation applied to the vectors and blocks, as offsets.
         uint64_t sizes_before[MAX_BLOCKS], offsets_before[MAX_BLOCKS + 1] = {0}, offsets_after[MAX_BLOCKS + 1] = {0};
         for (uint64_t i = 0; i < s.n_blocks; ++i)
         {
@@ -251,8 +248,7 @@ static void test_reorder_roundtrip(void)
         double dense_before[MAX_DIM * MAX_DIM] = {0};
         CHECK_OK(hybsol_system_to_dense(s.sys, dense_before));
 
-        // The vector helpers locate both slices with the offsets of the system
-        // they are given, so the system has to be reordered first.
+        // The vector helpers use the offsets of the system they are given, so reorder it first.
         CHECK_OK(hybsol_system_reorder_blocks(s.sys, order, 1));
         CHECK(hybsol_system_n_blocks(s.sys) == s.n_blocks);
         for (uint64_t i = 0; i < s.n_blocks; ++i)
@@ -331,10 +327,9 @@ static void test_reordered_system_solves_consistently(void)
         hybsol_system_reorder_vector(reordered, order, rhs, permuted_rhs);
         CHECK_OK(hybsol_system_solve(reordered, permuted_rhs));
 
-        // `permuted_rhs` now holds the reordered solution ...
+        // `permuted_rhs` now holds the reordered solution.
         hybsol_system_unorder_vector(reordered, order, permuted_rhs, actual);
-        // The two decompositions eliminate in different orders, so the
-        // comparison has to be relative.
+        // Different elimination orders, so the comparison has to be relative.
         for (uint64_t i = 0; i < s.dim; ++i)
             CHECK_NEAR(actual[i], reference[i], 1e-7 * (1.0 + fabs(reference[i])));
 
@@ -345,8 +340,7 @@ static void test_reordered_system_solves_consistently(void)
 
 static void test_reorder_and_vector_shuffle(void)
 {
-    // Two coupled blocks need two colors, which makes this a system where a
-    // bounded coloring can actually fail.
+    // Two coupled blocks need two colors, so a bounded coloring can actually fail here.
     const uint64_t sizes[] = {1, 1};
     hybsol_system_t *sys = NULL;
     CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));

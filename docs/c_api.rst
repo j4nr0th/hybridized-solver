@@ -23,21 +23,18 @@ Conventions
 
 Fallible functions return a result code instead of setting ``errno``;
 :c:func:`hybsol_result_str` turns a code into a short, stable description.
-Those codes cover conditions that are outcomes of the data rather than
-mistakes — allocation failure, a singular matrix, a system that does not
-decompose.
+Those codes cover outcomes of the data rather than mistakes — allocation
+failure, a singular matrix, a system that does not decompose.
 
 Conditions the caller can be asked to guarantee are *preconditions* instead:
-index ranges, non-``NULL`` output pointers, matching shapes, using the
-precision spelling the system stores, passing a real permutation, a row that
-has its diagonal block. These are checked with cutl's ``CUTL_ASSERT``, which
-aborts with a diagnostic naming the violated condition, and each function
-documents them with its parameters.
-
-The checks are compiled in for Debug builds and for the test suite. Release
-builds leave them off so nothing is paid for at runtime; set ``CUTL_ASSERTS``
-when configuring to override either way. Code that must not abort — the Python
-bindings, most obviously — checks the same conditions itself and raises instead.
+index ranges, non-``NULL`` output pointers, matching shapes, the precision
+spelling the system stores, a real permutation, a row that has its diagonal
+block. These are checked with cutl's ``CUTL_ASSERT``, which aborts with a
+diagnostic naming the violated condition, and each function documents them with
+its parameters. They are compiled in for Debug builds and the test suite;
+Release leaves them off, and setting ``CUTL_ASSERTS`` overrides either way.
+Code that must not abort — the Python bindings, most obviously — checks the
+same conditions itself and raises instead.
 
 Memory is allocated through a `cutl <https://github.com/j4nr0th/cutl>`_
 allocator, chosen per system rather than globally:
@@ -45,23 +42,22 @@ allocator, chosen per system rather than globally:
 until :c:func:`hybsol_system_destroy` returns, so systems can use different
 allocators and a bare ``malloc`` pointer may be handed to the library. Pass
 ``&CUTL_STD_ALLOCATOR`` for plain ``malloc``/``realloc``/``free``; cutl also
-provides arena, fixed-size-pool and validating allocators. Indices and counts
-are ``uint64_t`` throughout, and a system is an opaque
-:c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds and
-:c:func:`hybsol_system_destroy` releases.
+provides arena, fixed-size-pool and validating allocators.
 
 The allocator need only be safe for the phases that run one at a time.
-:c:func:`hybsol_system_decompose_with_workspace` is parallel, and never calls
-it from inside a parallel region: each thread fills a region of its own, and
-the fill-in it produces is owned by the system and released with it. So a
+:c:func:`hybsol_system_decompose_with_workspace` is parallel and never calls it
+from inside a parallel region: each thread fills a region of its own, and the
+fill-in those regions hold is owned by the system and released with it, so a
 plain bump arena with no locking at all can be supplied. Its transient scratch
-— three per-row arrays and one scratch block per thread — comes from a buffer
-the caller supplies instead, sized by :c:func:`hybsol_workspace_bytes`.
-:c:func:`hybsol_system_decompose` allocates that buffer itself when a caller
-does not care where it comes from.
+comes from a buffer the caller supplies, sized by
+:c:func:`hybsol_workspace_bytes`;
+:c:func:`hybsol_system_decompose` allocates that buffer itself. The recorded
+operation list is sized to :c:func:`hybsol_system_operation_bound` before the
+parallel region starts, so appending to it neither grows nor locks.
 
-The recorded operation list is sized to :c:func:`hybsol_system_operation_bound`
-before the parallel region starts, so appending to it neither grows nor locks.
+Indices and counts are ``uint64_t`` throughout, and a system is an opaque
+:c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds and
+:c:func:`hybsol_system_destroy` releases.
 
 The headers
 -----------

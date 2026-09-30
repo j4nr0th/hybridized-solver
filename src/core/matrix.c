@@ -2,9 +2,8 @@
  * @file core/matrix.c
  * Dense matrix kernels: products, differences and unpivoted LU.
  *
- * The kernels themselves live in ``matrix.inc``, which is included once per
- * spelling of the public API — see the comment at the top of that file for the
- * contract each inclusion sets up.
+ * The kernels live in ``matrix.inc``, included once per spelling of the public
+ * API; that file's header sets out the contract each inclusion configures.
  */
 
 #include "internal.h"

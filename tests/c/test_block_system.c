@@ -124,8 +124,7 @@ static void test_rows_and_blocks(void)
     CHECK_OK(hybsol_system_get_block(sys, 1, 2, &block));
     CHECK(block.rows == 1 && block.cols == 1 && block.data[0] == 3.0);
 
-    // Row 0 only has its diagonal, so nothing sits to the left of it; rows 1
-    // and 2 both have blocks in column 0.
+    // Rows 1 and 2 have blocks in column 0; row 0 has only its diagonal.
     uint8_t flags[3] = {0, 0, 0};
     hybsol_system_no_lower_connections(sys, flags);
     CHECK(flags[0] == 1 && flags[1] == 0 && flags[2] == 0);
@@ -162,8 +161,7 @@ static void test_dense_export(void)
     fill_sequential(3, full);
     CHECK_OK(add_dense_blocks(sys, 2, full, sizes));
 
-    // `to_dense` writes rows back to back, so the reference has to use the
-    // same (unpadded) stride.
+    // `to_dense` writes rows back to back, so the reference uses that stride.
     double out[3 * 3] = {0}, reference[3 * 3] = {0};
     for (uint64_t i = 0; i < 3; ++i)
     {
@@ -259,8 +257,7 @@ static void test_row_operations(void)
             CHECK_NEAR(after[i * 4 + j], full[i][j], 0.0);
     }
 
-    // eliminate_row_with reproduces `target - block(tgt,src) @ src` for every
-    // block column right of the source row.
+    // eliminate_row_with reproduces `target - block(tgt,src) @ src`.
     double factor[4];
     extract_block(full, 2, 0, 2, 2, factor);
     hybsol_matrix_t multiplier = hybsol_matrix_view(2, 2, factor);
@@ -313,8 +310,7 @@ static void test_block_storage_creates_and_reuses(void)
     CHECK(read_back.data == view.data);
     CHECK(read_back.data[5] == 6.0);
 
-    // Re-fetching must not clear or accumulate: the buffer is handed back as
-    // it stands, so an assembler can come back to the same block.
+    // Re-fetching must not clear or accumulate, so an assembler can return to the same block.
     hybsol_matrix_t again;
     CHECK_OK(hybsol_system_block_storage(sys, 0, 1, &again));
     CHECK(again.data == view.data);
@@ -333,7 +329,7 @@ static void test_block_storage_creates_and_reuses(void)
     for (uint64_t i = 0; i < 2; ++i)
         CHECK(first.data[i] == 0.0);
 
-    // A freshly created block is reported as absent until it is written.
+    // The diagonal block does not exist yet, so storage has to create it.
     hybsol_matrix_t diagonal;
     CHECK_OK(hybsol_system_block_storage(sys, 2, 2, &diagonal));
     CHECK(diagonal.rows == 1 && diagonal.cols == 1);

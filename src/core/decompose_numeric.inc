@@ -13,18 +13,15 @@
  *   HYBSOL_NARROWED  1 when ``HYBSOL_SCALAR`` is narrower than the doubles the
  *                    solve protocol hands around
  *
- * Vectors are *not* templated: :c:func:`hybsol_system_solve` keeps taking
- * doubles for both precisions, so the two kernels at the top take factors of
- * ``HYBSOL_SCALAR`` against a ``hybsol_matrix_t``. When the factors are
- * already doubles that is the plain kernel and the body just forwards; when
- * they are floats only the factors narrow and the vector arithmetic stays in
- * double, which is what keeps a single-precision solve from losing accuracy
- * it does not have to lose.
+ * Vectors are *not* templated: :c:func:`hybsol_system_solve` takes doubles for
+ * both precisions, so the two kernels at the top take ``HYBSOL_SCALAR`` factors
+ * against a ``hybsol_matrix_t``. Only the factors narrow; the vector
+ * arithmetic stays in double, so a single-precision solve loses no accuracy it
+ * does not have to lose.
  *
- * Everything here is ``static``: the two instantiations are private to
- * ``decompose.c`` and reached through its dispatchers.
- * Every macro is undefined at the bottom so a second inclusion is well
- * defined.
+ * Everything here is ``static``: the instantiations are private to
+ * ``decompose.c`` and reached through its dispatchers. Every macro is
+ * undefined at the bottom so a second inclusion is well defined.
  */
 
 #if HYBSOL_NARROWED
@@ -67,7 +64,7 @@ static hybsol_result_t HYBSOL_FN(vec_lu_solve)(const HYBSOL_VIEW *const m, const
                 (unsigned long long)out->rows, (unsigned long long)out->cols, (unsigned long long)b->rows,
                 (unsigned long long)b->cols);
 
-    // Have to deal with every column in the same way
+    // Every column is solved the same way
     for (uint64_t i_col = 0; i_col < b->cols; ++i_col)
     {
         // Forward substitution to solve the L part (diagonal is 1)

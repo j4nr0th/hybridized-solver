@@ -41,17 +41,15 @@ const char *hybsol_result_str(const hybsol_result_t result)
 /*
  * A decomposition allocates from inside OpenMP parallel regions, so a caller
  * supplying an allocator that is not thread-safe would be raced. Each thread
- * bumps against a region of its own instead: the fast path touches only that
- * thread's cursor, so it needs no lock, no atomic, and never calls the system's
- * allocator at all.
+ * bumps against a region of its own: the fast path touches only that thread's
+ * cursor, so it needs no lock, no atomic, and never calls the system's
+ * allocator.
  *
- * Regions start large and double when they run out, so growth stays logarithmic
- * in however much fill-in a pattern turns out to produce, and the one place
- * that still calls the allocator is hit a handful of times rather than once per
- * entry.
+ * Regions start large and double when they run out, so growth stays
+ * logarithmic in however much fill-in a pattern turns out to produce.
  *
- * A region is released only when the system is destroyed: entries carved out of
- * it outlive the decomposition.
+ * A region is released only when the system is destroyed: entries carved out
+ * of it outlive the decomposition.
  */
 
 #define HYBSOL_REGION_MIN_BYTES (256u * 1024u)
@@ -88,8 +86,9 @@ static void *region_allocate(hybsol_region_t *const region, const size_t size)
 /**
  * Add a region to the system's list and report its index.
  *
- * The only place a decomposition still touches the system's allocator, so it is
- * serialized: a caller may have supplied an allocator that is not thread-safe.
+ * The only place a decomposition still touches the system's allocator, so it
+ * is serialized: a caller may have supplied an allocator that is not
+ * thread-safe.
  */
 static hybsol_result_t region_push(hybsol_system_t *const sys, const size_t bytes, uint64_t *const out_idx)
 {
@@ -131,9 +130,8 @@ static hybsol_result_t region_push(hybsol_system_t *const sys, const size_t byte
 /**
  * Carve ``size`` bytes for one thread, doubling its region when exhausted.
  *
- * Only ever called on the owning thread, so the cursor is not contended. The
- * region it runs out of is kept alive, not freed: entries carved out of it are
- * still in use, which is why the list holds superseded regions too.
+ * Only called on the owning thread, so the cursor is not contended. The region
+ * it outgrows is kept alive rather than freed, since its entries are in use.
  */
 static void *region_take(hybsol_thread_alloc_t *const ta, const size_t size)
 {
@@ -243,10 +241,9 @@ int hybsol_ptr_is_pooled(const hybsol_system_t *const sys, const void *const ptr
  * A decomposition needs three per-row arrays and one scratch block per thread.
  * They are short-lived and entirely internal, so the caller can own them: size
  * the buffer with hybsol_workspace_bytes, hand it over, and no allocation
- * happens at all before the parallel regions.
- *
- * Everything lands in one contiguous block, aligned, so a single allocation (or
- * a single NumPy buffer from Python) is all it takes.
+ * happens at all before the parallel regions. Everything lands in one
+ * contiguous aligned block, so a single allocation -- or a single NumPy
+ * buffer -- is all it takes.
  */
 
 size_t hybsol_workspace_bytes(const hybsol_system_t *const sys, const uint64_t n_threads)
@@ -277,9 +274,9 @@ size_t hybsol_workspace_bytes(const hybsol_system_t *const sys, const uint64_t n
 /**
  * Point the header at the arrays laid out behind it.
  *
- * Only ever called on a buffer the caller sized with
- * :c:func:`hybsol_workspace_bytes`, so the arithmetic here matches what that
- * computed. The magic is written afterwards, once the buffer is known good.
+ * The buffer was sized by :c:func:`hybsol_workspace_bytes`, so the arithmetic
+ * here matches what that computed. The magic is written once the buffer is
+ * known good.
  */
 void hybsol_workspace_bind(hybsol_workspace_t *const ws, void *const buffer, const size_t buffer_bytes,
                            const hybsol_system_t *const sys, const uint64_t threads)
@@ -309,12 +306,7 @@ void hybsol_workspace_bind(hybsol_workspace_t *const ws, void *const buffer, con
     ws->off_scratch = at;
 }
 
-/**
- * Scratch block belonging to the calling thread.
- *
- * Called from inside the parallel regions, so it must be a pure offset into a
- * buffer the caller already owns.
- */
+/** Scratch block belonging to the calling thread; a pure offset into ``ws``. */
 void *hybsol_workspace_scratch(const hybsol_workspace_t *const ws)
 {
     const uint64_t t = (uint64_t)HYBSOL_THREAD_NUM();

@@ -85,8 +85,7 @@ static void build_random_system(rng_t *const r, random_system_t *const s)
         }
     }
 
-    // Make the matrix strictly diagonally dominant, which keeps the unpivoted
-    // factorization stable enough for the tolerances used below.
+    // Strict diagonal dominance keeps the unpivoted factorization stable enough for the tolerances below.
     for (uint64_t i = 0; i < s->dim; ++i)
     {
         double sum = 1.0;
@@ -206,7 +205,7 @@ static void test_solve_matches_reference(void)
         CHECK_OK(hybsol_system_solve(parallel, solution));
         CHECK(max_abs_difference(s.dim, solution, expected) < 1e-8);
 
-        // Repeated decomposition is refused, and so is solving a fresh system.
+        // Repeated decomposition is refused.
         CHECK_RESULT(hybsol_system_decompose(serial, 1), HYBSOL_ERROR_ALREADY_DECOMPOSED);
 
         hybsol_system_destroy(parallel);

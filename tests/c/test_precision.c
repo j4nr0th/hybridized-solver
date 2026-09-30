@@ -158,9 +158,8 @@ static void test_single_decompose_and_solve(void)
     CHECK(hybsol_system_is_valid(sys));
     CHECK_OK(hybsol_system_decompose(sys, 1));
 
-    // Solving takes and returns doubles whatever the storage is. The right
-    // hand side is the image of x_j = j + 1, so that is what the solve has to
-    // come back with.
+    // Solving takes and returns doubles whatever the storage is. The right-hand
+    // side is the image of x_j = j + 1, so that is what the solve must return.
     double rhs_vec[5];
     for (uint64_t i = 0; i < 5; ++i)
     {
@@ -174,14 +173,12 @@ static void test_single_decompose_and_solve(void)
 
     CHECK_OK(hybsol_system_solve(sys, vec));
 
-    // A float solve cannot do better than cond * 1e-7 or so; ask only for
-    // that much before comparing against the exact solution.
+    // A float solve cannot do better than cond * 1e-7 or so.
     double exact[5];
     for (uint64_t i = 0; i < 5; ++i)
         exact[i] = (double)(i + 1);
 
-    // `vec` currently holds x; check A @ x against the right-hand side it
-    // was built from by reconstructing it.
+    // Residual: A @ x against the right-hand side it was built from.
     double residual[5] = {0};
     for (uint64_t i = 0; i < 5; ++i)
         for (uint64_t j = 0; j < 5; ++j)

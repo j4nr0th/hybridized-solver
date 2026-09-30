@@ -152,10 +152,9 @@ int hybsol_index_array(PyObject *const obj, const int ndim, const npy_intp *cons
 {
     static const int flags = NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED;
 
-    // A `uint64` array is used as-is. Everything that NumPy can reach with a
-    // *safe* cast to `int64` (Python ints, `int64`, smaller integers) is taken
-    // through that type instead, so that `np.arange(n)` works just as well as
-    // an explicit `dtype=np.uint64` array.
+    // A `uint64` array is used as-is; anything NumPy can reach with a *safe*
+    // cast to `int64` (Python ints, `int64`, smaller integers) is taken through
+    // that type, so `np.arange(n)` works as well as an explicit uint64 array.
     PyArrayObject *arr = (PyArrayObject *)PyArray_FROMANY(obj, NPY_UINT64, ndim, ndim, flags);
     if (!arr)
     {

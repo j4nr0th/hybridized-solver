@@ -2,9 +2,8 @@
  * @file core/internal.h
  * Private declarations shared by the hybsol core translation units.
  *
- * Nothing here is part of the public API: consumers only ever see the
- * headers under ``include/hybsol/``. In particular this file may pull in
- * whatever the implementation needs; it never pulls in Python.
+ * Nothing here is public: consumers see only ``include/hybsol/``. This file
+ * may pull in whatever the implementation needs; it never pulls in Python.
  */
 
 #ifndef HYBSOL_CORE_INTERNAL_H
@@ -55,12 +54,12 @@
 /* ------------------------------------------------------------------------- */
 
 /*
- * The three allocation helpers every core file goes through. They take the
+ * The allocation helpers every core file goes through. They take the
  * allocator explicitly rather than reading a global, which is what lets two
  * systems use different allocators and keeps concurrent use safe.
  *
- * A zero size yields NULL, matching what cutl's allocators already do, so the
- * `== NULL` checks callers make for out-of-memory stay correct.
+ * A zero size yields NULL, matching cutl's allocators, so the `== NULL`
+ * out-of-memory checks callers make stay correct.
  */
 static inline void *hybsol_alloc(const cutl_allocator_t *const alloc, const size_t size)
 {
@@ -84,10 +83,9 @@ static inline void hybsol_free(const cutl_allocator_t *const alloc, void *const 
 /*
  * A decomposition allocates from inside OpenMP parallel regions, so a caller
  * supplying an allocator that is not thread-safe would be raced. Each thread
- * therefore bumps against a region of its own instead: the fast path touches
- * only that thread's cursor, needs no lock and no atomic, and never calls the
- * system's allocator at all. Only growing a region does, which is why the
- * regions are what they are rather than a fixed arena.
+ * therefore bumps against a region of its own: the fast path touches only
+ * that thread's cursor, needs no lock and no atomic, and never calls the
+ * system's allocator. Only growing a region does.
  *
  * A region is presented as a `cutl_allocator_t`, so every existing
  * `hybsol_alloc(alloc, size)` call site keeps its shape and only the allocator
@@ -179,10 +177,10 @@ typedef struct hybsol_row_entry
      * ``block_size(row) * block_size(col)`` elements of the owning system's
      * precision, sized at allocation time.
      *
-     * Kept as raw bytes rather than a flexible array of a specific type: the
-     * entry does not know which precision it holds, so readers cast it using
-     * :c:func:`hybsol_scalar_size` on the system they already hold. The member
-     * starts at offset 8, which is alignment enough for ``double``.
+     * Raw bytes rather than a flexible array of a specific type: the entry
+     * does not know which precision it holds, so readers cast it using
+     * :c:func:`hybsol_scalar_size`. The member starts at offset 8, which is
+     * alignment enough for ``double``.
      */
     unsigned char vals[];
 } hybsol_row_entry_t;
@@ -277,7 +275,14 @@ static inline const cutl_allocator_t *hybsol_current_alloc(const hybsol_system_t
     return sys->allocator;
 }
 
-/** Whether ``ptr`` came out of one of ``sys``'s regions rather than the allocator. */
+/**
+ * Whether ``ptr`` came out of one of ``sys``'s regions rather than its
+ * allocator.
+ *
+ * Memory carved from a region is owned by the system: it is released with
+ * the system, never individually, so callers holding a pooled pointer must
+ * skip the free.
+ */
 int hybsol_ptr_is_pooled(const hybsol_system_t *sys, const void *ptr);
 
 /* ------------------------------------------------------------------------- */
@@ -334,8 +339,6 @@ hybsol_result_t hybsol_require_mutable(const hybsol_system_t *sys);
 
 /**
  * Give every thread a bump region, replacing any left from a previous run.
- * Regions are large enough that growth is rare; see
- * :c:func:`hybsol_system_decompose_with_workspace` for the teardown side.
  *
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
@@ -345,10 +348,8 @@ hybsol_result_t hybsol_thread_allocs_open(hybsol_system_t *sys, uint64_t n_threa
 /**
  * Stop routing through the regions, keeping the memory they hold.
  *
- * Entries carved out of a region are the system's fill-in once the
- * decomposition is done, so the regions outlive the run that filled them; only
- * the per-thread slots go away, which puts later phases back on the system's
- * allocator.
+ * Only the per-thread slots go away, which puts later phases back on the
+ * system's allocator.
  */
 void hybsol_thread_allocs_done(hybsol_system_t *sys);
 
@@ -359,9 +360,8 @@ void hybsol_regions_free(hybsol_system_t *sys);
  * Assert that the caller used the spelling matching how the system stores.
  *
  * Every value-carrying function has an unsuffixed double spelling and an
- * ``_f32`` single-precision twin. This is what makes handing the wrong one a
- * system fail loudly rather than silently narrow the blocks — and over-read
- * the buffer, since the two spellings size it differently.
+ * ``_f32`` single-precision twin, which size a block differently — the wrong
+ * one would silently narrow the blocks and over-read the buffer.
  *
  * :param sys: The system.
  * :param precision: The spelling the caller chose.
@@ -392,9 +392,9 @@ void hybsol_invalidate_diagonal(hybsol_system_t *sys, uint64_t idx);
 /**
  * Eliminate one row with another, using scratch the caller already owns.
  *
- * The decomposition calls this from inside a parallel region, where it passes
- * the calling thread's block out of the workspace. ``scratch`` holds at least
- * ``max_block_size^2`` elements in the system's precision.
+ * Called from inside a parallel region, where ``scratch`` is the calling
+ * thread's workspace block: at least ``max_block_size^2`` elements in the
+ * system's precision.
  */
 hybsol_result_t hybsol_system_eliminate_row_scratch(hybsol_system_t *sys, uint64_t row_tgt, uint64_t row_src,
                                                     void *scratch);
@@ -403,10 +403,9 @@ hybsol_result_t hybsol_system_eliminate_row_scratch(hybsol_system_t *sys, uint64
  * Append ``op`` to the recorded operation list.
  *
  * The list is sized to its proven upper bound before the parallel region that
- * fills it, so this never grows it and never fails: it is an atomic bump.
- * Operations recorded within a single elimination pass commute -- targets are
- * distinct and every source was finished before the pass began -- so the order
- * threads happen to interleave them in does not matter.
+ * fills it, so this never grows it and never fails. Operations recorded within
+ * one elimination pass commute, so the order threads interleave them in does
+ * not matter.
  */
 void hybsol_ops_append(hybsol_system_t *sys, hybsol_operation_t op);
 
@@ -425,9 +424,6 @@ static inline uint64_t hybsol_operation_bound(const uint64_t n)
 /**
  * Give every thread a bump region, replacing any from a previous run.
  *
- * Regions are large enough that growth is rare; see
- * :c:func:`hybsol_system_decompose` for the teardown side.
- *
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
@@ -439,8 +435,7 @@ void hybsol_thread_allocs_close(hybsol_system_t *sys);
 /**
  * Turn a thread request into the team size used by the OpenMP pragmas.
  *
- * A request of ``0`` selects the OpenMP default (usually every core);
- * ``1`` runs serially.
+ * ``0`` selects the OpenMP default (usually every core); ``1`` runs serially.
  */
 static inline int hybsol_resolve_threads(const uint64_t n_threads)
 {

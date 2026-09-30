@@ -64,10 +64,9 @@ static int check_block_indices(const hybsol_system_t *const sys, const Py_ssize_
 }
 
 /**
- * Reject a row that has no diagonal block.
- *
- * The core asserts on this rather than returning a code, so any method that
- * takes a row index has to rule the condition out before calling.
+ * Reject a row that has no diagonal block. The core asserts on this rather
+ * than returning a code, so any method taking a row index must rule it out
+ * before calling.
  *
  * :param sys: The system.
  * :param idx: The validated block index.
@@ -84,10 +83,9 @@ static int require_diagonal(const hybsol_system_t *const sys, const Py_ssize_t i
 }
 
 /**
- * Reject a block the system does not store.
- *
- * The core asserts on this rather than returning a code, so lookups have to
- * confirm the block is present before asking for it.
+ * Reject a block the system does not store. The core asserts on this rather
+ * than returning a code, so lookups must confirm the block is present before
+ * asking for it.
  *
  * :param sys: The system.
  * :param row: The validated block row index.
@@ -191,9 +189,9 @@ static PyObject *block_view_capsule(block_system_object *const owner)
 /**
  * Validate an ``out=`` keyword that may be ``None``.
  *
- * cpyutl's ``type_check`` rejects ``None`` outright, while the documented
- * contract of these methods is "if not given (or ``None``), a new array is
- * created", so the check is done by hand here.
+ * Done by hand because cpyutl's ``type_check`` rejects ``None`` outright,
+ * while these methods document "if not given (or ``None``), a new array is
+ * created".
  *
  * :param obj: Value of the keyword, or ``NULL`` if it was omitted.
  * :returns: ``0`` with ``*out`` set (either ``NULL`` or a new reference),
@@ -218,9 +216,9 @@ static int optional_array(PyObject *const obj, PyArrayObject **const out)
 /**
  * Turn ``new_order`` into a validated ``uint64`` array of length ``n``.
  *
- * Beyond the dtype and length, the entries must form a permutation of
- * ``[0, n)``. That is a precondition of every core function taking a
- * permutation, so it is checked here rather than left to an abort there.
+ * The entries must form a permutation of ``[0, n)``; that is a precondition
+ * of every core function taking a permutation, so it is checked here rather
+ * than left to an abort there.
  *
  * :returns: ``0`` and a new reference in ``*arr_out``, or ``-1``.
  */
@@ -327,11 +325,6 @@ static int parse_block_sizes(PyObject *const obj, uint64_t **const p_sizes, Py_s
 }
 
 /**
- * Allocate a Python ``BlockSystem`` of ``n`` blocks with the given sizes.
- *
- * :returns: A new reference, or ``NULL`` with an exception set.
- */
-/**
  * Read a ``precision=`` argument.
  *
  * :class:`hybsol.Precision` is a ``StrEnum``, so its members *are* strings and
@@ -368,6 +361,11 @@ static int parse_precision(PyObject *const obj, hybsol_precision_t *const out)
     return 0;
 }
 
+/**
+ * Allocate a Python ``BlockSystem`` of ``n`` blocks with the given sizes.
+ *
+ * :returns: A new reference, or ``NULL`` with an exception set.
+ */
 static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n, const uint64_t *const sizes,
                                     const hybsol_precision_t precision)
 {
@@ -459,15 +457,12 @@ static PyObject *block_system_repr(block_system_object *const self)
 PyDoc_STRVAR(block_system_docstring, "BlockSystem(*block_sizes: int, precision: hybsol.Precision = Precision.DOUBLE)\n"
                                      "Block system for hybridized solver.\n"
                                      "\n"
-                                     "The system is an ``n x n`` arrangement of blocks, where block ``(i, j)``\n"
-                                     "has shape ``(block_sizes[i], block_sizes[j])``. Only a subset of the\n"
-                                     "blocks needs to be present; :meth:`is_valid` reports whether the\n"
-                                     "structure is one the solver can decompose.\n"
+                                     "An ``n x n`` arrangement of blocks, where block ``(i, j)`` has shape\n"
+                                     "``(block_sizes[i], block_sizes[j])``. Only a subset needs to be present;\n"
+                                     ":meth:`is_valid` reports whether the structure is decomposable.\n"
                                      "\n"
-                                     "``precision`` picks the type every block is stored in and every\n"
-                                     "operation on them computes in: :attr:`Precision.DOUBLE` (the default)\n"
-                                     "or :attr:`Precision.SINGLE`. It is fixed for the life of the system, and\n"
-                                     "the methods that carry values come in matching spellings.\n");
+                                     "``precision`` fixes the type blocks are stored in and computed in for\n"
+                                     "the life of the system.\n");
 
 static PyObject *block_system_object_is_valid(PyObject *const self, PyTypeObject *const defining_class,
                                               PyObject *const *const Py_UNUSED(args), const Py_ssize_t nargs,
@@ -744,16 +739,15 @@ PyDoc_STRVAR(block_system_object_block_storage_docstring,
              "block_storage(row: int, col: int) -> numpy.typing.NDArray[numpy.double]\n"
              "Get writable storage for a block, creating it on first use.\n"
              "\n"
-             "The shape of the block is implied by the system, so this hands back\n"
-             "exactly the right buffer to fill in place instead of building a\n"
-             "temporary and passing it to :meth:`add_block`. The first call adds the\n"
-             "block to the sparsity pattern and zeroes it; later calls return the\n"
-             "same buffer unchanged, so nothing written so far is lost.\n"
+             "The shape is implied by the system, so this hands back the right buffer to\n"
+             "fill in place instead of building a temporary for :meth:`add_block`. The\n"
+             "first call adds the block to the sparsity pattern and zeroes it; later\n"
+             "calls return the same buffer, so nothing written so far is lost.\n"
              "\n"
-             "The array is a view backed by the system, which it keeps alive.\n"
-             "Operations that only rewrite values in place are visible through it,\n"
-             "as with any view, but :meth:`eliminate_row`, :meth:`reorder_blocks`\n"
-             "and :meth:`decompose` refuse to run while any such array is alive.\n");
+             "The array is a view backed by the system, which it keeps alive. Value\n"
+             "rewrites through the system are visible through it, but\n"
+             ":meth:`eliminate_row`, :meth:`reorder_blocks` and :meth:`decompose`\n"
+             "refuse to run while such an array is alive.\n");
 
 static PyObject *block_system_object_get_block_size(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -1035,9 +1029,9 @@ PyDoc_STRVAR(block_system_object_add_blocks_docstring,
              "data: numpy.typing.ArrayLike) -> None\n"
              "Add many blocks in a single pass.\n"
              "\n"
-             "This is the fast assembly path: the index arrays are processed once and\n"
-             "each row allocates its storage a single time. Duplicate ``(row, col)``\n"
-             "pairs accumulate, exactly as repeated :meth:`add_block` calls would.\n"
+             "The fast assembly path: the index arrays are processed once and each row\n"
+             "allocates its storage a single time. Duplicate ``(row, col)`` pairs\n"
+             "accumulate, as repeated :meth:`add_block` calls would.\n"
              "\n"
              "Block ``k`` occupies ``block_sizes[rows[k]] * block_sizes[cols[k]]``\n"
              "consecutive entries of ``data``, in the order implied by ``rows`` and\n"
@@ -1173,8 +1167,7 @@ PyDoc_STRVAR(block_system_object_reserve_docstring,
              "reserve(row: int, capacity: int) -> None\n"
              "Make sure the row can hold ``capacity`` blocks without reallocating.\n"
              "\n"
-             "Assembly loops that know how many blocks each row will receive should\n"
-             "call this once per row to avoid repeated reallocation.\n"
+             "Assembly loops that know a row's block count should call this once per row.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1231,8 +1224,8 @@ PyDoc_STRVAR(block_system_object_multiply_row_docstring,
              "multiply_row(row: int, val: numpy.typing.ArrayLike, start: int = 0) -> None\n"
              "Multiply the row by the matrix.\n"
              "\n"
-             "Every stored block in the row at or after column ``start`` is replaced\n"
-             "by ``val @ block``; blocks before ``start`` are left alone.\n"
+             "Every stored block in the row at or after column ``start`` is replaced by\n"
+             "``val @ block``; blocks before ``start`` are left alone.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1313,16 +1306,14 @@ PyDoc_STRVAR(block_system_object_eliminate_row_docstring,
              "eliminate_row(row_src: int, row_tgt: int, val: numpy.typing.ArrayLike) -> None\n"
              "Eliminate a target row using a source row, multiplied by matrix.\n"
              "\n"
-             "This performs the row elimination operation from the source row on the target\n"
-             "row. If the source row is represented by :math:`\\mathbf{M}_s`, the target row\n"
-             "by :math:`\\mathbf{M}_t`, and the scaling matrix as :math:`\\mathbf{S}`, the\n"
-             "new value of the target row will be:\n"
+             "With source row :math:`\\mathbf{M}_s`, target row :math:`\\mathbf{M}_t` and\n"
+             "scaling matrix :math:`\\mathbf{S}`, the new target row is:\n"
              "\n"
              ".. math ::\n"
              "    \\mathbf{M}_t^\\prime = \\mathbf{M}_t - \\mathbf{S} \\mathbf{M}_s\n"
              "\n"
-             "This operation will ignore all entries in both rows with column index lower or\n"
-             "equal to ``row_src``, since those are assumed to have already been eliminated.\n"
+             "Entries in both rows with column index lower than or equal to ``row_src``\n"
+             "are ignored, as they are assumed to have been eliminated already.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1416,10 +1407,8 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
 
 PyDoc_STRVAR(block_system_object_decompose_diagonal_docstring,
              "decompose_diagonal(idx: int) -> None\n"
-             "Decomposes the diagonal block using LU decomposition.\n"
-             "\n"
-             "Performs unpivoted LU decomposition on the block ``(idx, idx)``. This\n"
-             "is done in preparation to a call to ``solve_diagonal``.\n"
+             "Performs unpivoted LU decomposition on the block ``(idx, idx)``, in\n"
+             "preparation to a call to :meth:`solve_diagonal`.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1484,8 +1473,7 @@ PyDoc_STRVAR(block_system_object_solve_diagonal_docstring,
              "Returns\n"
              "-------\n"
              "array\n"
-             "    Result, which if ``out`` was ``None`` will be in a new array, otherwise\n"
-             "    another reference to ``out`` is returned.\n");
+             "    The result, written to ``out`` or into a new array if it was ``None``.\n");
 
 static PyObject *block_system_object_solve_diagonal(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -1639,9 +1627,9 @@ PyDoc_STRVAR(block_system_object_workspace_bytes_docstring,
              "Bytes of scratch :meth:`decompose` needs at this thread count.\n"
              "\n"
              "Sizes the ``workspace`` array that :meth:`decompose` accepts, so one\n"
-             "buffer can be allocated once and reused. It depends only on the\n"
-             "block sizes, the precision and the thread count, so it may be asked\n"
-             "for before any blocks are added.\n"
+             "buffer can be reused. It depends only on the block sizes, the\n"
+             "precision and the thread count, so it may be asked for before any\n"
+             "blocks are added.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -2050,11 +2038,8 @@ PyDoc_STRVAR(block_system_object_compute_reordering_docstring,
              "max_colors: int = 0) -> numpy.typing.NDArray[numpy.uint64]\n"
              "Find ordering of unknowns in the system based on \"coloring\".\n"
              "\n"
-             "The idea behind computing the reordering of the degrees of freedom is to first sort\n"
-             "them by group index, such that a degree of freedom shares no non-zero block with\n"
-             "any other degree of freedom in that group. This is often called \"coloring\". After\n"
-             "all the degrees of freedom are sorted into these groups, they are ordered group by\n"
-             "group.\n"
+             "Degrees of freedom are sorted into groups such that a degree of freedom shares\n"
+             "no non-zero block with any other in its group, then ordered group by group.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -2228,8 +2213,7 @@ PyDoc_STRVAR(block_system_object_reorder_vector_docstring,
              "Returns\n"
              "-------\n"
              "array\n"
-             "    Reordered contents of ``vector``. If ``out`` was specified, this is just a\n"
-             "    reference to it, otherwise a new array is created.\n");
+             "    Reordered contents of ``vector``, or a reference to ``out``.\n");
 
 static PyObject *block_system_object_reorder_vector(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -2269,8 +2253,7 @@ PyDoc_STRVAR(block_system_object_unorder_vector_docstring,
              "Returns\n"
              "-------\n"
              "array\n"
-             "    Un-re-ordered contents of ``vector``. If ``out`` was specified, this is just a\n"
-             "    reference to it, otherwise a new array is created.\n");
+             "    Contents of ``vector`` in the original order, or a reference to ``out``.\n");
 
 static PyObject *block_system_object_unorder_vector(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -2607,9 +2590,9 @@ cleanup:
  * Build the :class:`hybsol.Precision` member a system's precision spells as.
  *
  * The enum lives in the Python half of the package, so it is looked up on
- * demand rather than cached at import time: by the time anyone reads
- * ``BlockSystem.precision`` the package has finished importing, and this way
- * the extension keeps no import-time dependency on it.
+ * demand rather than cached at import: by the time anyone reads
+ * ``BlockSystem.precision`` the package has finished importing, which keeps
+ * the extension free of an import-time dependency on it.
  */
 static PyObject *precision_member(const hybsol_precision_t precision)
 {
