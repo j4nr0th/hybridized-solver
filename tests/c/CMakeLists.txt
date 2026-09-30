@@ -6,7 +6,8 @@ set(HYBSOL_TEST_EXECUTABLES
         test_assembly
         test_decompose
         test_ordering
-        test_precision)
+        test_precision
+        test_allocator)
 
 foreach (test IN LISTS HYBSOL_TEST_EXECUTABLES)
     add_executable(${test} ${test}.c)

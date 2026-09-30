@@ -1616,7 +1616,7 @@ static PyObject *block_system_object_row_apply_decomposition(PyObject *const sel
 }
 
 PyDoc_STRVAR(block_system_object_decompose_docstring,
-             "decompose(n_threads: int = 0) -> None\n"
+             "decompose(n_threads: int = 0, workspace: numpy.typing.ArrayLike | None = None) -> None\n"
              "Decompose the block system.\n"
              "\n"
              "The system must be valid (see :meth:`is_valid`). After a successful\n"
@@ -1627,19 +1627,34 @@ PyDoc_STRVAR(block_system_object_decompose_docstring,
              "----------\n"
              "n_threads : int, default: 0\n"
              "    Number of OpenMP threads to use. ``0`` selects the OpenMP default\n"
-             "    (usually every core) and ``1`` runs the decomposition serially.\n");
+             "    (usually every core) and ``1`` runs the decomposition serially.\n"
+             "workspace : numpy.typing.ArrayLike, optional\n"
+             "    A writable 1-D ``uint8`` array of at least :meth:`workspace_bytes`\n"
+             "    bytes. Passing one keeps the scratch out of the library's allocator,\n"
+             "    so a buffer can be reused across systems. Its contents are\n"
+             "    overwritten. Omit it and the scratch is allocated internally.\n");
 
-static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObject *const defining_class,
-                                               PyObject *const *const args, const Py_ssize_t nargs,
-                                               const PyObject *kwnames)
+PyDoc_STRVAR(block_system_object_workspace_bytes_docstring,
+             "workspace_bytes(n_threads: int = 0) -> int\n"
+             "Bytes of scratch :meth:`decompose` needs at this thread count.\n"
+             "\n"
+             "Sizes the ``workspace`` array that :meth:`decompose` accepts, so one\n"
+             "buffer can be allocated once and reused. It depends only on the\n"
+             "block sizes, the precision and the thread count, so it may be asked\n"
+             "for before any blocks are added.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "n_threads : int, default: 0\n"
+             "    The thread count that will be passed to :meth:`decompose`.\n");
+
+static PyObject *block_system_object_workspace_bytes(PyObject *const self, PyTypeObject *const defining_class,
+                                                     PyObject *const *const args, const Py_ssize_t nargs,
+                                                     const PyObject *kwnames)
 {
     block_system_object *this;
     const module_state_t *state;
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
-    {
-        return NULL;
-    }
-    if (ensure_no_live_views(this, "decompose") < 0)
     {
         return NULL;
     }
@@ -1659,11 +1674,64 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
         return NULL;
     }
 
+    const size_t bytes = hybsol_workspace_bytes(this->system, (uint64_t)n_threads);
+    return PyLong_FromSize_t(bytes);
+}
+
+static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObject *const defining_class,
+                                               PyObject *const *const args, const Py_ssize_t nargs,
+                                               const PyObject *kwnames)
+{
+    block_system_object *this;
+    const module_state_t *state;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+    {
+        return NULL;
+    }
+    if (ensure_no_live_views(this, "decompose") < 0)
+    {
+        return NULL;
+    }
+
+    Py_ssize_t n_threads = 0;
+    PyObject *py_workspace = Py_None;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_workspace, .kwname = "workspace", .optional = 1},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+    {
+        return NULL;
+    }
+    if (check_n_threads(n_threads) < 0)
+    {
+        return NULL;
+    }
+
+    /* A supplied workspace must be big enough for this system and this thread
+     * count; the buffer is opaque, so all that can be checked here is its size. */
+    const size_t needed = hybsol_workspace_bytes(this->system, (uint64_t)n_threads);
+    PyArrayObject *workspace = NULL;
+    if (py_workspace != Py_None)
+    {
+        if (hybsol_byte_array(py_workspace, 1, needed, "workspace", &workspace) < 0)
+        {
+            return NULL;
+        }
+    }
+
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_system_decompose(this->system, (uint64_t)n_threads);
+    if (workspace != NULL)
+        res = hybsol_system_decompose_with_workspace(this->system, PyArray_DATA(workspace), (size_t)needed,
+                                                     (uint64_t)n_threads);
+    else
+        res = hybsol_system_decompose(this->system, (uint64_t)n_threads);
     Py_END_ALLOW_THREADS;
 
+    Py_XDECREF(workspace);
     if (res != HYBSOL_SUCCESS)
     {
         return hybsol_raise("decompose", res);
@@ -2664,6 +2732,8 @@ PyType_Spec block_system_type_spec = {
                  BS_METHOD("row_apply_decomposition", block_system_object_row_apply_decomposition,
                            block_system_object_row_apply_decomposition_docstring),
                  BS_METHOD("decompose", block_system_object_decompose, block_system_object_decompose_docstring),
+                 BS_METHOD("workspace_bytes", block_system_object_workspace_bytes,
+                           block_system_object_workspace_bytes_docstring),
                  BS_METHOD("operations", block_system_object_operations, block_system_object_operations_docstring),
                  BS_METHOD("solve", block_system_object_solve, block_system_object_solve_docstring),
                  BS_METHOD("copy", block_system_object_copy, block_system_object_copy_docstring),

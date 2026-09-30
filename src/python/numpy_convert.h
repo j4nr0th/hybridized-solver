@@ -150,3 +150,19 @@ int hybsol_index_array(PyObject *obj, int ndim, const npy_intp *dims, const char
  */
 int hybsol_prepare_output(PyArrayObject *out, int ndim, const npy_intp *dims, int dtype, int flags, const char *name,
                           PyArrayObject **arr_out);
+
+/**
+ * Get a writable 1-D ``uint8`` array of at least ``min_bytes``.
+ *
+ * Used for buffers the library writes into rather than reads, such as a
+ * decomposition workspace, so it demands the writeable flag the read-only
+ * input helpers do not.
+ *
+ * @param obj Object to convert; anything NumPy accepts for a uint8 array.
+ * @param ndim Number of dimensions; must be 1.
+ * @param min_bytes Smallest acceptable size in bytes.
+ * @param name Argument name used in the error message.
+ * @param arr_out Receives a new reference to the array.
+ * @return 0 on success, -1 with an exception set.
+ */
+int hybsol_byte_array(PyObject *obj, int ndim, size_t min_bytes, const char *name, PyArrayObject **arr_out);

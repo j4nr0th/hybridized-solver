@@ -23,7 +23,8 @@
  * inclusion is well defined.
  */
 
-static hybsol_result_t HYBSOL_FN(row_insert_block)(hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
+static hybsol_result_t HYBSOL_FN(row_insert_block)(const cutl_allocator_t *const alloc, hybsol_system_t *const sys,
+                                                   hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
                                                    const HYBSOL_SCALAR *const vals)
 {
     const uint64_t idx = hybsol_row_find_geq(row, col);
@@ -36,11 +37,11 @@ static hybsol_result_t HYBSOL_FN(row_insert_block)(hybsol_row_t *const row, cons
         return HYBSOL_SUCCESS;
     }
 
-    hybsol_result_t res = hybsol_row_reserve(row, row->count + 1);
+    hybsol_result_t res = hybsol_row_reserve(sys, row, row->count + 1);
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    hybsol_row_entry_t *const entry = row_new_entry(row->allocator, col, n_values, sizeof(HYBSOL_SCALAR));
+    hybsol_row_entry_t *const entry = row_new_entry(alloc, col, n_values, sizeof(HYBSOL_SCALAR));
     if (entry == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
@@ -67,7 +68,7 @@ static hybsol_result_t HYBSOL_FN(add_block)(hybsol_system_t *const sys, const ui
                 (unsigned long long)n_cols);
     CUTL_ASSERT(vals != NULL, "The block values must not be NULL.");
 
-    res = HYBSOL_FN(row_insert_block)(sys->rows + row, col, n_rows * n_cols, vals);
+    res = HYBSOL_FN(row_insert_block)(hybsol_current_alloc(sys), sys, sys->rows + row, col, n_rows * n_cols, vals);
     if (res != HYBSOL_SUCCESS)
         return res;
 
@@ -109,7 +110,7 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
     {
         if (counts[i] == 0)
             continue;
-        res = hybsol_row_reserve(sys->rows + i, sys->rows[i].count + counts[i]);
+        res = hybsol_row_reserve(sys, sys->rows + i, sys->rows[i].count + counts[i]);
         if (res != HYBSOL_SUCCESS)
         {
             hybsol_free(sys->allocator, counts);
@@ -123,7 +124,8 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
     for (uint64_t k = 0; k < n_entries; ++k)
     {
         const uint64_t n_values = hybsol_block_size(sys, rows[k]) * hybsol_block_size(sys, cols[k]);
-        res = HYBSOL_FN(row_insert_block)(sys->rows + rows[k], cols[k], n_values, data + offset);
+        res = HYBSOL_FN(row_insert_block)(hybsol_current_alloc(sys), sys, sys->rows + rows[k], cols[k], n_values,
+                                          data + offset);
         if (res != HYBSOL_SUCCESS)
             return res;
         if (rows[k] == cols[k])
@@ -148,7 +150,8 @@ static hybsol_result_t HYBSOL_FN(block_storage)(hybsol_system_t *const sys, cons
     const uint64_t n_cols = hybsol_block_size(sys, col);
 
     hybsol_row_entry_t *entry;
-    res = row_find_or_create(sys->rows + row, col, n_rows * n_cols, sizeof(HYBSOL_SCALAR), &entry);
+    res = row_find_or_create(hybsol_current_alloc(sys), sys, sys->rows + row, col, n_rows * n_cols,
+                             sizeof(HYBSOL_SCALAR), &entry);
     if (res != HYBSOL_SUCCESS)
         return res;
 
@@ -225,9 +228,9 @@ static hybsol_result_t HYBSOL_FN(multiply_row)(hybsol_system_t *const sys, const
     hybsol_invalidate_diagonal(sys, row);
     return HYBSOL_SUCCESS;
 }
-
 static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys, const uint64_t row_tgt,
-                                                     const uint64_t row_src, const HYBSOL_VIEW *const mat)
+                                                     const uint64_t row_src, const HYBSOL_VIEW *const mat,
+                                                     HYBSOL_SCALAR *const scratch)
 {
     const uint64_t size_tgt = hybsol_block_size(sys, row_tgt);
     const uint64_t size_src = hybsol_block_size(sys, row_src);
@@ -280,20 +283,24 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
 
     const uint64_t needed_size = unique_cols + pos_tgt;
 
-    hybsol_result_t res = hybsol_row_reserve(row_t, needed_size);
+    const cutl_allocator_t *const alloc = hybsol_current_alloc(sys);
+    hybsol_result_t res = hybsol_row_reserve(sys, row_t, needed_size);
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    // `max_cols` is zero when there is nothing left to eliminate, in which
-    // case the buffer is never touched; `hybsol_alloc(0)` returns ``NULL``,
-    // so the allocation is skipped instead of being read as a failure.
+    // `scratch` is the caller's per-thread block and is already large enough;
+    // without one -- the standalone eliminate entry points -- fall back to the
+    // allocator. `max_cols` is zero when there is nothing left to eliminate, in
+    // which case the buffer is never touched and is left alone.
     const size_t buffer_len = (size_t)max_cols * (size_t)size_tgt;
-    HYBSOL_SCALAR *buffer = NULL;
-    if (buffer_len != 0)
+    HYBSOL_SCALAR *buffer = scratch;
+    HYBSOL_SCALAR *owned = NULL;
+    if (scratch == NULL && buffer_len != 0)
     {
-        buffer = hybsol_alloc(sys->allocator, sizeof(*buffer) * buffer_len);
-        if (buffer == NULL)
+        owned = hybsol_alloc(alloc, sizeof(*owned) * buffer_len);
+        if (owned == NULL)
             return HYBSOL_ERROR_OUT_OF_MEMORY;
+        buffer = owned;
     }
 
     // Subtract the product of the multiplier and the source entries from the
@@ -331,19 +338,22 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
         else if (col_src > col_tgt)
         {
             HYBSOL_KERNEL(multiply)(mat, &mat_src, &out);
-            hybsol_row_entry_t *const new_entry = hybsol_alloc(
-                sys->allocator, sizeof(*new_entry) + (size_t)out.rows * (size_t)out.cols * sizeof(HYBSOL_SCALAR));
+            hybsol_row_entry_t *const new_entry =
+                hybsol_alloc(alloc, sizeof(*new_entry) + (size_t)out.rows * (size_t)out.cols * sizeof(HYBSOL_SCALAR));
             if (new_entry == NULL)
             {
                 // The row can not be brought back to a consistent state, so
                 // drop it entirely rather than leave a half-updated mess.
                 for (uint64_t j = 0; j < row_t->capacity; ++j)
                 {
-                    hybsol_free(row_t->allocator, row_t->entries[j]);
+                    // Entries carved out of a region belong to the system now,
+                    // so they are released with it rather than individually.
+                    if (!hybsol_ptr_is_pooled(sys, row_t->entries[j]))
+                        hybsol_free(row_t->allocator, row_t->entries[j]);
                     row_t->entries[j] = NULL;
                 }
                 row_t->count = 0;
-                hybsol_free(sys->allocator, buffer);
+                hybsol_free(alloc, owned);
                 return HYBSOL_ERROR_OUT_OF_MEMORY;
             }
             new_entry->col = col_src;
@@ -374,13 +384,13 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
     }
 #endif
 
-    hybsol_free(sys->allocator, buffer);
+    hybsol_free(alloc, owned);
     hybsol_invalidate_diagonal(sys, row_tgt);
     return HYBSOL_SUCCESS;
 }
 
 static hybsol_result_t HYBSOL_FN(eliminate_row)(hybsol_system_t *const sys, const uint64_t row_tgt,
-                                                const uint64_t row_src)
+                                                const uint64_t row_src, HYBSOL_SCALAR *const scratch)
 {
     hybsol_require_index(sys, row_tgt);
     hybsol_require_index(sys, row_src);
@@ -390,7 +400,7 @@ static hybsol_result_t HYBSOL_FN(eliminate_row)(hybsol_system_t *const sys, cons
     HYBSOL_VIEW mat;
     HYBSOL_FN(lookup_block)(sys, row_tgt, row_src, &mat);
 
-    return HYBSOL_FN(eliminate_row_with)(sys, row_tgt, row_src, &mat);
+    return HYBSOL_FN(eliminate_row_with)(sys, row_tgt, row_src, &mat, scratch);
 }
 
 static hybsol_result_t HYBSOL_FN(to_dense)(const hybsol_system_t *const sys, HYBSOL_SCALAR *const out)

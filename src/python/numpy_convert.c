@@ -220,3 +220,35 @@ int hybsol_prepare_output(PyArrayObject *const out, const int ndim, const npy_in
     *arr_out = out;
     return 0;
 }
+
+int hybsol_byte_array(PyObject *const obj, const int ndim, const size_t min_bytes, const char *const name,
+                      PyArrayObject **const arr_out)
+{
+    /* PyArray_FROMANY satisfies a requested writeable flag by copying a
+     * read-only input, which would silently defeat the point of handing in a
+     * reusable buffer. Reject that up front instead. */
+    if (PyArray_Check(obj) && !PyArray_ISWRITEABLE((PyArrayObject *)obj))
+    {
+        PyErr_Format(PyExc_ValueError, "Array %s must be writable.", name);
+        return -1;
+    }
+
+    /* Writable and contiguous: the library writes straight into this buffer. */
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_FROMANY(
+        obj, NPY_UINT8, ndim, ndim, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE);
+    if (!arr)
+    {
+        return -1;
+    }
+
+    if ((size_t)PyArray_SIZE(arr) < min_bytes)
+    {
+        PyErr_Format(PyExc_ValueError, "Array %s holds %zd bytes but at least %zu are needed.", name,
+                     (Py_ssize_t)PyArray_SIZE(arr), min_bytes);
+        Py_DECREF(arr);
+        return -1;
+    }
+
+    *arr_out = arr;
+    return 0;
+}

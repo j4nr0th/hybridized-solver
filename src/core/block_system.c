@@ -65,7 +65,7 @@ int hybsol_row_find(const hybsol_row_t *const row, const uint64_t col, uint64_t 
     return 1;
 }
 
-hybsol_result_t hybsol_row_reserve(hybsol_row_t *const row, const uint64_t needed)
+hybsol_result_t hybsol_row_reserve(hybsol_system_t *const sys, hybsol_row_t *const row, const uint64_t needed)
 {
     if (needed <= row->capacity)
         return HYBSOL_SUCCESS;
@@ -84,9 +84,19 @@ hybsol_result_t hybsol_row_reserve(hybsol_row_t *const row, const uint64_t neede
     if (new_capacity > SIZE_MAX / sizeof(*row->entries))
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
-    hybsol_row_entry_t **const ptr = hybsol_grow(row->allocator, row->entries, (size_t)new_capacity * sizeof(*ptr));
-    if (!ptr)
+    // Not `realloc`: the old array may have come from the system's allocator
+    // while the new one comes from a decomposition's bump region, and the two
+    // must be told apart before the old block is released.
+    const size_t old_bytes = (size_t)row->capacity * sizeof(*row->entries);
+    hybsol_row_entry_t **const ptr = hybsol_alloc(hybsol_current_alloc(sys), (size_t)new_capacity * sizeof(*ptr));
+    if (ptr == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
+
+    if (row->entries != NULL)
+    {
+        memcpy(ptr, row->entries, old_bytes);
+        hybsol_free(hybsol_ptr_is_pooled(sys, row->entries) ? hybsol_current_alloc(sys) : row->allocator, row->entries);
+    }
 
     for (uint64_t i = row->capacity; i < new_capacity; ++i)
         ptr[i] = NULL;
@@ -133,6 +143,10 @@ static void row_place_entry(hybsol_row_t *const row, const uint64_t idx, hybsol_
     row->count += 1;
 }
 
+/* Defined below; reached from the per-precision instantiations in block_numeric.inc. */
+static hybsol_result_t row_find_or_create(const cutl_allocator_t *alloc, hybsol_system_t *sys, hybsol_row_t *row,
+                                          uint64_t col, uint64_t n_values, size_t elem_size, hybsol_row_entry_t **out);
+
 /**
  * Allocate an entry for ``n_values`` elements of ``elem_size`` bytes and
  * stamp it with its column.
@@ -160,7 +174,8 @@ static hybsol_row_entry_t *row_new_entry(const cutl_allocator_t *const alloc, co
  * clears and never accumulates, so a caller can re-fetch the same buffer
  * without losing whatever it wrote into it last time.
  */
-static hybsol_result_t row_find_or_create(hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
+static hybsol_result_t row_find_or_create(const cutl_allocator_t *const alloc, hybsol_system_t *const sys,
+                                          hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
                                           const size_t elem_size, hybsol_row_entry_t **const out)
 {
     const uint64_t idx = hybsol_row_find_geq(row, col);
@@ -169,12 +184,11 @@ static hybsol_result_t row_find_or_create(hybsol_row_t *const row, const uint64_
         *out = row->entries[idx];
         return HYBSOL_SUCCESS;
     }
-
-    hybsol_result_t res = hybsol_row_reserve(row, row->count + 1);
+    hybsol_result_t res = hybsol_row_reserve(sys, row, row->count + 1);
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    hybsol_row_entry_t *const entry = row_new_entry(row->allocator, col, n_values, elem_size);
+    hybsol_row_entry_t *const entry = row_new_entry(alloc, col, n_values, elem_size);
     if (entry == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
@@ -213,14 +227,18 @@ static hybsol_result_t row_find_or_create(hybsol_row_t *const row, const uint64_
 /* Lifetime                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static void free_row(hybsol_row_t *const row)
+static void free_row(const hybsol_system_t *const sys, hybsol_row_t *const row)
 {
     for (uint64_t i = 0; i < row->count; ++i)
     {
-        hybsol_free(row->allocator, row->entries[i]);
+        // A decomposition carves its fill-in out of a region the system owns
+        // outright, so those entries are not freed one by one.
+        if (!hybsol_ptr_is_pooled(sys, row->entries[i]))
+            hybsol_free(row->allocator, row->entries[i]);
         row->entries[i] = NULL;
     }
-    hybsol_free(row->allocator, row->entries);
+    if (!hybsol_ptr_is_pooled(sys, row->entries))
+        hybsol_free(row->allocator, row->entries);
     row->entries = NULL;
     row->count = 0;
     row->capacity = 0;
@@ -295,8 +313,13 @@ void hybsol_system_destroy(hybsol_system_t *const sys)
     if (sys->rows != NULL)
     {
         for (uint64_t i = 0; i < sys->n; ++i)
-            free_row(sys->rows + i);
+            free_row(sys, sys->rows + i);
     }
+
+    // The regions are released after the rows, because the pooled check the
+    // rows rely on reads them.
+    hybsol_thread_allocs_done(sys);
+    hybsol_regions_free(sys);
 
     hybsol_free(sys->allocator, sys->rows);
     hybsol_free(sys->allocator, sys->block_offsets);
@@ -549,7 +572,7 @@ hybsol_result_t hybsol_system_reserve(hybsol_system_t *const sys, const uint64_t
     if (res != HYBSOL_SUCCESS)
         return res;
 
-    return hybsol_row_reserve(sys->rows + row, capacity);
+    return hybsol_row_reserve(sys, sys->rows + row, capacity);
 }
 
 hybsol_result_t hybsol_system_add_block(hybsol_system_t *const sys, const uint64_t row, const uint64_t col,
@@ -629,7 +652,7 @@ hybsol_result_t hybsol_system_eliminate_row_with(hybsol_system_t *const sys, con
 {
     hybsol_require_precision(sys, HYBSOL_PRECISION_DOUBLE);
 
-    return hybsol_f64_eliminate_row_with(sys, row_tgt, row_src, mat);
+    return hybsol_f64_eliminate_row_with(sys, row_tgt, row_src, mat, NULL);
 }
 
 hybsol_result_t hybsol_system_eliminate_row_with_f32(hybsol_system_t *const sys, const uint64_t row_tgt,
@@ -637,15 +660,24 @@ hybsol_result_t hybsol_system_eliminate_row_with_f32(hybsol_system_t *const sys,
 {
     hybsol_require_precision(sys, HYBSOL_PRECISION_SINGLE);
 
-    return hybsol_f32_eliminate_row_with(sys, row_tgt, row_src, mat);
+    return hybsol_f32_eliminate_row_with(sys, row_tgt, row_src, mat, NULL);
 }
 
 hybsol_result_t hybsol_system_eliminate_row(hybsol_system_t *const sys, const uint64_t row_tgt, const uint64_t row_src)
 {
     // The multiplier is a block of the system itself, so either precision works
     if (sys->precision == HYBSOL_PRECISION_SINGLE)
-        return hybsol_f32_eliminate_row(sys, row_tgt, row_src);
-    return hybsol_f64_eliminate_row(sys, row_tgt, row_src);
+        return hybsol_f32_eliminate_row(sys, row_tgt, row_src, NULL);
+    return hybsol_f64_eliminate_row(sys, row_tgt, row_src, NULL);
+}
+
+hybsol_result_t hybsol_system_eliminate_row_scratch(hybsol_system_t *const sys, const uint64_t row_tgt,
+                                                    const uint64_t row_src, void *const scratch)
+{
+    // The multiplier is a block of the system itself, so either precision works
+    if (sys->precision == HYBSOL_PRECISION_SINGLE)
+        return hybsol_f32_eliminate_row(sys, row_tgt, row_src, (float *)scratch);
+    return hybsol_f64_eliminate_row(sys, row_tgt, row_src, (double *)scratch);
 }
 
 /* ------------------------------------------------------------------------- */

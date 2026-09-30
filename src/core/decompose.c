@@ -5,34 +5,25 @@
 
 #include "internal.h"
 
-hybsol_result_t hybsol_ops_append(hybsol_system_t *const sys, const hybsol_operation_t op)
+void hybsol_ops_append(hybsol_system_t *const sys, const hybsol_operation_t op)
 {
-    hybsol_result_t res = HYBSOL_SUCCESS;
-
+    // The list is sized to its proven upper bound before any thread reaches
+    // here, so there is nothing to grow and nothing to fail on. Within a pass
+    // the recorded operations commute, so the order threads interleave them in
+    // does not matter; across passes it is the loop order.
+    //
+    // `omp atomic capture` is deliberately not used: GCC does not treat its
+    // structured-block form as a capture and silently loses updates. A relaxed
+    // fetch-add is the same lock-free bump and says exactly what it does --
+    // the slot contents are published by the release that ends the loop.
+#ifdef __GNUC__
+    const uint64_t pos = __atomic_fetch_add(&sys->n_ops, 1, __ATOMIC_RELAXED);
+#else
+    uint64_t pos;
 #pragma omp critical(hybsol_ops_append)
-    {
-        if (sys->n_ops == sys->ops_capacity)
-        {
-            const uint64_t new_capacity = sys->ops_capacity ? sys->ops_capacity * 2 : 8;
-            hybsol_operation_t *const ptr = hybsol_grow(sys->allocator, sys->ops, (size_t)new_capacity * sizeof(*ptr));
-            if (ptr == NULL)
-            {
-                res = HYBSOL_ERROR_OUT_OF_MEMORY;
-            }
-            else
-            {
-                sys->ops = ptr;
-                sys->ops_capacity = new_capacity;
-            }
-        }
-        if (res == HYBSOL_SUCCESS)
-        {
-            sys->ops[sys->n_ops] = op;
-            sys->n_ops += 1;
-        }
-    }
-
-    return res;
+    pos = sys->n_ops++;
+#endif
+    sys->ops[pos] = op;
 }
 
 int hybsol_system_is_decomposed(const hybsol_system_t *const sys)
@@ -162,40 +153,41 @@ hybsol_result_t hybsol_system_solve(hybsol_system_t *const sys, double *const ve
 /* The decomposition itself                                                   */
 /* ------------------------------------------------------------------------- */
 
-typedef enum
-{
-    TARGET_FREE,
-    TARGET_IN_USE,
-    TARGET_DONE,
-} target_status_t;
-
-typedef struct
-{
-    target_status_t status;
-    uint64_t idx_src_needed;
-} target_row_t;
-
-hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64_t n_threads)
+hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sys, void *const workspace,
+                                                       const size_t workspace_bytes, const uint64_t n_threads)
 {
     if (sys->decomposed)
         return HYBSOL_ERROR_ALREADY_DECOMPOSED;
     if (!hybsol_system_is_valid(sys))
         return HYBSOL_ERROR_SYSTEM_INVALID;
+    CUTL_ASSERT(workspace != NULL, "The workspace pointer must not be NULL.");
 
-    const int threads = hybsol_resolve_threads(n_threads);
-    HYBSOL_MARK_USED(threads);
+    const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
+
+    // Everything the parallel regions touch is in place before they start: the
+    // operation list at its proven bound, and one bump region per thread. From
+    // here on nothing inside a region calls the allocator.
+    const uint64_t bound = hybsol_operation_bound(sys->n);
+    if (sys->ops_capacity < bound)
+    {
+        hybsol_operation_t *const ops = hybsol_grow(sys->allocator, sys->ops, (size_t)bound * sizeof(*ops));
+        if (ops == NULL)
+            return HYBSOL_ERROR_OUT_OF_MEMORY;
+        sys->ops = ops;
+        sys->ops_capacity = bound;
+    }
     sys->n_ops = 0;
 
-    target_row_t *const target_status = hybsol_alloc(sys->allocator, (size_t)sys->n * sizeof(*target_status));
-    uint64_t *const ready = hybsol_alloc(sys->allocator, (size_t)sys->n * sizeof(*ready));
-    hybsol_result_t *const results = hybsol_alloc(sys->allocator, (size_t)sys->n * sizeof(*results));
-    if (target_status == NULL || ready == NULL || results == NULL)
-    {
-        hybsol_free(sys->allocator, target_status);
-        hybsol_free(sys->allocator, ready);
-        hybsol_free(sys->allocator, results);
-        return HYBSOL_ERROR_OUT_OF_MEMORY;
-    }
+    hybsol_result_t res = hybsol_thread_allocs_open(sys, threads);
+    if (res != HYBSOL_SUCCESS)
+        return res;
+
+    hybsol_workspace_bind((hybsol_workspace_t *)workspace, workspace, workspace_bytes, sys, threads);
+    const hybsol_workspace_t *const ws = (const hybsol_workspace_t *)workspace;
+    unsigned char *const base = (unsigned char *)workspace;
+    target_row_t *const target_status = (target_row_t *)(base + ws->off_target_status);
+    uint64_t *const ready = (uint64_t *)(base + ws->off_ready);
+    hybsol_result_t *const results = (hybsol_result_t *)(base + ws->off_results);
 
     hybsol_result_t shared_res = HYBSOL_SUCCESS;
     uint64_t n_tgt = 0;
@@ -209,10 +201,8 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
         const hybsol_row_t *const row = sys->rows + i_row;
         if (row->entries[0]->col == i_row)
         {
-            hybsol_result_t res = hybsol_ops_append(
-                sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_row});
-            if (res == HYBSOL_SUCCESS)
-                res = hybsol_system_decompose_diagonal(sys, i_row);
+            hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_row});
+            hybsol_result_t res = hybsol_system_decompose_diagonal(sys, i_row);
             if (res == HYBSOL_SUCCESS)
                 res = hybsol_system_apply_diagonal_inverse(sys, i_row);
 
@@ -251,17 +241,18 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
             break;
 
 #pragma omp parallel for schedule(dynamic) default(none)                                                               \
-    shared(sys, target_status, ready, results, n_ready) if (threads > 1) num_threads(threads)
+    shared(sys, ws, target_status, ready, results, n_ready) if (threads > 1) num_threads(threads)
         for (uint64_t k = 0; k < n_ready; ++k)
         {
             const uint64_t i_tgt = ready[k];
             target_row_t *const status = target_status + i_tgt;
 
-            hybsol_result_t res = hybsol_system_eliminate_row(sys, i_tgt, status->idx_src_needed);
+            void *const scratch = hybsol_workspace_scratch(ws);
+            hybsol_result_t res = hybsol_system_eliminate_row_scratch(sys, i_tgt, status->idx_src_needed, scratch);
             if (res == HYBSOL_SUCCESS)
-                res = hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
-                                                                  .idx_row = i_tgt,
-                                                                  .idx_col = status->idx_src_needed});
+                hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
+                                                            .idx_row = i_tgt,
+                                                            .idx_col = status->idx_src_needed});
 
             if (res == HYBSOL_SUCCESS)
             {
@@ -277,7 +268,7 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
                     if (res == HYBSOL_SUCCESS)
                         res = hybsol_system_apply_diagonal_inverse(sys, i_tgt);
                     if (res == HYBSOL_SUCCESS)
-                        res = hybsol_ops_append(
+                        hybsol_ops_append(
                             sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_tgt});
                 }
             }
@@ -310,9 +301,9 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
         }
     }
 
-    hybsol_free(sys->allocator, target_status);
-    hybsol_free(sys->allocator, ready);
-    hybsol_free(sys->allocator, results);
+    // The regions stay alive: the entries carved out of them are the system's
+    // fill-in now, and are released with the system rather than individually.
+    hybsol_thread_allocs_done(sys);
 
     if (shared_res != HYBSOL_SUCCESS)
     {
@@ -322,6 +313,30 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
     if (n_tgt != 0)
         return HYBSOL_ERROR_INTERNAL;
 
+    CUTL_ASSERT(sys->n_ops <= bound, "Recorded %llu operations but the bound is %llu!", (unsigned long long)sys->n_ops,
+                (unsigned long long)bound);
+
     sys->decomposed = 1;
     return HYBSOL_SUCCESS;
+}
+
+hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64_t n_threads)
+{
+    const size_t bytes = hybsol_workspace_bytes(sys, n_threads);
+    if (bytes == 0)
+        return HYBSOL_ERROR_OUT_OF_MEMORY;
+
+    void *const workspace = hybsol_alloc(sys->allocator, bytes);
+    if (workspace == NULL)
+        return HYBSOL_ERROR_OUT_OF_MEMORY;
+
+    const hybsol_result_t res = hybsol_system_decompose_with_workspace(sys, workspace, bytes, n_threads);
+    hybsol_free(sys->allocator, workspace);
+    return res;
+}
+
+uint64_t hybsol_system_operation_bound(const hybsol_system_t *const sys)
+{
+    CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
+    return hybsol_operation_bound(sys->n);
 }

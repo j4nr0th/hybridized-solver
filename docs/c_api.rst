@@ -50,6 +50,19 @@ are ``uint64_t`` throughout, and a system is an opaque
 :c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds and
 :c:func:`hybsol_system_destroy` releases.
 
+The allocator need only be safe for the phases that run one at a time.
+:c:func:`hybsol_system_decompose_with_workspace` is parallel, and never calls
+it from inside a parallel region: each thread fills a region of its own, and
+the fill-in it produces is owned by the system and released with it. So a
+plain bump arena with no locking at all can be supplied. Its transient scratch
+— three per-row arrays and one scratch block per thread — comes from a buffer
+the caller supplies instead, sized by :c:func:`hybsol_workspace_bytes`.
+:c:func:`hybsol_system_decompose` allocates that buffer itself when a caller
+does not care where it comes from.
+
+The recorded operation list is sized to :c:func:`hybsol_system_operation_bound`
+before the parallel region starts, so appending to it neither grows nor locks.
+
 The headers
 -----------
 

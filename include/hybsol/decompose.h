@@ -44,6 +44,58 @@ typedef struct hybsol_operation
 } hybsol_operation_t;
 
 /**
+ * Bytes of scratch :c:func:`hybsol_system_decompose_with_workspace` needs.
+ *
+ * The buffer is opaque; a caller only ever allocates this many bytes, hands
+ * the pointer over and reads the result back out of ``sys``. Reusing one
+ * buffer across decompositions is fine.
+ *
+ * :param sys: The system that will be decomposed. Only its block sizes and
+ *     precision matter, so this can be called before any blocks are added.
+ * :param n_threads: The thread count that will be used.
+ * :returns: The number of bytes to supply; ``0`` if ``sys`` is ``NULL``.
+ */
+size_t hybsol_workspace_bytes(const hybsol_system_t *sys, uint64_t n_threads);
+
+/**
+ * The most operations a decomposition of ``sys`` will record.
+ *
+ * One operation per row plus at most one elimination per ``(target, source)``
+ * pair, so a dense system reaches this exactly. Sizing the recorded list to it
+ * is what lets the decomposition append without locking or growing.
+ */
+uint64_t hybsol_system_operation_bound(const hybsol_system_t *sys);
+
+/**
+ * Decompose the system in place, using scratch the caller supplies.
+ *
+ * This is :c:func:`hybsol_system_decompose` without the internal allocation:
+ * every byte it needs up front is ``workspace_bytes``, sized by
+ * :c:func:`hybsol_workspace_bytes`, and nothing is allocated from the system's
+ * allocator once the parallel regions start.
+ *
+ * That holds even when the system's allocator is not thread-safe, because each
+ * thread fills a region of its own. The fill-in the decomposition produces
+ * lives in those regions and is released with the system, not here.
+ *
+ * :param sys: The system to decompose. Must not be ``NULL``.
+ * :param workspace: Buffer of at least ``workspace_bytes``; must not be
+ *     ``NULL``. Its contents are overwritten.
+ * :param workspace_bytes: How large ``workspace`` is, as reported by
+ *     :c:func:`hybsol_workspace_bytes`.
+ * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
+ *     default (usually every core) and ``1`` runs the decomposition serially.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
+ *     :c:enumerator:`HYBSOL_ERROR_SYSTEM_INVALID`,
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`,
+ *     :c:enumerator:`HYBSOL_ERROR_SINGULAR`,
+ *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` or
+ *     :c:enumerator:`HYBSOL_ERROR_INTERNAL`.
+ */
+hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *sys, void *workspace, size_t workspace_bytes,
+                                                       uint64_t n_threads);
+
+/**
  * Decompose the system in place.
  *
  * The system must be valid (see :c:func:`hybsol_system_is_valid`). On
@@ -54,6 +106,11 @@ typedef struct hybsol_operation
  * The work is embarrassingly parallel up to the point where a row's
  * diagonal is complete; ``n_threads`` controls how many OpenMP threads are
  * used for that phase.
+ *
+ * This allocates the scratch :c:func:`hybsol_system_decompose_with_workspace`
+ * would otherwise take from the caller, from ``sys``'s allocator. Callers that
+ * decompose repeatedly, or that care where the memory comes from, should size
+ * a buffer once with :c:func:`hybsol_workspace_bytes` and use that spelling.
  *
  * :param sys: The system to decompose.
  * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
@@ -88,8 +145,16 @@ uint64_t hybsol_system_n_operations(const hybsol_system_t *sys);
  * Get the recorded operations.
  *
  * The pointer is owned by the system and stays valid until it is destroyed
- * or decomposed again. The order of the operations is significant: they
- * must be replayed front to back to apply the lower-triangular factor.
+ * or decomposed again. The operations must be replayed front to back to apply
+ * the lower-triangular factor.
+ *
+ * Order is fixed *between* elimination passes, because a later pass reads what
+ * an earlier one produced. Within a single pass the operations commute -- the
+ * targets are distinct, and every source was finished before the pass started
+ * -- so which thread records which of them first is not defined, and running a
+ * decomposition twice with more than one thread may hand back the same
+ * operations in a different order. Treat the list as significant only as a
+ * whole, not position by position.
  *
  * :param sys: The system.
  * :returns: An array of :c:func:`hybsol_system_n_operations` entries, or
