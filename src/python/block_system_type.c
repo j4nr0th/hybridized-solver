@@ -84,6 +84,70 @@ static int ensure_decomposed(const hybsol_system_t *const sys)
 }
 
 /**
+ * Reject a method that would relocate blocks a caller may still be writing to.
+ *
+ * :param self: The system object.
+ * :param what: Method name, used in the error message.
+ * :returns: ``0`` when no :meth:`block_storage` view is outstanding.
+ */
+static int ensure_no_live_views(const block_system_object *const self, const char *const what)
+{
+    if (self->n_live_views == 0)
+    {
+        return 0;
+    }
+    PyErr_Format(PyExc_RuntimeError,
+                 "%s() cannot run while %zd array(s) returned by block_storage() are still alive; "
+                 "delete them first.",
+                 what, self->n_live_views);
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Live views into block storage                                             */
+/* ------------------------------------------------------------------------- */
+
+#define BLOCK_VIEW_CAPSULE_NAME "hybsol.BlockSystem.block_storage_view"
+
+/**
+ * Release the view count a handed-out array was holding.
+ *
+ * Registered as a PyCapsule destructor, so it runs when the array the capsule
+ * is the base object of is collected. The capsule also keeps the owning
+ * system alive, which is what stops the storage from being freed underneath
+ * the array.
+ */
+static void block_view_destructor(PyObject *const capsule)
+{
+    block_system_object *const owner = PyCapsule_GetPointer(capsule, BLOCK_VIEW_CAPSULE_NAME);
+    if (owner == NULL)
+    {
+        PyErr_Clear();
+        return;
+    }
+    owner->n_live_views -= 1;
+    Py_DECREF(owner);
+}
+
+/**
+ * Create the base object for one array returned by :meth:`block_storage`.
+ *
+ * :param owner: System whose storage is being handed out.
+ * :returns: A new reference, or ``NULL`` with an exception set.
+ */
+static PyObject *block_view_capsule(block_system_object *const owner)
+{
+    PyObject *const capsule = PyCapsule_New(owner, BLOCK_VIEW_CAPSULE_NAME, block_view_destructor);
+    if (capsule == NULL)
+    {
+        return NULL;
+    }
+    Py_INCREF(owner);
+    owner->n_live_views += 1;
+    return capsule;
+}
+
+/**
  * Validate an ``out=`` keyword that may be ``None``.
  *
  * cpyutl's ``type_check`` rejects ``None`` outright, while the documented
@@ -193,7 +257,45 @@ static int parse_block_sizes(PyObject *const obj, uint64_t **const p_sizes, Py_s
  *
  * :returns: A new reference, or ``NULL`` with an exception set.
  */
-static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n, const uint64_t *const sizes)
+/**
+ * Read a ``precision=`` argument.
+ *
+ * :class:`hybsol.Precision` is a ``StrEnum``, so its members *are* strings and
+ * a plain ``"single"`` works too; anything else is rejected rather than
+ * quietly defaulting to double.
+ */
+static int parse_precision(PyObject *const obj, hybsol_precision_t *const out)
+{
+    if (!PyUnicode_Check(obj))
+    {
+        PyErr_Format(PyExc_TypeError, "precision must be a hybsol.Precision member, got %R.", Py_TYPE(obj));
+        return -1;
+    }
+    const char *const name = PyUnicode_AsUTF8(obj);
+    if (!name)
+    {
+        return -1;
+    }
+
+    if (strcmp(name, "double") == 0)
+    {
+        *out = HYBSOL_PRECISION_DOUBLE;
+    }
+    else if (strcmp(name, "single") == 0)
+    {
+        *out = HYBSOL_PRECISION_SINGLE;
+    }
+    else
+    {
+        PyErr_Format(PyExc_ValueError, "precision must be 'double' or 'single', got '%s'.", name);
+        return -1;
+    }
+
+    return 0;
+}
+
+static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n, const uint64_t *const sizes,
+                                    const hybsol_precision_t precision)
 {
     block_system_object *const self = (block_system_object *)type->tp_alloc(type, 0);
     if (!self)
@@ -201,8 +303,9 @@ static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n
         return NULL;
     }
     self->system = NULL;
+    self->n_live_views = 0;
 
-    const hybsol_result_t res = hybsol_system_create((uint64_t)n, sizes, &self->system);
+    const hybsol_result_t res = hybsol_system_create_with_precision((uint64_t)n, sizes, precision, &self->system);
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(self);
@@ -217,9 +320,25 @@ static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n
 
 static PyObject *block_system_new(PyTypeObject *const subtype, PyObject *const args, PyObject *const kwds)
 {
+    PyObject *precision_obj = NULL;
     if (kwds != NULL && PyDict_GET_SIZE(kwds) != 0)
     {
-        PyErr_SetString(PyExc_TypeError, "BlockSystem takes no keyword arguments");
+        precision_obj = PyDict_GetItemString(kwds, "precision");
+        if (precision_obj == NULL)
+        {
+            PyErr_SetString(PyExc_TypeError, "BlockSystem takes no keyword argument other than 'precision'");
+            return NULL;
+        }
+        if (PyDict_GET_SIZE(kwds) != 1)
+        {
+            PyErr_SetString(PyExc_TypeError, "BlockSystem takes only the 'precision' keyword argument");
+            return NULL;
+        }
+    }
+
+    hybsol_precision_t precision = HYBSOL_PRECISION_DOUBLE;
+    if (precision_obj != NULL && parse_precision(precision_obj, &precision) < 0)
+    {
         return NULL;
     }
 
@@ -235,7 +354,7 @@ static PyObject *block_system_new(PyTypeObject *const subtype, PyObject *const a
         return NULL;
     }
 
-    PyObject *const res = block_system_alloc(subtype, n, sizes);
+    PyObject *const res = block_system_alloc(subtype, n, sizes, precision);
     PyMem_Free(sizes);
     return res;
 }
@@ -262,13 +381,18 @@ static PyObject *block_system_repr(block_system_object *const self)
 /* Queries                                                                    */
 /* ------------------------------------------------------------------------- */
 
-PyDoc_STRVAR(block_system_docstring, "BlockSystem(*block_sizes: int)\n"
+PyDoc_STRVAR(block_system_docstring, "BlockSystem(*block_sizes: int, precision: hybsol.Precision = Precision.DOUBLE)\n"
                                      "Block system for hybridized solver.\n"
                                      "\n"
                                      "The system is an ``n x n`` arrangement of blocks, where block ``(i, j)``\n"
                                      "has shape ``(block_sizes[i], block_sizes[j])``. Only a subset of the\n"
                                      "blocks needs to be present; :meth:`is_valid` reports whether the\n"
-                                     "structure is one the solver can decompose.\n");
+                                     "structure is one the solver can decompose.\n"
+                                     "\n"
+                                     "``precision`` picks the type every block is stored in and every\n"
+                                     "operation on them computes in: :attr:`Precision.DOUBLE` (the default)\n"
+                                     "or :attr:`Precision.SINGLE`. It is fixed for the life of the system, and\n"
+                                     "the methods that carry values come in matching spellings.\n");
 
 static PyObject *block_system_object_is_valid(PyObject *const self, PyTypeObject *const defining_class,
                                               PyObject *const *const Py_UNUSED(args), const Py_ssize_t nargs,
@@ -307,9 +431,10 @@ static PyObject *block_system_object_as_array(PyObject *const self, PyTypeObject
         return NULL;
     }
 
+    const int single = hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE;
     const npy_intp total = (npy_intp)hybsol_system_total_size(this->system);
     const npy_intp dims[2] = {total, total};
-    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, single ? NPY_FLOAT : NPY_DOUBLE);
     if (!arr)
     {
         return NULL;
@@ -317,7 +442,14 @@ static PyObject *block_system_object_as_array(PyObject *const self, PyTypeObject
 
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_system_to_dense(this->system, PyArray_DATA(arr));
+    if (single)
+    {
+        res = hybsol_system_to_dense_f32(this->system, PyArray_DATA(arr));
+    }
+    else
+    {
+        res = hybsol_system_to_dense(this->system, PyArray_DATA(arr));
+    }
     Py_END_ALLOW_THREADS;
 
     if (res != HYBSOL_SUCCESS)
@@ -442,6 +574,23 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
         return NULL;
     }
 
+    if (hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE)
+    {
+        hybsol_fmatrix_t mat;
+        const hybsol_result_t res =
+            hybsol_system_get_block_f32(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
+        if (res == HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM)
+        {
+            PyErr_Format(PyExc_ValueError, "The system does not contain the block (%zd, %zd).", row_idx, col_idx);
+            return NULL;
+        }
+        if (res != HYBSOL_SUCCESS)
+        {
+            return hybsol_raise("get_block", res);
+        }
+        return (PyObject *)hybsol_fmatrix_to_array(&mat);
+    }
+
     hybsol_matrix_t mat;
     const hybsol_result_t res = hybsol_system_get_block(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
     if (res == HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM)
@@ -460,6 +609,84 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
 PyDoc_STRVAR(block_system_object_get_block_docstring, "get_block(row: int, col: int) -> "
                                                       "numpy.typing.NDArray[numpy.double]\n"
                                                       "Get a copy of the value of the specified block.\n");
+
+static PyObject *block_system_object_block_storage(PyObject *const self, PyTypeObject *const defining_class,
+                                                   PyObject *const *const args, const Py_ssize_t nargs,
+                                                   const PyObject *kwnames)
+{
+    block_system_object *this;
+    const module_state_t *state;
+    if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+    {
+        return NULL;
+    }
+    if (ensure_not_decomposed(this->system) < 0)
+    {
+        return NULL;
+    }
+
+    Py_ssize_t row_idx, col_idx;
+    if (parse_arguments_check(
+            (cpyutl_argument_t[]){
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &row_idx, .kwname = "row"},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &col_idx, .kwname = "col"},
+                {},
+            },
+            args, nargs, kwnames) < 0)
+    {
+        return NULL;
+    }
+    if (check_block_indices(this->system, row_idx, "Row index") < 0 ||
+        check_block_indices(this->system, col_idx, "Col index") < 0)
+    {
+        return NULL;
+    }
+
+    PyObject *const capsule = block_view_capsule(this);
+    if (capsule == NULL)
+    {
+        return NULL;
+    }
+
+    // The capsule is handed over either way: on failure the wrap releases it,
+    // which runs the destructor and drops the live-view count.
+    if (hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE)
+    {
+        hybsol_fmatrix_t mat;
+        const hybsol_result_t res =
+            hybsol_system_block_storage_f32(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
+        if (res != HYBSOL_SUCCESS)
+        {
+            Py_DECREF(capsule);
+            return hybsol_raise("block_storage", res);
+        }
+        return (PyObject *)hybsol_fmatrix_wrap(&mat, capsule);
+    }
+
+    hybsol_matrix_t mat;
+    const hybsol_result_t res = hybsol_system_block_storage(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
+    if (res != HYBSOL_SUCCESS)
+    {
+        Py_DECREF(capsule);
+        return hybsol_raise("block_storage", res);
+    }
+    return (PyObject *)hybsol_matrix_wrap(&mat, capsule);
+}
+
+PyDoc_STRVAR(block_system_object_block_storage_docstring,
+             "block_storage(row: int, col: int) -> numpy.typing.NDArray[numpy.double]\n"
+             "Get writable storage for a block, creating it on first use.\n"
+             "\n"
+             "The shape of the block is implied by the system, so this hands back\n"
+             "exactly the right buffer to fill in place instead of building a\n"
+             "temporary and passing it to :meth:`add_block`. The first call adds the\n"
+             "block to the sparsity pattern and zeroes it; later calls return the\n"
+             "same buffer unchanged, so nothing written so far is lost.\n"
+             "\n"
+             "The array is a view backed by the system, which it keeps alive.\n"
+             "Operations that only rewrite values in place are visible through it,\n"
+             "as with any view, but :meth:`eliminate_row`, :meth:`reorder_blocks`\n"
+             "and :meth:`decompose` refuse to run while any such array is alive.\n");
 
 static PyObject *block_system_object_get_block_size(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -716,14 +943,18 @@ static PyObject *block_system_object_add_block(PyObject *const self, PyTypeObjec
     const uint64_t n_cols = hybsol_system_block_size(this->system, (uint64_t)col_idx);
     const npy_intp dims[2] = {(npy_intp)n_rows, (npy_intp)n_cols};
 
+    const int single = hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE;
+
     PyArrayObject *arr = NULL;
-    if (hybsol_double_array(py_val, 2, dims, "val", &arr) < 0)
+    if ((single ? hybsol_float_array : hybsol_double_array)(py_val, 2, dims, "val", &arr) < 0)
     {
         return NULL;
     }
 
-    const hybsol_result_t res = hybsol_system_add_block(this->system, (uint64_t)row_idx, (uint64_t)col_idx, n_rows,
-                                                        n_cols, (const double *)PyArray_DATA(arr));
+    const hybsol_result_t res = single ? hybsol_system_add_block_f32(this->system, (uint64_t)row_idx, (uint64_t)col_idx,
+                                                                     n_rows, n_cols, (const float *)PyArray_DATA(arr))
+                                       : hybsol_system_add_block(this->system, (uint64_t)row_idx, (uint64_t)col_idx,
+                                                                 n_rows, n_cols, (const double *)PyArray_DATA(arr));
     Py_DECREF(arr);
     if (res != HYBSOL_SUCCESS)
     {
@@ -796,7 +1027,8 @@ static PyObject *block_system_object_add_blocks(PyObject *const self, PyTypeObje
         Py_DECREF(rows_arr);
         return NULL;
     }
-    if (hybsol_double_array(py_data, 1, &any_len, "data", &data_arr) < 0)
+    const int single = hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE;
+    if ((single ? hybsol_float_array : hybsol_double_array)(py_data, 1, &any_len, "data", &data_arr) < 0)
     {
         Py_DECREF(rows_arr);
         Py_DECREF(cols_arr);
@@ -847,8 +1079,16 @@ static PyObject *block_system_object_add_blocks(PyObject *const self, PyTypeObje
 
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res =
-        hybsol_system_add_blocks(this->system, (uint64_t)n_entries, rows, cols, (const double *)PyArray_DATA(data_arr));
+    if (single)
+    {
+        res = hybsol_system_add_blocks_f32(this->system, (uint64_t)n_entries, rows, cols,
+                                           (const float *)PyArray_DATA(data_arr));
+    }
+    else
+    {
+        res = hybsol_system_add_blocks(this->system, (uint64_t)n_entries, rows, cols,
+                                       (const double *)PyArray_DATA(data_arr));
+    }
     Py_END_ALLOW_THREADS;
 
     Py_DECREF(rows_arr);
@@ -972,16 +1212,26 @@ static PyObject *block_system_object_multiply_row(PyObject *const self, PyTypeOb
 
     const uint64_t n_rows = hybsol_system_block_size(this->system, (uint64_t)row_idx);
     const npy_intp dims[2] = {(npy_intp)n_rows, (npy_intp)n_rows};
+    const int single = hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE;
+
     PyArrayObject *arr = NULL;
-    if (hybsol_double_array(py_val, 2, dims, "val", &arr) < 0)
+    if ((single ? hybsol_float_array : hybsol_double_array)(py_val, 2, dims, "val", &arr) < 0)
     {
         return NULL;
     }
 
-    const hybsol_matrix_t mat = hybsol_matrix_from_array(arr);
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_system_multiply_row(this->system, (uint64_t)row_idx, (uint64_t)start_idx, &mat);
+    if (single)
+    {
+        const hybsol_fmatrix_t mat = hybsol_fmatrix_from_array(arr);
+        res = hybsol_system_multiply_row_f32(this->system, (uint64_t)row_idx, (uint64_t)start_idx, &mat);
+    }
+    else
+    {
+        const hybsol_matrix_t mat = hybsol_matrix_from_array(arr);
+        res = hybsol_system_multiply_row(this->system, (uint64_t)row_idx, (uint64_t)start_idx, &mat);
+    }
     Py_END_ALLOW_THREADS;
 
     Py_DECREF(arr);
@@ -1030,6 +1280,10 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
     {
         return NULL;
     }
+    if (ensure_no_live_views(this, "eliminate_row") < 0)
+    {
+        return NULL;
+    }
 
     Py_ssize_t i_row_src, i_row_tgt;
     PyObject *py_val;
@@ -1054,16 +1308,26 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
     const uint64_t size_src = hybsol_system_block_size(this->system, (uint64_t)i_row_src);
     const npy_intp dims[2] = {(npy_intp)size_tgt, (npy_intp)size_src};
 
+    const int single = hybsol_system_precision(this->system) == HYBSOL_PRECISION_SINGLE;
+
     PyArrayObject *arr = NULL;
-    if (hybsol_double_array(py_val, 2, dims, "val", &arr) < 0)
+    if ((single ? hybsol_float_array : hybsol_double_array)(py_val, 2, dims, "val", &arr) < 0)
     {
         return NULL;
     }
 
-    const hybsol_matrix_t mat = hybsol_matrix_from_array(arr);
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_system_eliminate_row_with(this->system, (uint64_t)i_row_tgt, (uint64_t)i_row_src, &mat);
+    if (single)
+    {
+        const hybsol_fmatrix_t mat = hybsol_fmatrix_from_array(arr);
+        res = hybsol_system_eliminate_row_with_f32(this->system, (uint64_t)i_row_tgt, (uint64_t)i_row_src, &mat);
+    }
+    else
+    {
+        const hybsol_matrix_t mat = hybsol_matrix_from_array(arr);
+        res = hybsol_system_eliminate_row_with(this->system, (uint64_t)i_row_tgt, (uint64_t)i_row_src, &mat);
+    }
     Py_END_ALLOW_THREADS;
 
     Py_DECREF(arr);
@@ -1316,6 +1580,10 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     block_system_object *this;
     const module_state_t *state;
     if (ensure_block_system_and_state(self, defining_class, &this, &state) < 0)
+    {
+        return NULL;
+    }
+    if (ensure_no_live_views(this, "decompose") < 0)
     {
         return NULL;
     }
@@ -1575,6 +1843,10 @@ static PyObject *block_system_object_reorder_blocks(PyObject *const self, PyType
         return NULL;
     }
     if (ensure_not_decomposed(this->system) < 0)
+    {
+        return NULL;
+    }
+    if (ensure_no_live_views(this, "reorder_blocks") < 0)
     {
         return NULL;
     }
@@ -1930,13 +2202,14 @@ static PyObject *block_system_from_blocks(PyObject *const cls, PyObject *const *
         return NULL;
     }
 
-    PyObject *py_sizes, *py_rows, *py_cols, *py_data;
+    PyObject *py_sizes, *py_rows, *py_cols, *py_data, *py_precision = NULL;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_sizes, .kwname = "block_sizes"},
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_rows, .kwname = "rows"},
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_cols, .kwname = "cols"},
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_data, .kwname = "data"},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_precision, .kwname = "precision", .optional = 1},
                 {},
             },
             args, nargs, kwnames) < 0)
@@ -1951,7 +2224,14 @@ static PyObject *block_system_from_blocks(PyObject *const cls, PyObject *const *
         return NULL;
     }
 
-    PyObject *const result = block_system_alloc(type, n, sizes);
+    hybsol_precision_t precision = HYBSOL_PRECISION_DOUBLE;
+    if (py_precision != NULL && parse_precision(py_precision, &precision) < 0)
+    {
+        PyMem_Free(sizes);
+        return NULL;
+    }
+
+    PyObject *const result = block_system_alloc(type, n, sizes, precision);
     PyMem_Free(sizes);
     if (!result)
     {
@@ -2000,11 +2280,12 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
         return NULL;
     }
 
-    PyObject *py_blocks, *py_sizes = NULL;
+    PyObject *py_blocks, *py_sizes = NULL, *py_precision = NULL;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_blocks, .kwname = "blocks"},
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_sizes, .kwname = "block_sizes", .optional = 1},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_precision, .kwname = "precision", .optional = 1},
                 {},
             },
             args, nargs, kwnames) < 0)
@@ -2024,6 +2305,14 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
         Py_DECREF(seq);
         return NULL;
     }
+
+    hybsol_precision_t precision = HYBSOL_PRECISION_DOUBLE;
+    if (py_precision != NULL && parse_precision(py_precision, &precision) < 0)
+    {
+        Py_DECREF(seq);
+        return NULL;
+    }
+    const int precision_single = precision == HYBSOL_PRECISION_SINGLE;
 
     // First pass: validate the triples, convert every value and figure out
     // how much room the flat buffer needs.
@@ -2068,8 +2357,9 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
             goto cleanup;
         }
 
-        PyArrayObject *const val = (PyArrayObject *)PyArray_FROMANY(PyTuple_GET_ITEM(item, 2), NPY_DOUBLE, 2, 2,
-                                                                    NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+        PyArrayObject *const val =
+            (PyArrayObject *)PyArray_FROMANY(PyTuple_GET_ITEM(item, 2), precision_single ? NPY_FLOAT : NPY_DOUBLE, 2, 2,
+                                             NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
         if (!val)
         {
             goto cleanup;
@@ -2130,8 +2420,11 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
         }
     }
 
+    const int single = precision_single;
+    const size_t elem_size = single ? sizeof(float) : sizeof(double);
+
     // Third pass: flatten into a single buffer the bulk path understands.
-    double *const data = PyMem_Malloc(sizeof(double) * needed);
+    void *const data = PyMem_Malloc(elem_size * needed);
     if (!data)
     {
         PyMem_Free(sizes);
@@ -2142,11 +2435,11 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
     for (Py_ssize_t k = 0; k < n_entries; ++k)
     {
         const size_t len = (size_t)PyArray_DIM(values[k], 0) * (size_t)PyArray_DIM(values[k], 1);
-        memcpy(data + offset, PyArray_DATA(values[k]), sizeof(double) * len);
-        offset += len;
+        memcpy((char *)data + offset, PyArray_DATA(values[k]), elem_size * len);
+        offset += elem_size * len;
     }
 
-    result = block_system_alloc(type, n_blocks, sizes);
+    result = block_system_alloc(type, n_blocks, sizes, precision);
     PyMem_Free(sizes);
     if (!result)
     {
@@ -2156,7 +2449,10 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
 
     {
         const hybsol_result_t res =
-            hybsol_system_add_blocks(((block_system_object *)result)->system, (uint64_t)n_entries, rows, cols, data);
+            single ? hybsol_system_add_blocks_f32(((block_system_object *)result)->system, (uint64_t)n_entries, rows,
+                                                  cols, (const float *)data)
+                   : hybsol_system_add_blocks(((block_system_object *)result)->system, (uint64_t)n_entries, rows, cols,
+                                              (const double *)data);
         PyMem_Free(data);
         if (res != HYBSOL_SUCCESS)
         {
@@ -2182,6 +2478,47 @@ cleanup:
 /* ------------------------------------------------------------------------- */
 /* Getters                                                                    */
 /* ------------------------------------------------------------------------- */
+
+/**
+ * Build the :class:`hybsol.Precision` member a system's precision spells as.
+ *
+ * The enum lives in the Python half of the package, so it is looked up on
+ * demand rather than cached at import time: by the time anyone reads
+ * ``BlockSystem.precision`` the package has finished importing, and this way
+ * the extension keeps no import-time dependency on it.
+ */
+static PyObject *precision_member(const hybsol_precision_t precision)
+{
+    PyObject *const mod = PyImport_ImportModule("hybsol");
+    if (mod == NULL)
+    {
+        return NULL;
+    }
+    PyObject *const cls = PyObject_GetAttrString(mod, "Precision");
+    Py_DECREF(mod);
+    if (cls == NULL)
+    {
+        return NULL;
+    }
+
+    PyObject *const value = PyUnicode_FromString(precision == HYBSOL_PRECISION_SINGLE ? "single" : "double");
+    if (value == NULL)
+    {
+        Py_DECREF(cls);
+        return NULL;
+    }
+
+    PyObject *const member = PyObject_CallOneArg(cls, value);
+    Py_DECREF(value);
+    Py_DECREF(cls);
+    return member;
+}
+
+static PyObject *block_system_object_get_precision(PyObject *const self, void *const Py_UNUSED(closure))
+{
+    const block_system_object *const this = (const block_system_object *)self;
+    return precision_member(hybsol_system_precision(this->system));
+}
 
 static PyObject *block_system_object_get_n_blocks(PyObject *const self, void *const Py_UNUSED(closure))
 {
@@ -2249,6 +2586,8 @@ PyType_Spec block_system_type_spec = {
                  BS_METHOD("get_row_block_indices", block_system_object_get_row_block_indices,
                            block_system_object_get_row_block_indices_docstring),
                  BS_METHOD("get_block", block_system_object_get_block, block_system_object_get_block_docstring),
+                 BS_METHOD("block_storage", block_system_object_block_storage,
+                           block_system_object_block_storage_docstring),
                  BS_METHOD("get_block_size", block_system_object_get_block_size,
                            block_system_object_get_block_size_docstring),
                  BS_METHOD("has_block", block_system_object_has_block, block_system_object_has_block_docstring),
@@ -2291,6 +2630,11 @@ PyType_Spec block_system_type_spec = {
                      .name = "n_blocks",
                      .get = block_system_object_get_n_blocks,
                      .doc = "int : Number of blocks.",
+                 },
+                 {
+                     .name = "precision",
+                     .get = block_system_object_get_precision,
+                     .doc = "hybsol.Precision : The type this system stores its blocks in.",
                  },
                  {
                      .name = "block_sizes",

@@ -11,6 +11,17 @@ hybsol_matrix_t hybsol_matrix_from_array(const PyArrayObject *const arr)
                               PyArray_DATA(arr));
 }
 
+hybsol_fmatrix_t hybsol_fmatrix_from_array(const PyArrayObject *const arr)
+{
+    const int ndim = PyArray_NDIM(arr);
+    CPYUTL_ASSERT(ndim >= 1 && ndim <= 2, "Expected a 1D or 2D array, got a %dD array.", ndim);
+    CPYUTL_ASSERT(check_input_array(arr, 0, (const npy_intp[]){}, NPY_FLOAT, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED,
+                                    "matrix") == 0,
+                  "Array did not have correct dtype and/or flags!");
+    return hybsol_fmatrix_view((uint64_t)PyArray_DIM(arr, 0), ndim == 2 ? (uint64_t)PyArray_DIM(arr, 1) : 1,
+                               PyArray_DATA(arr));
+}
+
 PyArrayObject *hybsol_matrix_to_array(const hybsol_matrix_t *const mat)
 {
     const npy_intp dims[2] = {(npy_intp)mat->rows, (npy_intp)mat->cols};
@@ -20,6 +31,60 @@ PyArrayObject *hybsol_matrix_to_array(const hybsol_matrix_t *const mat)
         return NULL;
     }
     memcpy(PyArray_DATA(arr), mat->data, (size_t)(mat->rows * mat->cols) * sizeof(double));
+    return arr;
+}
+
+PyArrayObject *hybsol_matrix_wrap(const hybsol_matrix_t *const mat, PyObject *const base)
+{
+    const npy_intp dims[2] = {(npy_intp)mat->rows, (npy_intp)mat->cols};
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNewFromData(2, dims, NPY_DOUBLE, mat->data);
+    if (!arr)
+    {
+        Py_DECREF(base);
+        return NULL;
+    }
+
+    // The array aliases memory it did not allocate: the base object is what
+    // keeps that memory (and the system it belongs to) alive.
+    if (PyArray_SetBaseObject(arr, base) < 0)
+    {
+        Py_DECREF(arr);
+        return NULL;
+    }
+
+    PyArray_ENABLEFLAGS(arr, NPY_ARRAY_WRITEABLE);
+    return arr;
+}
+
+PyArrayObject *hybsol_fmatrix_to_array(const hybsol_fmatrix_t *const mat)
+{
+    const npy_intp dims[2] = {(npy_intp)mat->rows, (npy_intp)mat->cols};
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_FLOAT);
+    if (!arr)
+    {
+        return NULL;
+    }
+    memcpy(PyArray_DATA(arr), mat->data, (size_t)(mat->rows * mat->cols) * sizeof(float));
+    return arr;
+}
+
+PyArrayObject *hybsol_fmatrix_wrap(const hybsol_fmatrix_t *const mat, PyObject *const base)
+{
+    const npy_intp dims[2] = {(npy_intp)mat->rows, (npy_intp)mat->cols};
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_SimpleNewFromData(2, dims, NPY_FLOAT, mat->data);
+    if (!arr)
+    {
+        Py_DECREF(base);
+        return NULL;
+    }
+
+    if (PyArray_SetBaseObject(arr, base) < 0)
+    {
+        Py_DECREF(arr);
+        return NULL;
+    }
+
+    PyArray_ENABLEFLAGS(arr, NPY_ARRAY_WRITEABLE);
     return arr;
 }
 
@@ -33,6 +98,29 @@ int hybsol_double_array(PyObject *const obj, const int ndim, const npy_intp *con
         return -1;
     }
     if (check_input_array(arr, (unsigned)ndim, dims, NPY_DOUBLE, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, name) < 0)
+    {
+        Py_DECREF(arr);
+        return -1;
+    }
+    *arr_out = arr;
+    return 0;
+}
+
+int hybsol_float_array(PyObject *const obj, const int ndim, const npy_intp *const dims, const char *const name,
+                       PyArrayObject **const arr_out)
+{
+    // FORCECAST is what makes a Python caller able to hand a double array to a
+    // single-precision system: there is only one door in Python, and it is the
+    // system's precision that decides the type. The C API keeps the strict
+    // rule instead -- there the caller picks a spelling, and picking the wrong
+    // one is an error rather than a silent narrowing.
+    PyArrayObject *const arr = (PyArrayObject *)PyArray_FROMANY(
+        obj, NPY_FLOAT, ndim, ndim, NPY_ARRAY_FORCECAST | NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (!arr)
+    {
+        return -1;
+    }
+    if (check_input_array(arr, (unsigned)ndim, dims, NPY_FLOAT, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED, name) < 0)
     {
         Py_DECREF(arr);
         return -1;

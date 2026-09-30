@@ -12,6 +12,13 @@ typedef struct
 {
     PyObject_HEAD;
     hybsol_system_t *system;
+    /**
+     * Number of arrays handed out by ``block_storage()`` that are still alive.
+     *
+     * Kept so that methods which rebuild a row's storage can refuse to run
+     * while a caller may still be writing through a pointer into it.
+     */
+    Py_ssize_t n_live_views;
 } block_system_object;
 
 MODULE_INTERNAL

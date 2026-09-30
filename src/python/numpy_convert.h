@@ -22,12 +22,55 @@
 hybsol_matrix_t hybsol_matrix_from_array(const PyArrayObject *arr);
 
 /**
+ * Read a single-precision matrix view out of a validated NumPy array.
+ *
+ * The single-precision twin of :c:func:`hybsol_matrix_from_array`.
+ *
+ * :param arr: Array to describe, either 1-D (treated as a column) or 2-D.
+ * :returns: A view borrowing ``arr``'s buffer.
+ */
+hybsol_fmatrix_t hybsol_fmatrix_from_array(const PyArrayObject *arr);
+
+/**
  * Copy a matrix into a freshly allocated 2-D ``double`` array.
  *
  * :param mat: Matrix to copy.
  * :returns: The new array, or ``NULL`` with :c:macro:`PyExc_MemoryError` set.
  */
 PyArrayObject *hybsol_matrix_to_array(const hybsol_matrix_t *mat);
+
+/**
+ * Wrap a matrix's existing storage as a writable 2-D ``double`` array.
+ *
+ * The array does not own its memory: ``base`` is recorded as the array's base
+ * object so that whatever the storage belongs to stays alive for exactly as
+ * long as the array can be written through.
+ *
+ * :param mat: Matrix whose buffer is wrapped.
+ * :param base: Object owning the storage. One reference to it is consumed
+ *     whether the wrap succeeds or not.
+ * :returns: The array, or ``NULL`` with an exception set.
+ */
+PyArrayObject *hybsol_matrix_wrap(const hybsol_matrix_t *mat, PyObject *base);
+
+/**
+ * Copy a single-precision matrix into a freshly allocated 2-D ``float`` array.
+ *
+ * :param mat: Matrix to copy.
+ * :returns: The new array, or ``NULL`` with :c:macro:`PyExc_MemoryError` set.
+ */
+PyArrayObject *hybsol_fmatrix_to_array(const hybsol_fmatrix_t *mat);
+
+/**
+ * Wrap a single-precision matrix's existing storage as a writable ``float``
+ * array, exactly as :c:func:`hybsol_matrix_wrap` does for doubles.
+ *
+ * :param mat: Matrix whose buffer is wrapped.
+ * :param base: Object owning the storage. One reference to it is consumed
+ *     whether the wrap succeeds or not.
+ * :returns: The array, or ``NULL`` with an exception set.
+ */
+PyArrayObject *hybsol_fmatrix_wrap(const hybsol_fmatrix_t *mat, PyObject *base);
 
 /**
  * Convert an object to a ``double`` array with the required shape.
@@ -45,6 +88,21 @@ PyArrayObject *hybsol_matrix_to_array(const hybsol_matrix_t *mat);
  * :returns: ``0`` on success, ``-1`` with an exception set on failure.
  */
 int hybsol_double_array(PyObject *obj, int ndim, const npy_intp *dims, const char *name, PyArrayObject **arr_out);
+
+/**
+ * Convert an object to a ``float`` array with the required shape.
+ *
+ * The single-precision twin of :c:func:`hybsol_double_array`, used for the
+ * block values of a :c:enumerator:`HYBSOL_PRECISION_SINGLE` system.
+ *
+ * :param obj: Anything array-like.
+ * :param ndim: Required number of dimensions.
+ * :param dims: Required size per dimension; ``0`` means "any".
+ * :param name: Argument name used in the error message.
+ * :param arr_out: Receives the new reference.
+ * :returns: ``0`` on success, ``-1`` with an exception set on failure.
+ */
+int hybsol_float_array(PyObject *obj, int ndim, const npy_intp *dims, const char *name, PyArrayObject **arr_out);
 
 /**
  * Convert an object to a C-contiguous ``uint64_t`` array.

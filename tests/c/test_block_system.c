@@ -315,6 +315,97 @@ static void test_row_operations(void)
     hybsol_system_destroy(sys);
 }
 
+/** First use allocates a zeroed view; later calls hand back the same storage. */
+static void test_block_storage_creates_and_reuses(void)
+{
+    hybsol_system_t *sys = NULL;
+    const uint64_t sizes[3] = {2, 3, 1};
+    CHECK_OK(hybsol_system_create(3, sizes, &sys));
+
+    hybsol_matrix_t view;
+    CHECK_OK(hybsol_system_block_storage(sys, 0, 1, &view));
+    CHECK(view.rows == 2 && view.cols == 3);
+    CHECK(hybsol_system_has_block(sys, 0, 1));
+    for (uint64_t i = 0; i < 6; ++i)
+        CHECK(view.data[i] == 0.0);
+
+    // Writes through the view land in the system.
+    for (uint64_t i = 0; i < 6; ++i)
+        view.data[i] = (double)(i + 1);
+
+    hybsol_matrix_t read_back;
+    CHECK_OK(hybsol_system_get_block(sys, 0, 1, &read_back));
+    CHECK(read_back.data == view.data);
+    CHECK(read_back.data[5] == 6.0);
+
+    // Re-fetching must not clear or accumulate: the buffer is handed back as
+    // it stands, so an assembler can come back to the same block.
+    hybsol_matrix_t again;
+    CHECK_OK(hybsol_system_block_storage(sys, 0, 1, &again));
+    CHECK(again.data == view.data);
+    CHECK(again.rows == view.rows && again.cols == view.cols);
+    for (uint64_t i = 0; i < 6; ++i)
+        CHECK(again.data[i] == (double)(i + 1));
+
+    // Inserting a block earlier in the row moves pointers, not entries.
+    hybsol_matrix_t first;
+    CHECK_OK(hybsol_system_block_storage(sys, 0, 0, &first));
+    double *const pinned = first.data;
+    CHECK_OK(hybsol_system_add_block(sys, 0, 2, 2, 1, (const double[2]){1.0, 2.0}));
+    CHECK(hybsol_system_row_count(sys, 0) == 3);
+    CHECK(first.data == pinned);
+    CHECK(view.data[0] == 1.0 && view.data[5] == 6.0);
+    for (uint64_t i = 0; i < 2; ++i)
+        CHECK(first.data[i] == 0.0);
+
+    // A freshly created block is reported as absent until it is written.
+    hybsol_matrix_t diagonal;
+    CHECK_OK(hybsol_system_block_storage(sys, 2, 2, &diagonal));
+    CHECK(diagonal.rows == 1 && diagonal.cols == 1);
+    CHECK(diagonal.data[0] == 0.0);
+
+    CHECK_RESULT(hybsol_system_block_storage(sys, 3, 0, &view), HYBSOL_ERROR_INDEX_OUT_OF_RANGE);
+    CHECK_RESULT(hybsol_system_block_storage(sys, 0, 9, &view), HYBSOL_ERROR_INDEX_OUT_OF_RANGE);
+    CHECK_RESULT(hybsol_system_block_storage(sys, 0, 1, NULL), HYBSOL_ERROR_INVALID_ARGUMENT);
+
+    hybsol_system_destroy(sys);
+}
+
+/** Touching the diagonal through storage drops the cached factorization. */
+static void test_block_storage_invalidates_diagonal(void)
+{
+    hybsol_system_t *sys = NULL;
+    const uint64_t sizes[2] = {2, 2};
+    const double diag[4] = {4.0, 0.0, 0.0, 4.0};
+    CHECK_OK(hybsol_system_create(2, sizes, &sys));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
+
+    CHECK_OK(hybsol_system_decompose_diagonal(sys, 0));
+    CHECK_OK(hybsol_system_apply_diagonal_inverse(sys, 0));
+
+    hybsol_matrix_t view;
+    CHECK_OK(hybsol_system_block_storage(sys, 0, 0, &view));
+    CHECK_RESULT(hybsol_system_apply_diagonal_inverse(sys, 0), HYBSOL_ERROR_NOT_DECOMPOSED);
+
+    hybsol_system_destroy(sys);
+}
+
+/** Storage may not be created once the system has been factorized. */
+static void test_block_storage_rejects_decomposed(void)
+{
+    hybsol_system_t *sys = NULL;
+    const uint64_t sizes[1] = {2};
+    const double diag[4] = {4.0, 0.0, 0.0, 4.0};
+    CHECK_OK(hybsol_system_create(1, sizes, &sys));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
+    CHECK_OK(hybsol_system_decompose(sys, 1));
+
+    hybsol_matrix_t view;
+    CHECK_RESULT(hybsol_system_block_storage(sys, 0, 0, &view), HYBSOL_ERROR_ALREADY_DECOMPOSED);
+
+    hybsol_system_destroy(sys);
+}
+
 int main(void)
 {
     test_create_and_query();
@@ -325,5 +416,8 @@ int main(void)
     test_copy();
     test_is_valid();
     test_row_operations();
+    test_block_storage_creates_and_reuses();
+    test_block_storage_invalidates_diagonal();
+    test_block_storage_rejects_decomposed();
     return test_report("test_block_system");
 }

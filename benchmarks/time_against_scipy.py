@@ -5,6 +5,11 @@ because it answers the same question on a larger system. The difference is that
 this one has no command-line handling and reports every round instead of only
 the best case.
 
+The thread count is pinned to the physical core count instead of being left to
+OpenMP, which answers with the logical count and would oversubscribe the cores
+on a machine with simultaneous multithreading. That makes the timings
+comparable with runs on a machine without it; see ``physical_core_count``.
+
 Two things had to change for the current API:
 
 * `reorder_vector` moves a vector into the ordering `reorder_blocks` produced,
@@ -15,6 +20,7 @@ Two things had to change for the current API:
   the small constant the script always used, so `np.allclose` passes again.
 """
 
+import os
 from time import perf_counter
 
 import numpy as np
@@ -68,6 +74,44 @@ def block_system_to_sp(sys: BlockSystem) -> sp.csc_array:
     )
 
 
+def physical_core_count() -> int:
+    """Count the physical cores this process is allowed to run on.
+
+    The thread count is pinned rather than left to OpenMP because OpenMP
+    answers with the *logical* count, which on a machine with simultaneous
+    multithreading asks for more threads than there are cores. Timings taken
+    that way do not compare against runs on a machine without it.
+
+    Returns
+    -------
+    int
+        Distinct ``(package, core)`` pairs, or the logical count when the CPU
+        topology cannot be read.
+    """
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+    except AttributeError:  # pragma: no cover - no affinity API on this platform
+        return os.cpu_count() or 1
+
+    base = "/sys/devices/system/cpu"
+    cores = set()
+    for cpu in cpus:
+        try:
+            with open(f"{base}/cpu{cpu}/topology/physical_package_id") as handle:
+                package = handle.read().strip()
+            with open(f"{base}/cpu{cpu}/topology/core_id") as handle:
+                core = handle.read().strip()
+        except OSError:  # pragma: no cover - sysfs is not mounted
+            return os.cpu_count() or 1
+        cores.add((package, core))
+
+    return len(cores) or os.cpu_count() or 1
+
+
+# Threads used below; reference runs take the physical core count.
+N_THREADS = physical_core_count()
+
+
 if __name__ == "__main__":
     n_rounds, n_blocks, max_block_size, sparsity = 10, 500, 40, 0.995
 
@@ -76,7 +120,10 @@ if __name__ == "__main__":
 
     sys = random_sparse_system(n_blocks, max_block_size, sparsity)
     csc = block_system_to_sp(sys)
-    print(f"Solving a {csc.shape[0]} x {csc.shape[0]} system {n_rounds} times")
+    print(
+        f"Solving a {csc.shape[0]} x {csc.shape[0]} system {n_rounds} times "
+        f"on {N_THREADS} thread(s)"
+    )
 
     # To eyeball the sparsity pattern, import pyplot and show it:
     #
@@ -105,8 +152,8 @@ if __name__ == "__main__":
         t = perf_counter()
         activate_stack_trampoline("perf")
         ordering = decomp_me.compute_reordering("greedy")
-        decomp_me.reorder_blocks(ordering)
-        decomp_me.decompose()
+        decomp_me.reorder_blocks(ordering, n_threads=N_THREADS)
+        decomp_me.decompose(n_threads=N_THREADS)
         # `rhs` still lives in the old ordering, so it goes through
         # reorder_vector first and the solution comes back through
         # unorder_vector.

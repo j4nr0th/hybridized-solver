@@ -89,8 +89,16 @@ typedef struct hybsol_row_entry
 {
     /** Block column index; strictly increasing within a row. */
     uint64_t col;
-    /** ``block_size(row) * block_size(col)`` doubles, sized at allocation time. */
-    double vals[];
+    /**
+     * ``block_size(row) * block_size(col)`` elements of the owning system's
+     * precision, sized at allocation time.
+     *
+     * Kept as raw bytes rather than a flexible array of a specific type: the
+     * entry does not know which precision it holds, so readers cast it using
+     * :c:func:`hybsol_scalar_size` on the system they already hold. The member
+     * starts at offset 8, which is alignment enough for ``double``.
+     */
+    unsigned char vals[];
 } hybsol_row_entry_t;
 
 /** The stored blocks of a single block row, kept sorted by column. */
@@ -122,6 +130,8 @@ struct hybsol_system
     uint64_t ops_capacity;
     /** Non-zero once :c:func:`hybsol_system_decompose` succeeded. */
     uint8_t decomposed;
+    /** Type every stored block is held in. */
+    hybsol_precision_t precision;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -132,6 +142,12 @@ struct hybsol_system
 static inline uint64_t hybsol_block_size(const hybsol_system_t *const sys, const uint64_t idx)
 {
     return sys->block_offsets[idx + 1] - sys->block_offsets[idx];
+}
+
+/** Bytes occupied by one stored element of ``precision``. */
+static inline size_t hybsol_scalar_size(const hybsol_precision_t precision)
+{
+    return precision == HYBSOL_PRECISION_SINGLE ? sizeof(float) : sizeof(double);
 }
 
 /**
@@ -170,6 +186,25 @@ hybsol_result_t hybsol_row_reserve(hybsol_row_t *row, uint64_t needed);
  */
 hybsol_result_t hybsol_require_mutable(const hybsol_system_t *sys);
 
+/**
+ * Reject a call whose operand type does not match how the system stores blocks.
+ *
+ * Every value-carrying function has an unsuffixed double spelling and an
+ * ``_f32`` single-precision twin. This is what makes handing the wrong one a
+ * system a clean error instead of a silent narrowing conversion — and a
+ * buffer over-read, since the two spellings size their buffers differently.
+ *
+ * :param sys: The system.
+ * :param precision: The spelling the caller chose.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
+ *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`.
+ */
+static inline hybsol_result_t hybsol_check_precision(const hybsol_system_t *const sys,
+                                                     const hybsol_precision_t precision)
+{
+    return sys->precision == precision ? HYBSOL_SUCCESS : HYBSOL_ERROR_INVALID_ARGUMENT;
+}
+
 /** Validate a block row/column index pair. */
 hybsol_result_t hybsol_check_index(const hybsol_system_t *sys, uint64_t idx);
 
@@ -200,35 +235,6 @@ static inline int hybsol_resolve_threads(const uint64_t n_threads)
 #define HYBSOL_THREAD_NUM() 0
 #endif
 
-/**
- * Keep a variable "used" when only OpenMP pragmas would have referenced it.
- *
- * The pragmas vanish entirely in a serial build, which would otherwise leave
- * an unused-variable warning (and a failed build with ``-Werror``).
- */
 #define HYBSOL_MARK_USED(var) ((void)(var))
-
-/**
- * Look up a block without requiring a mutable system.
- *
- * Works on a ``const`` system on purpose: the pointed-to storage is not
- * const-qualified, so the returned view may alias live data.
- */
-static inline hybsol_result_t hybsol_lookup_block(const hybsol_system_t *sys, uint64_t row, uint64_t col,
-                                                  hybsol_matrix_t *out)
-{
-    if (out == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-    if (row >= sys->n || col >= sys->n)
-        return HYBSOL_ERROR_INDEX_OUT_OF_RANGE;
-
-    uint64_t idx;
-    if (!hybsol_row_find(sys->rows + row, col, &idx))
-        return HYBSOL_ERROR_BLOCK_NOT_IN_SYSTEM;
-
-    *out =
-        hybsol_matrix_view(hybsol_block_size(sys, row), hybsol_block_size(sys, col), sys->rows[row].entries[idx]->vals);
-    return HYBSOL_SUCCESS;
-}
 
 #endif /* HYBSOL_CORE_INTERNAL_H */

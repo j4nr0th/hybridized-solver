@@ -1,12 +1,23 @@
 """Stub for the C extension module _mod."""
 
 from collections.abc import Sequence
+from enum import StrEnum
 from typing import Literal, Self
 
 import numpy as np
 from numpy import typing as npt
 
 OrderingStrategy = Literal["first", "greedy", "balanced"]
+
+class Precision(StrEnum):
+    """The floating-point type a :class:`BlockSystem` stores its blocks in.
+
+    Re-exported from :mod:`hybsol`; a plain string of the same value is
+    accepted anywhere a member is.
+    """
+
+    DOUBLE = "double"
+    SINGLE = "single"
 
 class BlockSystem:
     """Block system for hybridized solver.
@@ -17,7 +28,9 @@ class BlockSystem:
     solver can decompose.
     """
 
-    def __new__(cls, *block_sizes: int) -> Self: ...
+    def __new__(
+        cls, *block_sizes: int, precision: Precision | str = Precision.DOUBLE
+    ) -> Self: ...
     @classmethod
     def from_blocks(
         cls,
@@ -25,6 +38,7 @@ class BlockSystem:
         rows: npt.ArrayLike,
         cols: npt.ArrayLike,
         data: npt.ArrayLike,
+        precision: Precision | str = Precision.DOUBLE,
     ) -> Self:
         """Build a whole system from a flat COO description in one pass.
 
@@ -52,6 +66,7 @@ class BlockSystem:
         cls,
         blocks: Sequence[tuple[int, int, npt.ArrayLike]],
         block_sizes: Sequence[int] | None = None,
+        precision: Precision | str = Precision.DOUBLE,
     ) -> Self:
         """Build a system from a list of ``(row, col, array)`` triples.
 
@@ -164,6 +179,44 @@ class BlockSystem:
         """
         ...
 
+    def block_storage(self, row: int, col: int) -> npt.NDArray[np.double]:
+        """Get writable storage for a block, creating it on first use.
+
+        The shape of the block is implied by the system, so this hands back
+        exactly the right buffer to fill in place instead of building a
+        temporary and passing it to :meth:`add_block`. The first call adds the
+        block to the sparsity pattern and zeroes it; later calls return the
+        same storage unchanged, so nothing written so far is lost.
+
+        The returned array is a view backed by the system, which it keeps
+        alive. Operations that only rewrite values in place are visible
+        through it, as with any view, but :meth:`eliminate_row`,
+        :meth:`reorder_blocks` and :meth:`decompose` refuse to run while any
+        such array is alive.
+
+        Parameters
+        ----------
+        row : int
+            Row index of the block.
+        col : int
+            Column index of the block.
+
+        Returns
+        -------
+        array
+            Writable, C-contiguous view of the block, shape
+            ``(block_sizes[row], block_sizes[col])``.
+
+        Raises
+        ------
+        ValueError
+            An index is outside ``[0, n_blocks)``.
+        RuntimeError
+            The system has already been decomposed, or a previously returned
+            view is still alive in front of a method that would move it.
+        """
+        ...
+
     def get_block_size(self, row: int, col: int) -> tuple[int, int]:
         """Get the shape ``(rows, cols)`` of a system block.
 
@@ -178,6 +231,11 @@ class BlockSystem:
 
     def has_block(self, row: int, col: int) -> bool:
         """Check if the block at row ``row`` and column ``col`` is present."""
+        ...
+
+    @property
+    def precision(self) -> Precision:
+        """The type this system stores its blocks in."""
         ...
 
     @property

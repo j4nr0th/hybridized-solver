@@ -46,7 +46,7 @@ intersphinx_mapping = {
 # -- Options for hawkmoth (the C API) -----------------------------------------
 # The public headers are self-contained and need no external include paths.
 hawkmoth_root = os.path.abspath("..")
-hawkmoth_clang = [f"-I{os.path.abspath('../include')}"]
+hawkmoth_clang = [f"-I{os.path.abspath('../include')}", "-DHYBSOL_DOCS"]
 
 # -- Options for sphinx-gallery (the examples) ---------------------------------
 sphinx_gallery_conf = {

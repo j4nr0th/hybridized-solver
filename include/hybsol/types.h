@@ -63,6 +63,49 @@ typedef enum hybsol_result
 const char *hybsol_result_str(hybsol_result_t result);
 
 /**
+ * The floating-point type a system stores its blocks in.
+ *
+ * Precision is a property of a whole system, chosen when it is created: the
+ * blocks, the factors produced from them and every operation that touches
+ * them use this type. Vectors passed to :c:func:`hybsol_system_solve` and the
+ * ordering helpers are always doubles regardless of it.
+ *
+ * The two flavours of every value-carrying function are spelled out by
+ * suffix: the unsuffixed spelling is the double one and takes
+ * :c:type:`hybsol_matrix_t`, while ``_f32`` is the single-precision one and
+ * takes :c:type:`hybsol_fmatrix_t`. Mixing them up is rejected with
+ * :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` rather than converted
+ * silently.
+ */
+typedef enum hybsol_precision
+{
+    /** IEEE-754 binary64. The default, and what :c:func:`hybsol_system_create` builds. */
+    HYBSOL_PRECISION_DOUBLE,
+    /** IEEE-754 binary32: half the memory, and a solve only good to about ``cond * 1e-7``. */
+    HYBSOL_PRECISION_SINGLE,
+} hybsol_precision_t;
+
+/**
+ * The documented spelling of a length-qualified array parameter.
+ *
+ * ``HYBSOL_IN(uint64_t, rows, n_entries)`` expands to
+ * ``const uint64_t rows[static n_entries]``, which promises the compiler a
+ * non-null pointer to at least ``n_entries`` elements -- exactly the contract
+ * these parameters have, and worth keeping in the real headers.
+ *
+ * libclang cannot spell a variably modified array type, though: it comes back
+ * as ``<recovery-expr>()`` and the rendered signature is unsalvageable. So the
+ * documentation build (``-DHYBSOL_DOCS``, set in ``docs/conf.py``) sees a plain
+ * pointer instead, and the docs say ``const uint64_t *rows`` -- which is what
+ * the parameter is to a caller anyway.
+ */
+#ifdef HYBSOL_DOCS
+#define HYBSOL_IN(type, name, n) const type *name
+#else
+#define HYBSOL_IN(type, name, n) const type name[static n]
+#endif
+
+/**
  * Allocator used by the library.
  *
  * All three members must be set. The default allocator is plain

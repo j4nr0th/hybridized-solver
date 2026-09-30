@@ -7,6 +7,7 @@ systems the solver is meant for.
 
 import argparse
 import json
+import os
 from time import perf_counter
 
 import numpy as np
@@ -77,6 +78,41 @@ def block_system_to_sp(sys: BlockSystem) -> sp.csc_array:
     )
 
 
+def physical_core_count() -> int:
+    """Count the physical cores this process is allowed to run on.
+
+    Leaving ``n_threads`` at zero lets OpenMP pick, and OpenMP picks the
+    *logical* count. On a machine with simultaneous multithreading that asks
+    for more threads than there are cores, and timings taken that way cannot
+    be compared against runs on a machine without it. Benchmarks therefore pin
+    the physical count explicitly, and vary it from one up to that number.
+
+    Returns
+    -------
+    int
+        Distinct ``(package, core)`` pairs, or the logical count when the CPU
+        topology cannot be read.
+    """
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+    except AttributeError:  # pragma: no cover - no affinity API on this platform
+        return os.cpu_count() or 1
+
+    base = "/sys/devices/system/cpu"
+    cores = set()
+    for cpu in cpus:
+        try:
+            with open(f"{base}/cpu{cpu}/topology/physical_package_id") as handle:
+                package = handle.read().strip()
+            with open(f"{base}/cpu{cpu}/topology/core_id") as handle:
+                core = handle.read().strip()
+        except OSError:  # pragma: no cover - sysfs is not mounted
+            return os.cpu_count() or 1
+        cores.add((package, core))
+
+    return len(cores) or os.cpu_count() or 1
+
+
 def parse_args() -> argparse.Namespace:
     """Parse the command line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -89,6 +125,13 @@ def parse_args() -> argparse.Namespace:
         "--sparsity", type=float, default=0.995, help="Off-diagonal drop probability."
     )
     parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help="Threads for reordering and decomposition; defaults to the physical "
+        "core count so that runs stay comparable across machines.",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="Print the result as a single JSON line."
     )
     return parser.parse_args()
@@ -97,6 +140,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the comparison and report the average times."""
     args = parse_args()
+
+    n_threads = physical_core_count() if args.threads is None else args.threads
+    if n_threads < 1:
+        raise SystemExit(f"--threads must be at least 1, got {n_threads}")
 
     sys = random_sparse_system(args.n_blocks, args.max_block_size, args.sparsity)
     csc = block_system_to_sp(sys)
@@ -119,8 +166,8 @@ def main() -> None:
 
         start = perf_counter()
         ordering = decomposed.compute_reordering("greedy")
-        decomposed.reorder_blocks(ordering)
-        decomposed.decompose()
+        decomposed.reorder_blocks(ordering, n_threads=n_threads)
+        decomposed.decompose(n_threads=n_threads)
         solution = decomposed.solve(decomposed.reorder_vector(ordering, rhs))
         lhs_hybsol = decomposed.unorder_vector(ordering, solution)
         times_hybsol.append(perf_counter() - start)
@@ -136,6 +183,7 @@ def main() -> None:
         "n_blocks": args.n_blocks,
         "max_block_size": args.max_block_size,
         "sparsity": args.sparsity,
+        "threads": n_threads,
         "size": int(csc.shape[0]),
         "scipy_s": min(times_scipy),
         "hybsol_s": min(times_hybsol),
@@ -148,7 +196,10 @@ def main() -> None:
     if args.json:
         print(json.dumps(result))
     else:
-        print(f"Ran {args.rounds} rounds on a {csc.shape[0]} x {csc.shape[0]} system")
+        print(
+            f"Ran {args.rounds} rounds on a {csc.shape[0]} x {csc.shape[0]} system "
+            f"with {n_threads} thread(s)"
+        )
         print(f"  SciPy : {result['scipy_mean_s']:.4f} s (best {result['scipy_s']:.4f})")
         print(
             f"  hybsol: {result['hybsol_mean_s']:.4f} s (best {result['hybsol_s']:.4f})"

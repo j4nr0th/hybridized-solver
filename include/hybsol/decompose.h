@@ -144,6 +144,27 @@ hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *sys, uint64_t idx,
                                              const hybsol_matrix_t *x);
 
 /**
+ * The single-precision spelling of :c:func:`hybsol_system_solve_diagonal`.
+ *
+ * ``b`` and ``x`` are floats here, and the system must have been created with
+ * :c:enumerator:`HYBSOL_PRECISION_SINGLE` — the double spelling on such a
+ * system returns :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT` instead of
+ * widening the factors.
+ *
+ * :param sys: The system.
+ * :param idx: Block row index.
+ * :param b: Right-hand side with ``block_size(idx)`` rows.
+ * :param x: Destination for the solution, shaped like ``b``. May alias ``b``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
+ *     :c:enumerator:`HYBSOL_ERROR_INVALID_ARGUMENT`,
+ *     :c:enumerator:`HYBSOL_ERROR_INDEX_OUT_OF_RANGE`,
+ *     :c:enumerator:`HYBSOL_ERROR_MISSING_DIAGONAL`,
+ *     :c:enumerator:`HYBSOL_ERROR_NOT_DECOMPOSED`.
+ */
+hybsol_result_t hybsol_system_solve_diagonal_f32(hybsol_system_t *sys, uint64_t idx, const hybsol_fmatrix_t *b,
+                                                 const hybsol_fmatrix_t *x);
+
+/**
  * Apply the recorded operations to a vector, applying ``L^{-1}``.
  *
  * :param sys: The decomposed system.

@@ -69,56 +69,48 @@ static hybsol_result_t find_diagonal(hybsol_system_t *const sys, const uint64_t 
     return HYBSOL_SUCCESS;
 }
 
+/* ------------------------------------------------------------------------- */
+/* The value-carrying half, instantiated once per precision                   */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * Everything that touches block values is written once in
+ * ``decompose_numeric.inc`` and instantiated here. Both instantiations are
+ * private to this file: callers go through the spellings below, which pick
+ * the right one for the system they were handed.
+ */
+#define HYBSOL_SCALAR double
+#define HYBSOL_ACC double
+#define HYBSOL_VIEW hybsol_matrix_t
+#define HYBSOL_KERNEL(name) hybsol_matrix_##name
+#define HYBSOL_FN(name) hybsol_f64_##name
+#define HYBSOL_NARROWED 0
+#include "decompose_numeric.inc"
+
+#define HYBSOL_SCALAR float
+#define HYBSOL_ACC float
+#define HYBSOL_VIEW hybsol_fmatrix_t
+#define HYBSOL_KERNEL(name) hybsol_fmatrix_##name
+#define HYBSOL_FN(name) hybsol_f32_##name
+#define HYBSOL_NARROWED 1
+#include "decompose_numeric.inc"
+
+/* ------------------------------------------------------------------------- */
+/* Public spellings                                                           */
+/* ------------------------------------------------------------------------- */
+
 hybsol_result_t hybsol_system_decompose_diagonal(hybsol_system_t *const sys, const uint64_t idx)
 {
-    hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    hybsol_row_entry_t *diag;
-    res = find_diagonal(sys, idx, &diag);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    const uint64_t block_size = hybsol_block_size(sys, idx);
-    const hybsol_matrix_t mat = hybsol_matrix_view(block_size, block_size, diag->vals);
-    res = hybsol_matrix_lu_decompose(&mat);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    sys->diag_decomposed[idx] = 1;
-    return HYBSOL_SUCCESS;
+    if (sys->precision == HYBSOL_PRECISION_SINGLE)
+        return hybsol_f32_decompose_diagonal(sys, idx);
+    return hybsol_f64_decompose_diagonal(sys, idx);
 }
 
 hybsol_result_t hybsol_system_apply_diagonal_inverse(hybsol_system_t *const sys, const uint64_t idx)
 {
-    hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    hybsol_row_entry_t *diag;
-    res = find_diagonal(sys, idx, &diag);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    if (!sys->diag_decomposed[idx])
-        return HYBSOL_ERROR_NOT_DECOMPOSED;
-
-    hybsol_row_t *const row = sys->rows + idx;
-    uint64_t i_diag;
-    (void)hybsol_row_find(row, idx, &i_diag);
-
-    const uint64_t block_size = hybsol_block_size(sys, idx);
-    const hybsol_matrix_t mat_diag = hybsol_matrix_view(block_size, block_size, diag->vals);
-    for (uint64_t i = i_diag + 1; i < row->count; ++i)
-    {
-        hybsol_row_entry_t *const entry = row->entries[i];
-        const hybsol_matrix_t mat_entry =
-            hybsol_matrix_view(block_size, hybsol_block_size(sys, entry->col), entry->vals);
-        hybsol_matrix_lu_solve(&mat_diag, &mat_entry, &mat_entry);
-    }
-
-    return HYBSOL_SUCCESS;
+    if (sys->precision == HYBSOL_PRECISION_SINGLE)
+        return hybsol_f32_apply_diagonal_inverse(sys, idx);
+    return hybsol_f64_apply_diagonal_inverse(sys, idx);
 }
 
 hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *const sys, const uint64_t idx,
@@ -126,21 +118,51 @@ hybsol_result_t hybsol_system_solve_diagonal(hybsol_system_t *const sys, const u
 {
     if (b == NULL || x == NULL)
         return HYBSOL_ERROR_INVALID_ARGUMENT;
-
-    hybsol_row_entry_t *diag;
-    hybsol_result_t res = find_diagonal(sys, idx, &diag);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
-    if (!sys->diag_decomposed[idx])
-        return HYBSOL_ERROR_NOT_DECOMPOSED;
-
-    const uint64_t block_size = hybsol_block_size(sys, idx);
-    if (b->rows != block_size || x->rows != b->rows || x->cols != b->cols)
+    if (hybsol_check_precision(sys, HYBSOL_PRECISION_DOUBLE) != HYBSOL_SUCCESS)
         return HYBSOL_ERROR_INVALID_ARGUMENT;
 
-    const hybsol_matrix_t mat_diag = hybsol_matrix_view(block_size, block_size, diag->vals);
-    return hybsol_matrix_lu_solve(&mat_diag, b, x);
+    return hybsol_f64_solve_diagonal(sys, idx, b, x);
+}
+
+hybsol_result_t hybsol_system_solve_diagonal_f32(hybsol_system_t *const sys, const uint64_t idx,
+                                                 const hybsol_fmatrix_t *const b, const hybsol_fmatrix_t *const x)
+{
+    if (b == NULL || x == NULL)
+        return HYBSOL_ERROR_INVALID_ARGUMENT;
+    if (hybsol_check_precision(sys, HYBSOL_PRECISION_SINGLE) != HYBSOL_SUCCESS)
+        return HYBSOL_ERROR_INVALID_ARGUMENT;
+
+    return hybsol_f32_solve_diagonal(sys, idx, b, x);
+}
+
+void hybsol_system_apply_operations(const hybsol_system_t *const sys, const uint64_t n_ops,
+                                    const hybsol_operation_t *const ops, double *const vec)
+{
+    // The vector stays double for both precisions; only the factors narrow.
+    if (sys->precision == HYBSOL_PRECISION_SINGLE)
+        hybsol_f32_apply_operations(sys, n_ops, ops, vec);
+    else
+        hybsol_f64_apply_operations(sys, n_ops, ops, vec);
+}
+
+void hybsol_system_solve_upper(const hybsol_system_t *const sys, double *const y)
+{
+    if (sys->precision == HYBSOL_PRECISION_SINGLE)
+        hybsol_f32_solve_upper(sys, y);
+    else
+        hybsol_f64_solve_upper(sys, y);
+}
+
+hybsol_result_t hybsol_system_solve(hybsol_system_t *const sys, double *const vec)
+{
+    if (!sys->decomposed)
+        return HYBSOL_ERROR_NOT_DECOMPOSED;
+    if (vec == NULL)
+        return HYBSOL_ERROR_INVALID_ARGUMENT;
+
+    hybsol_system_apply_operations(sys, sys->n_ops, sys->ops, vec);
+    hybsol_system_solve_upper(sys, vec);
+    return HYBSOL_SUCCESS;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -308,76 +330,5 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
         return HYBSOL_ERROR_INTERNAL;
 
     sys->decomposed = 1;
-    return HYBSOL_SUCCESS;
-}
-
-/* ------------------------------------------------------------------------- */
-/* Solving                                                                    */
-/* ------------------------------------------------------------------------- */
-
-void hybsol_system_apply_operations(const hybsol_system_t *const sys, const uint64_t n_ops,
-                                    const hybsol_operation_t *const ops, double *const vec)
-{
-    for (uint64_t i = 0; i < n_ops; ++i)
-    {
-        const hybsol_operation_t *const op = ops + i;
-        hybsol_matrix_t block_mat;
-
-        switch (op->type)
-        {
-        case HYBSOL_OPERATION_ELIMINATE: {
-            (void)hybsol_lookup_block(sys, op->idx_row, op->idx_col, &block_mat);
-            const hybsol_matrix_t in_vec =
-                hybsol_matrix_view(hybsol_block_size(sys, op->idx_col), 1, vec + sys->block_offsets[op->idx_col]);
-            const hybsol_matrix_t out_vec =
-                hybsol_matrix_view(hybsol_block_size(sys, op->idx_row), 1, vec + sys->block_offsets[op->idx_row]);
-            hybsol_matrix_multiply_sub_inplace(&block_mat, &in_vec, &out_vec);
-        }
-        break;
-
-        case HYBSOL_OPERATION_INVERT_DIAGONAL: {
-            (void)hybsol_lookup_block(sys, op->idx_row, op->idx_row, &block_mat);
-            const hybsol_matrix_t inout_vec =
-                hybsol_matrix_view(hybsol_block_size(sys, op->idx_row), 1, vec + sys->block_offsets[op->idx_row]);
-            hybsol_matrix_lu_solve(&block_mat, &inout_vec, &inout_vec);
-        }
-        break;
-        }
-    }
-}
-
-void hybsol_system_solve_upper(const hybsol_system_t *const sys, double *const y)
-{
-    // Solve the U x = y system, where the diagonal blocks are the identity
-    for (uint64_t i = sys->n; i > 0; --i)
-    {
-        const uint64_t idx_row = i - 1;
-        const hybsol_row_t *const row = sys->rows + idx_row;
-        if (row->count == 0)
-            continue;
-
-        const uint64_t block_size = hybsol_block_size(sys, idx_row);
-        const hybsol_matrix_t vec = hybsol_matrix_view(block_size, 1, y + sys->block_offsets[idx_row]);
-        for (uint64_t j = row->count; j > 0 && idx_row < row->entries[j - 1]->col; --j)
-        {
-            hybsol_row_entry_t *const entry = row->entries[j - 1];
-            const hybsol_matrix_t mat_entry =
-                hybsol_matrix_view(block_size, hybsol_block_size(sys, entry->col), entry->vals);
-            const hybsol_matrix_t vec_entry =
-                hybsol_matrix_view(hybsol_block_size(sys, entry->col), 1, y + sys->block_offsets[entry->col]);
-            hybsol_matrix_multiply_sub_inplace(&mat_entry, &vec_entry, &vec);
-        }
-    }
-}
-
-hybsol_result_t hybsol_system_solve(hybsol_system_t *const sys, double *const vec)
-{
-    if (!sys->decomposed)
-        return HYBSOL_ERROR_NOT_DECOMPOSED;
-    if (vec == NULL)
-        return HYBSOL_ERROR_INVALID_ARGUMENT;
-
-    hybsol_system_apply_operations(sys, sys->n_ops, sys->ops, vec);
-    hybsol_system_solve_upper(sys, vec);
     return HYBSOL_SUCCESS;
 }
