@@ -35,205 +35,152 @@ const char *hybsol_result_str(const hybsol_result_t result)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Per-thread bump regions                                                     */
+/* The fill-in pool                                                            */
 /* ------------------------------------------------------------------------- */
 
 /*
  * A decomposition allocates from inside OpenMP parallel regions, so a caller
- * supplying an allocator that is not thread-safe would be raced. Each thread
- * bumps against a region of its own: the fast path touches only that thread's
- * cursor, so it needs no lock, no atomic, and never calls the system's
- * allocator.
+ * supplying an allocator that is not thread-safe would be raced. Instead the
+ * fill-in comes out of one pool, allocated here before the first region starts
+ * and sized exactly by `hybsol_fill_plan_compute`.
  *
- * Regions start large and double when they run out, so growth stays
- * logarithmic in however much fill-in a pattern turns out to produce.
+ * Threads share the pool, so a carve is one relaxed atomic bump: no lock, and
+ * no call into the system's allocator on the common path. Every carve keeps a
+ * small header recording its size, so a grow can copy the right amount -- the
+ * same contract the bump regions had.
  *
- * A region is released only when the system is destroyed: entries carved out
- * of it outlive the decomposition.
+ * The memory outlives the decomposition: the entries carved out of it are the
+ * system's fill-in, released with the system rather than individually.
  */
 
-#define HYBSOL_REGION_MIN_BYTES (256u * 1024u)
-
-/** Every block carries this, so a grow knows how much of the old one to copy. */
-typedef struct hybsol_region_hdr
+/*
+ * Prefix on every carve, so a grow knows how much of the old one to copy. Its
+ * size has to match HYBSOL_POOL_HDR_BYTES, which the symbolic pass adds when
+ * sizing the pool.
+ */
+typedef struct
 {
     size_t size;
     size_t pad;
-} hybsol_region_hdr_t;
+} hybsol_pool_hdr_t;
 
 static size_t align_up(const size_t value)
 {
     return (value + (HYBSOL_REGION_ALIGN - 1)) & ~(size_t)(HYBSOL_REGION_ALIGN - 1);
 }
 
-/** Carve ``size`` bytes off ``region``, or ``NULL`` when it is exhausted. */
-static void *region_allocate(hybsol_region_t *const region, const size_t size)
-{
-    const size_t want = sizeof(hybsol_region_hdr_t) + align_up(size);
-    if (want < size) /* the size plus its header wrapped around */
-        return NULL;
-    if (region->used > region->size || want > region->size - region->used)
-        return NULL;
-
-    unsigned char *const at = region->base + region->used;
-    region->used += want;
-    hybsol_region_hdr_t *const hdr = (hybsol_region_hdr_t *)at;
-    hdr->size = size;
-    hdr->pad = 0;
-    return at + sizeof(hybsol_region_hdr_t);
-}
-
 /**
- * Add a region to the system's list and report its index.
+ * Carve out of the pool, or fall back to the allocator once it is exhausted.
  *
- * The only place a decomposition still touches the system's allocator, so it
- * is serialized: a caller may have supplied an allocator that is not
- * thread-safe.
+ * The bump is never rolled back: `pool_used` is a single cursor every thread
+ * reads, so undoing it would hand the same bytes to a second thread. Running
+ * past the end therefore just means the tail of the pool is unused, and the
+ * allocation comes from the system allocator instead.
  */
-static hybsol_result_t region_push(hybsol_system_t *const sys, const size_t bytes, uint64_t *const out_idx)
+static void *pool_allocate(void *const state, const size_t size)
 {
-    hybsol_result_t res = HYBSOL_SUCCESS;
-#pragma omp critical(hybsol_region_push)
+    hybsol_system_t *const sys = (hybsol_system_t *)state;
+    const size_t payload = sizeof(hybsol_pool_hdr_t) + align_up(size);
+
+    const size_t at = __atomic_fetch_add(&sys->pool_used, payload, __ATOMIC_RELAXED);
+    if (at + payload <= sys->pool_size)
     {
-        if (sys->n_regions == sys->regions_capacity)
-        {
-            const uint64_t next = sys->regions_capacity ? sys->regions_capacity * 2 : 8;
-            hybsol_region_t *const grown = hybsol_grow(sys->allocator, sys->regions, (size_t)next * sizeof(*grown));
-            if (grown == NULL)
-            {
-                res = HYBSOL_ERROR_OUT_OF_MEMORY;
-            }
-            else
-            {
-                sys->regions = grown;
-                sys->regions_capacity = next;
-            }
-        }
-        if (res == HYBSOL_SUCCESS)
-        {
-            unsigned char *const base = hybsol_alloc(sys->allocator, bytes);
-            if (base == NULL)
-            {
-                res = HYBSOL_ERROR_OUT_OF_MEMORY;
-            }
-            else
-            {
-                sys->regions[sys->n_regions] = (hybsol_region_t){.base = base, .size = bytes, .used = 0};
-                *out_idx = sys->n_regions;
-                sys->n_regions += 1;
-            }
-        }
+        unsigned char *const base = sys->pool + at;
+        ((hybsol_pool_hdr_t *)base)->size = size;
+        ((hybsol_pool_hdr_t *)base)->pad = 0;
+        return base + sizeof(hybsol_pool_hdr_t);
     }
-    return res;
+
+    // Exact sizing should make this unreachable. It is taken under a lock
+    // because it is the one place a parallel region can reach the system's
+    // allocator, and a caller may have supplied one that is not thread-safe.
+    void *fallback;
+#pragma omp critical(hybsol_pool_overflow)
+    {
+        fallback = hybsol_alloc(sys->allocator, size);
+    }
+    return fallback;
 }
 
-/**
- * Carve ``size`` bytes for one thread, doubling its region when exhausted.
- *
- * Only called on the owning thread, so the cursor is not contended. The region
- * it outgrows is kept alive rather than freed, since its entries are in use.
- */
-static void *region_take(hybsol_thread_alloc_t *const ta, const size_t size)
-{
-    void *const got = region_allocate(&ta->sys->regions[ta->region], size);
-    if (got != NULL)
-        return got;
-
-    const size_t current = ta->sys->regions[ta->region].size;
-    if (region_push(ta->sys, current ? current * 2 : HYBSOL_REGION_MIN_BYTES, &ta->region) != HYBSOL_SUCCESS)
-        return NULL;
-
-    return region_allocate(&ta->sys->regions[ta->region], size);
-}
-
-static void *thread_allocate(void *const state, const size_t size)
-{
-    return region_take((hybsol_thread_alloc_t *)state, size);
-}
-
-static void *thread_reallocate(void *const state, void *const ptr, const size_t size)
+static void *pool_reallocate(void *const state, void *const ptr, const size_t size)
 {
     if (ptr == NULL)
-        return region_take((hybsol_thread_alloc_t *)state, size);
+        return pool_allocate(state, size);
 
-    const hybsol_region_hdr_t *const hdr =
-        (const hybsol_region_hdr_t *)((const unsigned char *)ptr - sizeof(hybsol_region_hdr_t));
-    void *const fresh = region_take((hybsol_thread_alloc_t *)state, size);
+    const hybsol_pool_hdr_t *const hdr =
+        (const hybsol_pool_hdr_t *)((const unsigned char *)ptr - sizeof(hybsol_pool_hdr_t));
+    void *const fresh = pool_allocate(state, size);
     if (fresh != NULL)
         memcpy(fresh, ptr, hdr->size < size ? hdr->size : size);
     return fresh;
 }
 
-static void thread_deallocate(void *const state, void *const ptr)
+static void pool_deallocate(void *const state, void *const ptr)
 {
     HYBSOL_MARK_USED(state);
     HYBSOL_MARK_USED(ptr);
-    /* A region is released whole, when the system is destroyed. */
+    /*
+     * Nothing inside a parallel region releases anything: the rows are grown to
+     * their peak before the first region starts, so the release in
+     * hybsol_row_reserve is never reached from one. Memory the overflow path
+     * handed out is freed by whoever owns it, not here.
+     */
 }
 
-hybsol_result_t hybsol_thread_allocs_open(hybsol_system_t *const sys, const uint64_t n_threads)
+hybsol_result_t hybsol_pool_open(hybsol_system_t *const sys, const hybsol_fill_plan_t *const plan)
 {
-    hybsol_regions_free(sys);
+    CUTL_ASSERT(sizeof(hybsol_pool_hdr_t) == HYBSOL_POOL_HDR_BYTES,
+                "The pool header and the size the symbolic pass adds have drifted apart.");
 
-    if (n_threads == 0)
-        return HYBSOL_SUCCESS;
+    hybsol_pool_free(sys);
 
-    sys->thread_allocs = hybsol_alloc(sys->allocator, (size_t)n_threads * sizeof(*sys->thread_allocs));
-    if (sys->thread_allocs == NULL)
+    // Over-allocate by the alignment so the base can be rounded up to it; cutl
+    // only guarantees max_align_t, and every carve is a multiple of the
+    // granularity, so aligning the base aligns all of them.
+    const size_t want = plan->pool_bytes + HYBSOL_REGION_ALIGN;
+    unsigned char *const raw = hybsol_alloc(sys->allocator, want);
+    if (raw == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
-    sys->n_thread_allocs = 0;
 
-    for (uint64_t t = 0; t < n_threads; ++t)
-    {
-        hybsol_thread_alloc_t *const ta = sys->thread_allocs + t;
-        ta->sys = sys;
-        ta->thread = t;
-        ta->region = 0;
-        ta->alloc = (cutl_allocator_t){
-            .state = ta, .allocate = thread_allocate, .deallocate = thread_deallocate, .reallocate = thread_reallocate};
-        if (region_push(sys, HYBSOL_REGION_MIN_BYTES, &ta->region) != HYBSOL_SUCCESS)
-        {
-            hybsol_regions_free(sys);
-            return HYBSOL_ERROR_OUT_OF_MEMORY;
-        }
-    }
-
-    sys->n_thread_allocs = n_threads;
+    sys->pool_raw = raw;
+    sys->pool = (unsigned char *)align_up((size_t)raw);
+    sys->pool_size = plan->pool_bytes;
+    sys->pool_used = 0;
+    sys->pool_alloc = (cutl_allocator_t){
+        .state = sys,
+        .allocate = pool_allocate,
+        .deallocate = pool_deallocate,
+        .reallocate = pool_reallocate,
+    };
+    sys->pool_armed = 1;
     return HYBSOL_SUCCESS;
 }
 
-void hybsol_thread_allocs_done(hybsol_system_t *const sys)
+void hybsol_pool_close(hybsol_system_t *const sys)
 {
-    hybsol_free(sys->allocator, sys->thread_allocs);
-    sys->thread_allocs = NULL;
-    sys->n_thread_allocs = 0;
+    // `pool` deliberately stays: the fill-in carved out of it is still live, and
+    // hybsol_ptr_is_pooled has to keep recognising it until the system dies.
+    sys->pool_armed = 0;
+    sys->pool_used = 0;
 }
 
-void hybsol_regions_free(hybsol_system_t *const sys)
+void hybsol_pool_free(hybsol_system_t *const sys)
 {
-    for (uint64_t r = 0; r < sys->n_regions; ++r)
-        hybsol_free(sys->allocator, sys->regions[r].base);
-    sys->n_regions = 0;
-    sys->regions_capacity = 0;
-
-    hybsol_free(sys->allocator, sys->regions);
-    sys->regions = NULL;
+    hybsol_free(sys->allocator, sys->pool_raw);
+    sys->pool_raw = NULL;
+    sys->pool = NULL;
+    sys->pool_size = 0;
+    sys->pool_used = 0;
+    sys->pool_armed = 0;
 }
 
 int hybsol_ptr_is_pooled(const hybsol_system_t *const sys, const void *const ptr)
 {
-    if (ptr == NULL)
+    if (ptr == NULL || sys->pool == NULL)
         return 0;
     const unsigned char *const p = (const unsigned char *)ptr;
-    for (uint64_t r = 0; r < sys->n_regions; ++r)
-    {
-        if (sys->regions[r].base != NULL && p >= sys->regions[r].base &&
-            p < sys->regions[r].base + sys->regions[r].size)
-            return 1;
-    }
-    return 0;
-}
-/* ------------------------------------------------------------------------- */
+    return p >= sys->pool && p < sys->pool + sys->pool_size;
+} /* ------------------------------------------------------------------------- */
 /* Decomposition scratch                                                       */
 /* ------------------------------------------------------------------------- */
 

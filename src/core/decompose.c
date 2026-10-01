@@ -5,25 +5,14 @@
 
 #include "internal.h"
 
-void hybsol_ops_append(hybsol_system_t *const sys, const hybsol_operation_t op)
+/*
+ * Record one operation. Only ever called from the serial phase between passes,
+ * which is what makes the list deterministic and keeps this a plain store.
+ */
+static void hybsol_ops_append(hybsol_system_t *const sys, const hybsol_operation_t op)
 {
-    // The list is sized to its proven upper bound before any thread reaches
-    // here, so there is nothing to grow and nothing to fail on. Within a pass
-    // the recorded operations commute, so the order threads interleave them in
-    // does not matter; across passes it is the loop order.
-    //
-    // `omp atomic capture` is deliberately not used: GCC does not treat its
-    // structured-block form as a capture and silently loses updates. A relaxed
-    // fetch-add is the same lock-free bump; the slot contents are published by
-    // the release that ends the loop.
-#ifdef __GNUC__
-    const uint64_t pos = __atomic_fetch_add(&sys->n_ops, 1, __ATOMIC_RELAXED);
-#else
-    uint64_t pos;
-#pragma omp critical(hybsol_ops_append)
-    pos = sys->n_ops++;
-#endif
-    sys->ops[pos] = op;
+    sys->ops[sys->n_ops] = op;
+    sys->n_ops += 1;
 }
 
 int hybsol_system_is_decomposed(const hybsol_system_t *const sys)
@@ -164,10 +153,16 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
 
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
 
-    // Everything the parallel regions touch is in place before they start: the
-    // operation list at its proven bound, and one bump region per thread.
-    // Nothing inside a region calls the allocator from here on.
-    const uint64_t bound = hybsol_operation_bound(sys->n);
+    // Everything the parallel regions touch is in place before they start. The
+    // symbolic walk sizes the fill-in exactly and grows every row to its peak;
+    // the pool and the operation list are then each one allocation. After this
+    // nothing inside a region reaches the system's allocator at all.
+    hybsol_fill_plan_t plan;
+    hybsol_result_t res = hybsol_fill_plan_prepare(sys, &plan);
+    if (res != HYBSOL_SUCCESS)
+        return res;
+
+    const uint64_t bound = plan.operations;
     if (sys->ops_capacity < bound)
     {
         hybsol_operation_t *const ops = hybsol_grow(sys->allocator, sys->ops, (size_t)bound * sizeof(*ops));
@@ -178,7 +173,7 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
     }
     sys->n_ops = 0;
 
-    hybsol_result_t res = hybsol_thread_allocs_open(sys, threads);
+    res = hybsol_pool_open(sys, &plan);
     if (res != HYBSOL_SUCCESS)
         return res;
 
@@ -193,33 +188,41 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
     uint64_t n_tgt = 0;
 
     // Rows that already start with their diagonal block can be finished right
-    // away; everything else waits for the elimination passes below.
-#pragma omp parallel for schedule(dynamic) reduction(+ : n_tgt) default(none)                                          \
-    shared(sys, target_status, shared_res) if (threads > 1) num_threads(threads)
+    // away; everything else waits for the elimination passes below. Only the
+    // factorization runs here -- statuses, the target count and the recorded
+    // operations are settled serially afterwards, so no result is shared and
+    // no lock is needed.
+#pragma omp parallel for schedule(dynamic) default(none) shared(sys, results) if (threads > 1) num_threads(threads)
+    for (uint64_t i_row = 0; i_row < sys->n; ++i_row)
+    {
+        if (sys->rows[i_row].entries[0]->col != i_row)
+            continue;
+
+        hybsol_result_t res = hybsol_system_decompose_diagonal(sys, i_row);
+        if (res == HYBSOL_SUCCESS)
+            res = hybsol_system_apply_diagonal_inverse(sys, i_row);
+        results[i_row] = res;
+    }
+
     for (uint64_t i_row = 0; i_row < sys->n; ++i_row)
     {
         const hybsol_row_t *const row = sys->rows + i_row;
-        if (row->entries[0]->col == i_row)
+        target_row_t *const status = target_status + i_row;
+        if (row->entries[0]->col != i_row)
         {
-            hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_row});
-            hybsol_result_t res = hybsol_system_decompose_diagonal(sys, i_row);
-            if (res == HYBSOL_SUCCESS)
-                res = hybsol_system_apply_diagonal_inverse(sys, i_row);
-
-            if (res != HYBSOL_SUCCESS)
-            {
-#pragma omp critical(hybsol_decompose_error)
-                shared_res = res;
-                continue;
-            }
-            target_status[i_row].status = TARGET_DONE;
-        }
-        else
-        {
-            target_status[i_row].status = TARGET_FREE;
-            target_status[i_row].idx_src_needed = row->entries[0]->col;
+            status->status = TARGET_FREE;
+            status->idx_src_needed = row->entries[0]->col;
             n_tgt += 1;
+            continue;
         }
+
+        if (results[i_row] != HYBSOL_SUCCESS)
+        {
+            shared_res = results[i_row];
+            break;
+        }
+        hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_row});
+        status->status = TARGET_DONE;
     }
 
     // Each pass eliminates the rows whose blocking row is finished; the rest
@@ -249,10 +252,6 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
 
             void *const scratch = hybsol_workspace_scratch(ws);
             hybsol_result_t res = hybsol_system_eliminate_row_scratch(sys, i_tgt, status->idx_src_needed, scratch);
-            if (res == HYBSOL_SUCCESS)
-                hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
-                                                            .idx_row = i_tgt,
-                                                            .idx_col = status->idx_src_needed});
 
             if (res == HYBSOL_SUCCESS)
             {
@@ -267,15 +266,15 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
                     res = hybsol_system_decompose_diagonal(sys, i_tgt);
                     if (res == HYBSOL_SUCCESS)
                         res = hybsol_system_apply_diagonal_inverse(sys, i_tgt);
-                    if (res == HYBSOL_SUCCESS)
-                        hybsol_ops_append(
-                            sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_tgt});
                 }
             }
 
             results[k] = res;
         }
 
+        // Settle this pass serially: record what it did, then move each row on.
+        // `idx_src_needed` is still the source this pass eliminated with, so the
+        // ELIMINATE goes out before it is advanced.
         for (uint64_t k = 0; k < n_ready; ++k)
         {
             const uint64_t i_tgt = ready[k];
@@ -287,9 +286,15 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
 
             target_row_t *const status = target_status + i_tgt;
             const hybsol_row_t *const row = sys->rows + i_tgt;
+            hybsol_ops_append(sys, (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
+                                                        .idx_row = i_tgt,
+                                                        .idx_col = status->idx_src_needed});
+
             const uint64_t next = hybsol_row_find_geq(row, status->idx_src_needed + 1);
             if (row->entries[next]->col == i_tgt)
             {
+                hybsol_ops_append(sys,
+                                  (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = i_tgt});
                 status->status = TARGET_DONE;
                 n_tgt -= 1;
             }
@@ -301,9 +306,9 @@ hybsol_result_t hybsol_system_decompose_with_workspace(hybsol_system_t *const sy
         }
     }
 
-    // The regions stay alive: their entries are the system's fill-in now and
-    // are released with the system rather than individually.
-    hybsol_thread_allocs_done(sys);
+    // The pool itself stays: the blocks carved out of it are the system's
+    // fill-in now, released with the system rather than individually.
+    hybsol_pool_close(sys);
 
     if (shared_res != HYBSOL_SUCCESS)
     {
@@ -333,6 +338,14 @@ hybsol_result_t hybsol_system_decompose(hybsol_system_t *const sys, const uint64
     const hybsol_result_t res = hybsol_system_decompose_with_workspace(sys, workspace, bytes, n_threads);
     hybsol_free(sys->allocator, workspace);
     return res;
+}
+
+hybsol_result_t hybsol_fill_plan(const hybsol_system_t *const sys, hybsol_fill_plan_t *const out)
+{
+    CUTL_ASSERT(out != NULL, "The output plan must not be NULL.");
+    CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
+
+    return hybsol_fill_plan_compute(sys, out);
 }
 
 uint64_t hybsol_system_operation_bound(const hybsol_system_t *const sys)

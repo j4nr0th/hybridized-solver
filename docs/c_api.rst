@@ -46,14 +46,19 @@ provides arena, fixed-size-pool and validating allocators.
 
 The allocator need only be safe for the phases that run one at a time.
 :c:func:`hybsol_system_decompose_with_workspace` is parallel and never calls it
-from inside a parallel region: each thread fills a region of its own, and the
-fill-in those regions hold is owned by the system and released with it, so a
-plain bump arena with no locking at all can be supplied. Its transient scratch
-comes from a buffer the caller supplies, sized by
-:c:func:`hybsol_workspace_bytes`;
-:c:func:`hybsol_system_decompose` allocates that buffer itself. The recorded
-operation list is sized to :c:func:`hybsol_system_operation_bound` before the
-parallel region starts, so appending to it neither grows nor locks.
+from inside a parallel region, so a plain bump arena with no locking at all can
+be supplied. The fill-in comes from one pool the library allocates up front,
+sized exactly by :c:func:`hybsol_fill_plan`, which walks the elimination graph
+symbolically before any thread starts; the pool is owned by the system and
+released with it. A pool found too small would mean the symbolic walk and the
+factorization disagree, so that one allocation falls back to the allocator
+under a lock rather than failing.
+
+The transient scratch comes from a buffer the caller supplies, sized by
+:c:func:`hybsol_workspace_bytes`; :c:func:`hybsol_system_decompose` allocates
+that buffer itself. The recorded operation list is sized to
+:c:func:`hybsol_system_operation_bound` before the parallel region starts, so
+appending to it neither grows nor locks.
 
 Indices and counts are ``uint64_t`` throughout, and a system is an opaque
 :c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds and

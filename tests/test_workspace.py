@@ -39,13 +39,14 @@ def residual(mat: np.ndarray, x: np.ndarray) -> float:
     return float(np.max(np.abs(mat @ x - b)))
 
 
-def operation_set(sys: BlockSystem) -> list[tuple[int, ...]]:
-    """Return the recorded operations, sorted.
-
-    Operations recorded within one elimination pass commute, so which thread
-    writes which of them first is not defined; only the set is.
-    """
-    return sorted(sys.operations())
+def operations_are_stable(n_threads: int) -> bool:
+    """Whether repeated decompositions record byte-identical operation lists."""
+    runs = []
+    for _ in range(3):
+        sys_, _ = well_conditioned_system(10, 3, seed=11)
+        sys_.decompose(n_threads)
+        runs.append(sys_.operations())
+    return all(r == runs[0] for r in runs)
 
 
 @pytest.mark.parametrize("n_threads", (1, 2, 4))
@@ -61,7 +62,7 @@ def test_workspace_matches_internal(n_threads: int) -> None:
     x_ws = sys_ws.solve(mat_ws @ np.ones(mat_ws.shape[0]))
 
     assert np.array_equal(x_ref, x_ws)
-    assert operation_set(sys_ws) == operation_set(sys_ref)
+    assert sys_ws.operations() == sys_ref.operations()
 
 
 def test_workspace_is_written_to() -> None:
@@ -86,9 +87,9 @@ def test_workspace_is_reusable() -> None:
         x = sys.solve(mat @ np.ones(mat.shape[0]))
         assert residual(mat, x) < 1e-8
         if first is None:
-            first = operation_set(sys)
+            first = sys.operations()
         else:
-            assert operation_set(sys) == first
+            assert sys.operations() == first
 
 
 def test_workspace_scales_with_threads() -> None:
@@ -130,3 +131,21 @@ def test_workspace_bytes_is_positive_and_aligned() -> None:
         size = sys.workspace_bytes(n_threads)
         assert size > 0
         assert size % 8 == 0
+
+
+@pytest.mark.parametrize("n_threads", (1, 2, 4, 8))
+def test_operations_are_deterministic(n_threads: int) -> None:
+    """The recorded operations are reproducible, run to run and thread count.
+
+    They are recorded in the serial phase between passes, so a parallel
+    decomposition and a serial one of the same system agree exactly.
+    """
+    assert operations_are_stable(n_threads)
+
+    baseline = None
+    for threads in (1, 2, 4, 8):
+        sys_, _ = well_conditioned_system(10, 3, seed=11)
+        sys_.decompose(threads)
+        if baseline is None:
+            baseline = sys_.operations()
+        assert sys_.operations() == baseline

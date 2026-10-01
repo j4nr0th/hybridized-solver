@@ -67,13 +67,62 @@ size_t hybsol_workspace_bytes(const hybsol_system_t *sys, uint64_t n_threads);
 uint64_t hybsol_system_operation_bound(const hybsol_system_t *sys);
 
 /**
+ * What a decomposition of a system will need, worked out before decomposing it.
+ *
+ * The tag carries a ``_t``-free name that does not collide with the
+ * :c:func:`hybsol_fill_plan` function of the same spelling.
+ */
+typedef struct hybsol_fill_plan_desc
+{
+    /** Exact bytes the fill-in will occupy, each carve rounded up to its alignment. */
+    size_t pool_bytes;
+    /** Bytes the rows' entry-pointer arrays will reach at their peak. */
+    size_t array_bytes;
+    /** Upper bound on the operations that will be recorded, i.e. ``n (n + 1) / 2``. */
+    uint64_t operations;
+} hybsol_fill_plan_t;
+
+/**
+ * Work out what decomposing ``sys`` will need, without decomposing it.
+ *
+ * The library runs this itself before every decomposition, so calling it is
+ * only for budgeting: to size an allocation, report a requirement, or decide
+ * whether a system is worth decomposing at all. The figures describe ``sys`` as
+ * it stands at the call -- they are not a reservation, and adding blocks
+ * afterwards invalidates them.
+ *
+ * ``pool_bytes`` is exact rather than an estimate: the elimination graph is
+ * walked carrying only column indices, so the fill-in is known before any of
+ * it is allocated. The pool itself is allocated by the library during the
+ * decomposition, not by the caller, and is released with the system.
+ *
+ * The walk costs a pass over the elimination graph on top of the
+ * decomposition's own, which for a sparse system is a constant-factor fraction
+ * of it rather than a separate order of growth.
+ *
+ * :param sys: The system to measure. Must not be ``NULL``.
+ * :param out: Receives the plan. Must not be ``NULL``.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` if ``sys`` has already
+ *     been decomposed, :c:enumerator:`HYBSOL_ERROR_SYSTEM_INVALID` if it does
+ *     not satisfy the solver's structural assumptions, or
+ *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
+ */
+hybsol_result_t hybsol_fill_plan(const hybsol_system_t *sys, hybsol_fill_plan_t *out);
+
+/**
  * Decompose the system in place, using scratch the caller supplies.
  *
- * Every byte it needs up front is ``workspace_bytes``, sized by
- * :c:func:`hybsol_workspace_bytes`; nothing is allocated from the system's
- * allocator once the parallel regions start, so it need not be thread-safe.
- * Each thread fills a region of its own, and the fill-in those regions hold is
- * released with the system rather than here.
+ * The transient scratch is ``workspace_bytes``, sized by
+ * :c:func:`hybsol_workspace_bytes`. The fill-in comes from a separate pool the
+ * library allocates, sized exactly by :c:func:`hybsol_fill_plan` before any
+ * thread starts, and it is released with the system rather than here.
+ *
+ * No call into the system's allocator -- neither an allocation nor a release
+ * -- happens inside a parallel region, so it need not be thread-safe. The one
+ * exception is a pool found too small, which would mean the symbolic walk and
+ * the factorization disagree: that allocation falls back to the system's
+ * allocator under a lock rather than failing.
  *
  * :param sys: The system to decompose. Must not be ``NULL``.
  * :param workspace: Buffer of at least ``workspace_bytes``; must not be
@@ -140,13 +189,10 @@ uint64_t hybsol_system_n_operations(const hybsol_system_t *sys);
  * or decomposed again. The operations must be replayed front to back to apply
  * the lower-triangular factor.
  *
- * Order is fixed *between* elimination passes, because a later pass reads what
- * an earlier one produced. Within a single pass the operations commute -- the
- * targets are distinct, and every source was finished before the pass started
- * -- so which thread records which of them first is not defined, and running a
- * decomposition twice with more than one thread may hand back the same
- * operations in a different order. Treat the list as significant only as a
- * whole, not position by position.
+ * The list is deterministic: the same system and the same thread count give
+ * the same operations in the same order every time, so it can be compared
+ * position by position. It is recorded in the serial phase between
+ * elimination passes, which is also why a pass's work needs no lock.
  *
  * :param sys: The system.
  * :returns: An array of :c:func:`hybsol_system_n_operations` entries, or

@@ -311,11 +311,63 @@ static void test_diagonal_helpers(void)
     hybsol_system_destroy(sys);
 }
 
+/**
+ * The recorded operations are recorded in the serial phase between passes, so
+ * they must come out identical for a given system whatever the thread count,
+ * and identical again on a repeat.
+ */
+static void test_operations_are_deterministic(void)
+{
+    const uint64_t thread_counts[] = {1, 2, 4};
+    const size_t max_ops = 4096;
+    hybsol_operation_t *const first = malloc(sizeof(*first) * max_ops);
+    hybsol_operation_t *const again = malloc(sizeof(*again) * max_ops);
+    CHECK(first != NULL && again != NULL);
+    if (first == NULL || again == NULL)
+    {
+        free(first);
+        free(again);
+        return;
+    }
+
+    uint64_t n_first = 0;
+    for (size_t t = 0; t < sizeof(thread_counts) / sizeof(thread_counts[0]); ++t)
+    {
+        for (int repeat = 0; repeat < 2; ++repeat)
+        {
+            rng_t r = {.state = 7};
+            random_system_t s = {0};
+            build_random_system(&r, &s);
+            CHECK_OK(hybsol_system_decompose(s.sys, thread_counts[t]));
+
+            const hybsol_operation_t *const ops = hybsol_system_operations(s.sys);
+            const uint64_t n_ops = hybsol_system_n_operations(s.sys);
+            CHECK(n_ops > 0);
+            CHECK(n_ops <= max_ops);
+            if (n_ops <= max_ops)
+                memcpy(repeat == 0 ? again : first, ops, sizeof(*first) * n_ops);
+            if (repeat == 0)
+                n_first = n_ops;
+            else
+                CHECK_MSG(n_ops == n_first, "%llu ops at %llu threads, expected %llu", (unsigned long long)n_ops,
+                          (unsigned long long)thread_counts[t], (unsigned long long)n_first);
+
+            random_system_destroy(&s);
+        }
+        CHECK_MSG(memcmp(first, again, sizeof(*first) * n_first) == 0,
+                  "thread count %llu recorded a different operation order", (unsigned long long)thread_counts[t]);
+    }
+
+    free(first);
+    free(again);
+}
+
 int main(void)
 {
     test_solve_matches_reference();
     test_rejects_invalid_and_singular();
     test_operations_replay();
+    test_operations_are_deterministic();
     test_diagonal_helpers();
     return test_report("test_decompose");
 }

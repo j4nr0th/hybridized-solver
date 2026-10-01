@@ -77,41 +77,38 @@ static inline void hybsol_free(const cutl_allocator_t *const alloc, void *const 
 }
 
 /* ------------------------------------------------------------------------- */
-/* Per-thread bump regions                                                     */
+/* The fill-in pool                                                           */
 /* ------------------------------------------------------------------------- */
 
 /*
  * A decomposition allocates from inside OpenMP parallel regions, so a caller
- * supplying an allocator that is not thread-safe would be raced. Each thread
- * therefore bumps against a region of its own: the fast path touches only
- * that thread's cursor, needs no lock and no atomic, and never calls the
- * system's allocator. Only growing a region does.
+ * supplying an allocator that is not thread-safe would be raced. Instead, every
+ * allocation a decomposition makes comes out of one pool the library allocates
+ * before the first region starts, sized exactly by the symbolic pass in
+ * `hybsol_fill_plan_compute`.
  *
- * A region is presented as a `cutl_allocator_t`, so every existing
+ * Threads share that pool, so the carve is a single relaxed atomic bump: no
+ * lock, and no call into the system's allocator at all on the common path. A
+ * pool that turns out too small -- which would mean the symbolic pass and the
+ * real elimination disagree -- falls back to the allocator under a lock, so a
+ * divergence costs speed rather than correctness.
+ *
+ * The pool is spelled as a `cutl_allocator_t`, so every existing
  * `hybsol_alloc(alloc, size)` call site keeps its shape and only the allocator
  * pointer changes between phases.
  */
-typedef struct hybsol_region
-{
-    /** Start of the block owned by the system. */
-    unsigned char *base;
-    /** Bytes in the block. */
-    size_t size;
-    /** Bytes already handed out. Only this region's own thread writes it. */
-    size_t used;
-} hybsol_region_t;
 
-/** One thread's slot: which region it is bumping against, and its allocator. */
-typedef struct hybsol_thread_alloc
-{
-    /** The system being decomposed, for growing the region. */
-    struct hybsol_system *sys;
-    /** This thread's index, fixed for the run. */
-    uint64_t thread;
-    /** Index into ``sys->regions`` of the region currently being bumped. */
-    uint64_t region;
-    cutl_allocator_t alloc;
-} hybsol_thread_alloc_t;
+/** Granularity the pool carves on; wide enough for any scalar stored. */
+#define HYBSOL_REGION_ALIGN 64u
+
+/**
+ * Bytes of prefix on every pool carve.
+ *
+ * The symbolic pass adds this to each payload when sizing the pool, so it has
+ * to match the header `pool_allocate` actually writes; ``alloc.c`` builds it
+ * from the same expression.
+ */
+#define HYBSOL_POOL_HDR_BYTES (2u * sizeof(size_t))
 
 /* ------------------------------------------------------------------------- */
 /* Decomposition scratch                                                      */
@@ -161,9 +158,6 @@ void hybsol_workspace_bind(hybsol_workspace_t *ws, void *buffer, size_t buffer_b
 /** The scratch block belonging to the calling thread, or ``NULL`` if it has none. */
 void *hybsol_workspace_scratch(const hybsol_workspace_t *ws);
 
-/** Granularity a bump region carves on; wide enough for any scalar stored. */
-#define HYBSOL_REGION_ALIGN 64u
-
 /* ------------------------------------------------------------------------- */
 /* Storage layout                                                             */
 /* ------------------------------------------------------------------------- */
@@ -185,17 +179,15 @@ typedef struct hybsol_row_entry
     unsigned char vals[];
 } hybsol_row_entry_t;
 
-/** The stored blocks of a single block row, kept sorted by column. */
+/**
+ * The stored blocks of a single block row, kept sorted by column.
+ *
+ * No allocator is carried: everything that allocates or frees on a row's
+ * behalf already holds the owning system, and takes the allocator from it via
+ * :c:func:`hybsol_current_alloc`.
+ */
 typedef struct hybsol_row
 {
-    /**
-     * Allocator this row's entries were allocated from.
-     *
-     * Stored per row rather than read from the system so the row helpers,
-     * which only ever receive a `hybsol_row_t *`, can allocate. It is the
-     * owning system's allocator, copied at creation and never changed.
-     */
-    const cutl_allocator_t *allocator;
     /** Number of entries in use. */
     uint64_t count;
     /** Number of entry slots allocated in ``entries``. */
@@ -232,27 +224,31 @@ struct hybsol_system
     /** Type every stored block is held in. */
     hybsol_precision_t precision;
     /**
-     * One slot per thread, live only while a decomposition runs.
+     * Fill-in pool, owned by the system; ``NULL`` when no decomposition is
+     * running, which is what routes every other phase back to ``allocator``.
      *
-     * ``NULL`` outside :c:func:`hybsol_system_decompose`, which is what routes
-     * every other phase back to ``allocator``.
+     * Armed before the first parallel region and disarmed after the last, but
+     * the memory stays: the blocks carved out of it are the system's fill-in
+     * and are released with the system rather than individually.
      */
-    hybsol_thread_alloc_t *thread_allocs;
-    /** Entries in ``thread_allocs``. */
-    uint64_t n_thread_allocs;
+    unsigned char *pool;
+    /** Bytes of ``pool``. */
+    size_t pool_size;
+    /** Next free byte in ``pool``. Only ever touched by an atomic bump. */
+    size_t pool_used;
+    /** What to hand back to the allocator: ``pool`` is this rounded up. */
+    unsigned char *pool_raw;
+    /** Allocator handing out of the pool, with ``state`` pointing at the system. */
+    cutl_allocator_t pool_alloc;
     /**
-     * Every region handed out this run, current and superseded alike.
+     * Non-zero only while a decomposition is running.
      *
-     * A region a thread outgrew stays alive because entries carved out of it
-     * are still in use, so they cannot be tracked through ``thread_allocs``
-     * alone. Both the range check in :c:func:`hybsol_ptr_is_pooled` and the
-     * release walk this list.
+     * Separate from ``pool`` staying non-NULL: the pool has to remain
+     * recognisable for as long as the system lives, because that is what
+     * :c:func:`hybsol_ptr_is_pooled` uses to tell fill-in from ordinary
+     * allocations when the system is destroyed.
      */
-    hybsol_region_t *regions;
-    /** Regions in use. */
-    uint64_t n_regions;
-    /** Slots allocated in ``regions``. */
-    uint64_t regions_capacity;
+    uint8_t pool_armed;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -262,26 +258,20 @@ struct hybsol_system
 /**
  * Which allocator the calling thread should use for ``sys`` right now.
  *
- * Inside :c:func:`hybsol_system_decompose` that is the calling thread's bump
- * region; everywhere else it is the system's own allocator. A thread OpenMP
- * handed that has no region -- a larger team than was sized for -- falls back
- * to the system allocator rather than writing out of bounds.
+ * While a decomposition is running that is the fill-in pool, which threads
+ * share through one atomic bump; everywhere else it is the system's own
+ * allocator.
  */
 static inline const cutl_allocator_t *hybsol_current_alloc(const hybsol_system_t *const sys)
 {
-    const uint64_t t = (uint64_t)HYBSOL_THREAD_NUM();
-    if (sys->thread_allocs != NULL && t < sys->n_thread_allocs)
-        return &sys->thread_allocs[t].alloc;
-    return sys->allocator;
+    return sys->pool_armed ? &sys->pool_alloc : sys->allocator;
 }
 
 /**
- * Whether ``ptr`` came out of one of ``sys``'s regions rather than its
- * allocator.
+ * Whether ``ptr`` came out of ``sys``'s pool rather than its allocator.
  *
- * Memory carved from a region is owned by the system: it is released with
- * the system, never individually, so callers holding a pooled pointer must
- * skip the free.
+ * Pooled memory is owned by the system: it is released with the system, never
+ * individually, so a caller holding a pooled pointer must skip the free.
  */
 int hybsol_ptr_is_pooled(const hybsol_system_t *sys, const void *ptr);
 
@@ -338,25 +328,6 @@ hybsol_result_t hybsol_row_reserve(hybsol_system_t *sys, hybsol_row_t *row, uint
 hybsol_result_t hybsol_require_mutable(const hybsol_system_t *sys);
 
 /**
- * Give every thread a bump region, replacing any left from a previous run.
- *
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
- *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
- */
-hybsol_result_t hybsol_thread_allocs_open(hybsol_system_t *sys, uint64_t n_threads);
-
-/**
- * Stop routing through the regions, keeping the memory they hold.
- *
- * Only the per-thread slots go away, which puts later phases back on the
- * system's allocator.
- */
-void hybsol_thread_allocs_done(hybsol_system_t *sys);
-
-/** Release every region. Only for a system being destroyed. */
-void hybsol_regions_free(hybsol_system_t *sys);
-
-/**
  * Assert that the caller used the spelling matching how the system stores.
  *
  * Every value-carrying function has an unsuffixed double spelling and an
@@ -400,16 +371,6 @@ hybsol_result_t hybsol_system_eliminate_row_scratch(hybsol_system_t *sys, uint64
                                                     void *scratch);
 
 /**
- * Append ``op`` to the recorded operation list.
- *
- * The list is sized to its proven upper bound before the parallel region that
- * fills it, so this never grows it and never fails. Operations recorded within
- * one elimination pass commute, so the order threads interleave them in does
- * not matter.
- */
-void hybsol_ops_append(hybsol_system_t *sys, hybsol_operation_t op);
-
-/**
  * The most operations a decomposition of a system with ``n`` blocks can record.
  *
  * One ``INVERT_DIAGONAL`` per row plus at most one ``ELIMINATE`` per
@@ -422,15 +383,44 @@ static inline uint64_t hybsol_operation_bound(const uint64_t n)
 }
 
 /**
- * Give every thread a bump region, replacing any from a previous run.
+ * Walk the elimination graph symbolically and size what it will need.
  *
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
+ * Mirrors the pass order and the merge in
+ * :c:func:`hybsol_system_decompose_with_workspace`, carrying only column
+ * indices, so no block value is touched. `hybsol_fill_plan_t` is declared
+ * in the public header, which this one reaches through the umbrella.
+ *
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`,
+ *     :c:enumerator:`HYBSOL_ERROR_SYSTEM_INVALID`,
+ *     :c:enumerator:`HYBSOL_ERROR_EMPTY_ROW` or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
-hybsol_result_t hybsol_thread_allocs_open(hybsol_system_t *sys, uint64_t n_threads);
+hybsol_result_t hybsol_fill_plan_compute(const hybsol_system_t *sys, hybsol_fill_plan_t *out);
 
-/** Release the bump regions, leaving ``sys`` usable for another decomposition. */
-void hybsol_thread_allocs_close(hybsol_system_t *sys);
+/**
+ * Size the fill-in and grow every row to its peak, on one thread.
+ *
+ * :c:func:`hybsol_fill_plan_compute` plus the row pre-grow that lets the
+ * elimination's own reserves always find enough capacity, so nothing inside a
+ * parallel region ever has to release an array.
+ */
+hybsol_result_t hybsol_fill_plan_prepare(hybsol_system_t *sys, hybsol_fill_plan_t *out);
+
+/** Allocate ``sys``'s fill-in pool and arm it, sized by ``plan``. */
+hybsol_result_t hybsol_pool_open(hybsol_system_t *sys, const hybsol_fill_plan_t *plan);
+
+/** Stop routing allocations through the pool; the memory stays with the system. */
+void hybsol_pool_close(hybsol_system_t *sys);
+
+/** Release the pool. Only for a system being destroyed. */
+void hybsol_pool_free(hybsol_system_t *sys);
+
+/** Round ``value`` up to the pool's carve granularity. */
+static inline size_t hybsol_pool_align(const size_t value)
+{
+    return (value + (HYBSOL_REGION_ALIGN - 1)) & ~(size_t)(HYBSOL_REGION_ALIGN - 1);
+}
 
 /**
  * Turn a thread request into the team size used by the OpenMP pragmas.

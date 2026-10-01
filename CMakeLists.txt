@@ -60,7 +60,8 @@ add_library(hybsol_core STATIC
         src/core/block_system.c
         src/core/decompose.c
         src/core/matrix.c
-        src/core/ordering.c)
+        src/core/ordering.c
+        src/core/symbolic.c)
 add_library(hybsol::hybsol ALIAS hybsol_core)
 
 target_compile_features(hybsol_core PUBLIC c_std_17)

@@ -342,7 +342,7 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
                 for (uint64_t j = 0; j < row_t->capacity; ++j)
                 {
                     if (!hybsol_ptr_is_pooled(sys, row_t->entries[j]))
-                        hybsol_free(row_t->allocator, row_t->entries[j]);
+                        hybsol_free(sys->allocator, row_t->entries[j]);
                     row_t->entries[j] = NULL;
                 }
                 row_t->count = 0;

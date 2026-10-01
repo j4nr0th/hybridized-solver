@@ -1,11 +1,11 @@
 /**
- * @file test_allocator.c
  * Decomposing with a caller-supplied allocator that is deliberately *not*
  * thread-safe.
  *
- * The per-thread bump regions mean a decomposition never calls the system's
- * allocator from inside a parallel region. Without them this test is a race
- * that reliably faults on a multi-core box; with them a plain bump allocator
+ * A decomposition allocates its fill-in from a pool the library sizes exactly
+ * up front, so it never calls the system's allocator from inside a parallel
+ * region -- not to allocate, and not to release either. Without that this test
+ * is a race, and on a multi-core box it faults; with it a plain bump allocator
  * -- no lock at all -- works and gives the standard allocator's answers.
  */
 
@@ -15,6 +15,10 @@
 #include <hybsol/hybsol.h>
 
 #include <stdint.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -118,6 +122,10 @@ typedef struct
  */
 static int pattern_build(pattern_t *const p, const uint64_t n_blocks, const uint64_t block_size)
 {
+    // Zeroed up front so an allocation failure below leaves the struct in a
+    // defined state for the caller's pattern_free, and so -O2 does not see an
+    // uninitialised read on that path.
+    *p = (pattern_t){0};
     p->n_blocks = n_blocks;
     p->block_size = block_size;
 
@@ -439,6 +447,123 @@ static void test_copy_after_decompose(void)
     pattern_free(&p);
 }
 
+/* ------------------------------------------------------------------------- */
+/* What the decomposition actually asks of the allocator                      */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * Counts calls, and separately counts the ones made from inside an OpenMP
+ * region -- which is the property under test, since a caller may have supplied
+ * an allocator that is not thread-safe.
+ */
+typedef struct
+{
+    long allocate;
+    long reallocate;
+    long deallocate;
+    long from_parallel;
+} calls_t;
+
+static calls_t g_calls;
+
+static void note_call(void)
+{
+#ifdef _OPENMP
+    if (omp_in_parallel())
+        g_calls.from_parallel += 1;
+#endif
+}
+
+static void *count_alloc(void *const s, const size_t size)
+{
+    (void)s;
+    g_calls.allocate += 1;
+    note_call();
+    return malloc(size);
+}
+static void *count_realloc(void *const s, void *const p, const size_t size)
+{
+    (void)s;
+    g_calls.reallocate += 1;
+    note_call();
+    return realloc(p, size);
+}
+static void count_dealloc(void *const s, void *const p)
+{
+    (void)s;
+    if (p != NULL)
+        g_calls.deallocate += 1;
+    note_call();
+    free(p);
+}
+
+/**
+ * No call into the system's allocator may be made from inside a parallel
+ * region -- not to allocate and not to release. A release from one is a call on
+ * every thread at once, which is what a lock-taking allocator cannot survive.
+ *
+ * The rows are grown to their peak before the first region starts, which is
+ * what removes the releases; the fill-in comes from the pool, which is the only
+ * other thing the elimination allocates. Serial-phase calls, including the
+ * symbolic walk and the pre-grow's own releases of the assembly-time arrays,
+ * are fine and expected.
+ */
+static void test_no_allocator_calls_from_parallel_regions(void)
+{
+    const uint64_t thread_counts[] = {1, 4, 8};
+
+    for (size_t t = 0; t < sizeof(thread_counts) / sizeof(thread_counts[0]); ++t)
+    {
+        pattern_t p;
+        CHECK_MSG(pattern_build(&p, 20, 5), "building the pattern");
+
+        const cutl_allocator_t counting = {
+            .state = NULL, .allocate = count_alloc, .reallocate = count_realloc, .deallocate = count_dealloc};
+
+        hybsol_system_t *sys = NULL;
+        CHECK_MSG(pattern_system(&p, &counting, &sys), "assembling at %llu threads",
+                  (unsigned long long)thread_counts[t]);
+
+        memset(&g_calls, 0, sizeof(g_calls));
+        CHECK_OK(hybsol_system_decompose(sys, thread_counts[t]));
+
+        CHECK_MSG(g_calls.allocate > 0, "nothing was allocated at all, so the test proves nothing");
+        CHECK_MSG(g_calls.from_parallel == 0,
+                  "%ld of %ld allocator calls were made from inside a parallel region at %llu threads",
+                  g_calls.from_parallel, g_calls.allocate + g_calls.reallocate + g_calls.deallocate,
+                  (unsigned long long)thread_counts[t]);
+
+        hybsol_system_destroy(sys);
+        pattern_free(&p);
+    }
+}
+
+/** The plan is exact, so a decomposition needs no allocator call it did not budget. */
+static void test_fill_plan_is_exact_and_stable(void)
+{
+    pattern_t p;
+    CHECK_MSG(pattern_build(&p, 16, 4), "building the pattern");
+
+    hybsol_system_t *sys = NULL;
+    CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
+
+    hybsol_fill_plan_t first, second;
+    CHECK_OK(hybsol_fill_plan(sys, &first));
+    CHECK_OK(hybsol_fill_plan(sys, &second));
+    CHECK_MSG(first.pool_bytes == second.pool_bytes, "the plan changed between calls: %zu then %zu", first.pool_bytes,
+              second.pool_bytes);
+    CHECK_MSG(first.pool_bytes > 0, "a system with fill-in planned a zero-byte pool");
+    CHECK_MSG(first.operations == p.n_blocks * (p.n_blocks + 1) / 2, "operation bound was %llu, expected %llu",
+              (unsigned long long)first.operations, (unsigned long long)(p.n_blocks * (p.n_blocks + 1) / 2));
+
+    // An already decomposed system has no meaningful plan left to give.
+    CHECK_OK(hybsol_system_decompose(sys, 2));
+    CHECK_RESULT(hybsol_fill_plan(sys, &first), HYBSOL_ERROR_ALREADY_DECOMPOSED);
+
+    hybsol_system_destroy(sys);
+    pattern_free(&p);
+}
+
 int main(void)
 {
     test_serial_with_lock_free_allocator();
@@ -447,5 +572,7 @@ int main(void)
     test_workspace_matches_internal();
     test_workspace_scales_with_threads();
     test_copy_after_decompose();
+    test_no_allocator_calls_from_parallel_regions();
+    test_fill_plan_is_exact_and_stable();
     return test_report("test_allocator");
 }
