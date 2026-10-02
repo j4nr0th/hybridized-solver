@@ -14,8 +14,8 @@
  *
  * Backends are in-tree: they link :c:enumerator:`HYBSOL` internals to carve
  * their own frame and stage the system's blocks into their own layout. A
- * backend for a new runtime is one new library against :c:file:`hybsol.h` and
- * :c:file:`hybsol/backend.h`, with no change to the core.
+ * backend for a new runtime is one new library against ``hybsol/hybsol.h``
+ * and ``hybsol/backend.h``, with no change to the core.
  */
 
 #ifndef HYBSOL_BACKEND_H

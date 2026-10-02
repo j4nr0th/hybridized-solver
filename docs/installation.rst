@@ -30,6 +30,19 @@ Dependencies
 - OpenMP, when available. Without it the solver falls back to a serial
   implementation; pass ``-DHYBSOL_ENABLE_OPENMP=OFF`` to build without it
   explicitly.
+- OpenCL, for the GPU backend. Optional: with ``HYBSOL_ENABLE_OPENCL`` off --
+  which is also what a build falls back to when the OpenCL loader or headers
+  are missing -- there is no ``hybsol.opencl``, and nothing else changes.
+  Building with it needs the OpenCL headers and an ICD loader
+  (``pacman -S opencl-headers ocl-icd`` on Arch, ``apt install
+  opencl-headers ocl-icd-opencl-dev`` on Debian), and running it needs a
+  vendor ICD -- the one that ships with the GPU driver. :mod:`hybsol.opencl`
+  is then importable wherever such a device exists, and
+  :func:`hybsol.opencl.devices` lists them.
+
+.. code-block:: sh
+
+    uv pip install . --config-settings=cmake.define.HYBSOL_ENABLE_OPENCL=OFF
 
 .. _CMake: https://cmake.org
 .. _uv: https://docs.astral.sh/uv/

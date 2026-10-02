@@ -36,3 +36,27 @@ together so both stay available.
 .. autofunction:: factorize
 
 .. autofunction:: refined_solve
+
+The OpenCL backend
+------------------
+
+GPU factorization lives in its own module, ``hybsol.opencl``, which is
+imported when it is wanted and never otherwise. Importing :mod:`hybsol` alone
+loads no OpenCL; an installation built without the backend has no
+:mod:`hybsol.opencl` at all, and the import says so.
+
+The walk and the assembly stay on the CPU; the factorization, the solve and
+the replay run as device kernels, and the factors never come back to the
+host. What comes back is an ordinary :class:`Decomposition`, used exactly as
+one from :meth:`BlockSystem.decompose` -- :func:`refined_solve` included --
+with ``device`` telling it apart.
+
+.. autofunction:: hybsol.opencl.devices
+
+.. autofunction:: hybsol.opencl.device_info
+
+.. autofunction:: hybsol.opencl.decompose
+
+.. autoclass:: DeviceError
+   :members:
+   :undoc-members:

@@ -9,7 +9,7 @@
  * out of the picture.
  *
  * A decomposition made here behaves like any other: it is queried, solved and
- * destroyed through :c:file:`hybsol/decomposition.h`. What differs is where the
+ * destroyed through ``hybsol/decomposition.h``. What differs is where the
  * factors live -- on the device, and never on the host -- and that
  * :c:func:`hybsol_decomposition_factorize_with_workspace`, whose scratch is a
  * host buffer, has nothing to offer it.
@@ -17,32 +17,16 @@
  * The symbolic walk still runs on the CPU: a caller has one
  * :c:type:`hybsol_elimination_t` from :c:func:`hybsol_elimination_create`, and
  * :c:func:`hybsol_opencl_decomposition_create_on_device` turns it into a
- * decomposition on the device with its values uploaded.
+ * decomposition on the device with its values uploaded. From there the
+ * factorization, the solve and the replay are ordinary
+ * :c:func:`hybsol_decomposition_factorize`,
+ * :c:func:`hybsol_decomposition_solve` and the rest: a device decomposition
+ * answers the same queries as any other, and
+ * :c:func:`hybsol_decomposition_destroy` releases it.
  *
- * .. code-block:: c
- *
- *    #include <hybsol/hybsol.h>
- *    #include <hybsol/opencl.h>
- *
- *    hybsol_opencl_device_t *device = NULL;
- *    if (hybsol_opencl_device_acquire(0, &device) != HYBSOL_SUCCESS)
- *        return;  // no OpenCL, no device 0: hybsol_opencl_device_count() is 0
- *
- *    hybsol_elimination_t *graph = NULL;
- *    hybsol_result_t res = hybsol_elimination_create(sys, &graph, NULL);
- *    hybsol_decomposition_t *dec = NULL;
- *    if (res == HYBSOL_SUCCESS)
- *        res = hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_SINGLE, device, &dec);
- *    hybsol_elimination_destroy(graph);
- *    if (res == HYBSOL_SUCCESS)
- *        res = hybsol_decomposition_factorize(dec, 0);
- *    if (res == HYBSOL_SUCCESS)
- *    {
- *        hybsol_decomposition_solve(dec, vec, 0);
- *        hybsol_decomposition_device(dec);  // the device index, from here on
- *    }
- *    hybsol_decomposition_destroy(dec);
- *    hybsol_opencl_device_release(device);
+ * The sequence is therefore: acquire a device, walk the graph, create the
+ * decomposition on the device, factorize it, and release the device -- the
+ * decomposition keeps its own reference until it is destroyed.
  *
  * Every device the OpenCL runtime offers is listed, GPUs first so that a
  * caller reaching for ``0`` gets a GPU wherever there is one. Vectors stay
@@ -76,7 +60,12 @@ typedef enum hybsol_opencl_device_kind
  * Read it with :c:func:`hybsol_opencl_device_info`; the two strings are
  * NUL-terminated and always filled.
  */
-typedef struct hybsol_opencl_device_info
+/*
+ * Tagged apart from the function of the same name on purpose: a C domain that
+ * registers a struct under its tag would see two ``hybsol_opencl_device_info``
+ * declarations, the type and the accessor, and complain about the second.
+ */
+typedef struct hybsol_opencl_device_details
 {
     /** The device's own name, such as the GPU's model. */
     char name[128];
