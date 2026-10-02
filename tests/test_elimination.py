@@ -83,7 +83,6 @@ def test_graph_matches_the_decomposition() -> None:
     assert graph.n_operations == dec.n_operations == len(dec.operations())
     assert graph.n_blocks == dec.n_blocks == sys.n_blocks
     assert dec.total_size == sys.as_array().shape[0]
-    assert dec.is_factorized
 
     # Solving through the decomposition reproduces the system it came from.
     rhs = mat @ np.ones(4)

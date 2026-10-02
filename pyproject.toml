@@ -24,11 +24,24 @@ requires = ["scikit-build-core", "numpy"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
-cmake.build-type = "Release"
 cmake.source-dir = "."
-build.verbose = true
-logging.level = "INFO"
-editable.verbose = true
+cmake.build-type = "Release"
+# Preconditions are enforced with CUTL_ASSERT, which is off unless asked for.
+# The Python layer validates every input before crossing into C, so the checks
+# must be live: that way a missed validation aborts here, in the test suite,
+# instead of becoming undefined behaviour in a user's interpreter.
+cmake.define.CUTL_ASSERTS = "ON"
+# No pinned build-dir and no rebuild on import. scikit-build-core requires a
+# build-dir to support `editable.rebuild`, and that directory caches the numpy
+# include path of uv's *isolated* build environment -- which is torn down when
+# the install finishes, so every later rebuild dies on a missing header.
+# Rebuild-on-import is therefore not available here; the trade is a fast import
+# against a possible stale interpreter. tests/conftest.py closes that gap by
+# failing the suite outright when the sources are newer than the extension, so
+# a stale build cannot pass unnoticed.
+build.verbose = false
+logging.level = "WARNING"
+editable.verbose = false
 editable.rebuild = false
 
 

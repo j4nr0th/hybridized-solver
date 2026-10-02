@@ -52,9 +52,9 @@ lhs_scipy = sla.splu(csc).solve(rhs)
 ordered = system.copy()
 ordering = ordered.compute_reordering("greedy")
 ordered.reorder_blocks(ordering)
-ordered.decompose()
+ordered_decomposition = ordered.decompose()
 lhs_hybsol = ordered.unorder_vector(
-    ordering, ordered.solve(ordered.reorder_vector(ordering, rhs))
+    ordering, ordered_decomposition.solve(ordered.reorder_vector(ordering, rhs))
 )
 
 print(f"SciPy max error : {np.abs(lhs_scipy - lhs).max():.3e}")

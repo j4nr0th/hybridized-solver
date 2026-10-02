@@ -2,8 +2,7 @@
  * @file src/python/decomposition_type.c
  * Implementation of the :class:`hybsol.Decomposition` extension type.
  *
- * Every method is a thin argument-validation shell around one call into the
- * Python-free core.
+ * Every method is a thin argument-validation shell around one core call.
  */
 
 #include "decomposition_type.h"
@@ -35,16 +34,6 @@ static int ensure_decomposition(PyObject *const self, PyTypeObject *const defini
     return 0;
 }
 
-static int ensure_factorized(const hybsol_decomposition_t *const dec)
-{
-    if (hybsol_decomposition_is_factorized(dec))
-    {
-        return 0;
-    }
-    PyErr_SetString(PyExc_RuntimeError, "The decomposition has not been factorized yet.");
-    return -1;
-}
-
 /* ------------------------------------------------------------------------- */
 /* Construction and destruction                                               */
 /* ------------------------------------------------------------------------- */
@@ -72,10 +61,9 @@ static void decomposition_dealloc(decomposition_object *const self)
 
 static PyObject *decomposition_repr(decomposition_object *const self)
 {
-    return PyUnicode_FromFormat("<hybsol.Decomposition n_blocks=%llu, size=%llu%s>",
+    return PyUnicode_FromFormat("<hybsol.Decomposition n_blocks=%llu, size=%llu>",
                                 (unsigned long long)hybsol_decomposition_n_blocks(self->decomposition),
-                                (unsigned long long)hybsol_decomposition_total_size(self->decomposition),
-                                hybsol_decomposition_is_factorized(self->decomposition) ? ", factorized" : "");
+                                (unsigned long long)hybsol_decomposition_total_size(self->decomposition));
 }
 
 PyDoc_STRVAR(decomposition_docstring, "Decomposition(n_blocks, size)\n"
@@ -95,11 +83,10 @@ PyDoc_STRVAR(decomposition_object_solve_docstring,
              "n_threads: int = 0) -> numpy.typing.NDArray[numpy.double]\n"
              "Solve the system for the given right side.\n"
              "\n"
-             "The forward substitution runs one elimination pass at a\n"
-             "time, parallel across the block rows of a pass; the back\n"
-             "substitution that follows is serial. The answer does not\n"
-             "depend on the thread count, and the decomposition may be\n"
-             "solved any number of times.\n"
+             "The forward substitution is parallel over the block rows of each\n"
+             "elimination pass; the back substitution that follows is serial.\n"
+             "The answer does not depend on the thread count, and a\n"
+             "decomposition may be solved any number of times.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -116,17 +103,20 @@ PyDoc_STRVAR(decomposition_object_solve_docstring,
              "Returns\n"
              "-------\n"
              "array\n"
-             "    Solution of the linear system.\n");
+             "    Solution of the linear system.\n"
+             "\n"
+             "Raises\n"
+             "------\n"
+             "ValueError\n"
+             "    ``val`` does not hold exactly ``total_size`` values;\n"
+             "    ``n_threads`` is negative; or ``out`` is not a writable\n"
+             "    ``float64`` array of that length.\n");
 
 static PyObject *decomposition_object_solve(PyObject *const self, PyTypeObject *const defining_class,
                                             PyObject *const *args, const Py_ssize_t nargs, PyObject *kwnames)
 {
     decomposition_object *this;
     if (ensure_decomposition(self, defining_class, &this) < 0)
-    {
-        return NULL;
-    }
-    if (ensure_factorized(this->decomposition) < 0)
     {
         return NULL;
     }
@@ -184,7 +174,7 @@ static PyObject *decomposition_object_solve(PyObject *const self, PyTypeObject *
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(out);
-        return hybsol_raise_block("solve", res, hybsol_decomposition_failing_block(this->decomposition));
+        return hybsol_raise_block(Py_TYPE(self), "solve", res, hybsol_decomposition_failing_block(this->decomposition));
     }
 
     return (PyObject *)out;
@@ -202,9 +192,8 @@ PyDoc_STRVAR(decomposition_object_operations_docstring,
              "diagonal block; a two-element tuple ``(idx_row, idx_col)`` eliminates\n"
              "block ``(idx_row, idx_col)`` using block row ``idx_col``.\n"
              "\n"
-             "The list is read off the elimination graph rather than stored,\n"
-             "so it costs nothing until it is asked for and materializing it\n"
-             "in Python is ``O(ops)`` in objects.\n");
+             "The list is rebuilt from the decomposition's own copy of the schedule\n"
+             "rather than stored, so it costs nothing until it is asked for.\n");
 
 static PyObject *decomposition_object_operations(PyObject *const self, PyTypeObject *const defining_class,
                                                  PyObject *const *const Py_UNUSED(args), const Py_ssize_t nargs,
@@ -235,12 +224,15 @@ static PyObject *decomposition_object_operations(PyObject *const self, PyTypeObj
         return PyErr_NoMemory();
     }
 
+    // The core asserts the capacity and can only report success, so this is
+    // unreachable; raise rather than abort if it ever is not.
     uint64_t written = 0;
     if (hybsol_decomposition_operations(this->decomposition, ops, n_ops, &written) != HYBSOL_SUCCESS)
     {
         PyMem_Free(ops);
         Py_DECREF(out);
-        return hybsol_raise("operations", HYBSOL_ERROR_INTERNAL);
+        PyErr_SetString(PyExc_RuntimeError, "operations: the decomposition did not report its own operation count.");
+        return NULL;
     }
 
     for (uint64_t i = 0; i < written; ++i)
@@ -319,31 +311,6 @@ static PyObject *decomposition_object_get_n_operations(PyObject *const self, voi
     return PyLong_FromUnsignedLongLong(hybsol_decomposition_n_operations(this->decomposition));
 }
 
-static PyObject *decomposition_object_get_is_factorized(PyObject *const self, void *const Py_UNUSED(closure))
-{
-    decomposition_object *this;
-    if (ensure_decomposition(self, NULL, &this) < 0)
-    {
-        return NULL;
-    }
-    return PyBool_FromLong(hybsol_decomposition_is_factorized(this->decomposition));
-}
-
-static PyObject *decomposition_object_get_failing_block(PyObject *const self, void *const Py_UNUSED(closure))
-{
-    decomposition_object *this;
-    if (ensure_decomposition(self, NULL, &this) < 0)
-    {
-        return NULL;
-    }
-    const uint64_t block = hybsol_decomposition_failing_block(this->decomposition);
-    if (block == UINT64_MAX)
-    {
-        Py_RETURN_NONE;
-    }
-    return PyLong_FromUnsignedLongLong(block);
-}
-
 /* ------------------------------------------------------------------------- */
 /* Type definition                                                            */
 /* ------------------------------------------------------------------------- */
@@ -390,16 +357,6 @@ PyType_Spec decomposition_type_spec = {
                      .name = "n_operations",
                      .get = decomposition_object_get_n_operations,
                      .doc = "int : Number of operations the factorization records.",
-                 },
-                 {
-                     .name = "is_factorized",
-                     .get = decomposition_object_get_is_factorized,
-                     .doc = "bool : Whether the factorization has run.",
-                 },
-                 {
-                     .name = "failing_block",
-                     .get = decomposition_object_get_failing_block,
-                     .doc = "int or None : Block whose diagonal could not be factorized.",
                  },
                  {},
              }},

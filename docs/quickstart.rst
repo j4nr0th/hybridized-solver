@@ -14,7 +14,7 @@ slice the full matrix it represents::
     >>>
     >>> sizes = (2, 3, 2)
     >>> offsets = np.pad(np.cumsum(sizes), (1, 0))
-    >>> matrix = np.arange(49, dtype=float).reshape(7, 7)
+    >>> matrix = np.arange(49, dtype=float).reshape(7, 7) + np.diag(np.full(7, 50.0))
     >>>
     >>> system = BlockSystem(*sizes)
     >>> for i in range(3):
@@ -22,23 +22,28 @@ slice the full matrix it represents::
     ...         system.add_block(
     ...             i, j, matrix[offsets[i] : offsets[i + 1], offsets[j] : offsets[j + 1]]
     ...         )
-    >>> np.all(system.as_array() == matrix)
+    >>> bool(np.all(system.as_array() == matrix))
     True
+
+The diagonal term keeps every leading principal minor comfortably away from
+zero, which is what an unpivoted factorization needs:
+:meth:`~hybsol.BlockSystem.decompose` below fails on ``matrix`` without it.
 
 Assembly one block at a time is convenient but not the fastest way to fill a
 large system. :meth:`~hybsol.BlockSystem.from_blocks` takes the same blocks as
 flat index arrays and packs them in a single pass::
 
-    >>> rows = np.array([0, 1, 2])
-    >>> cols = np.array([0, 1, 2])
+    >>> blocks = [(i, j) for i in range(3) for j in range(3)]
+    >>> rows = np.array([i for i, _ in blocks])
+    >>> cols = np.array([j for _, j in blocks])
     >>> data = np.concatenate(
     ...     [
-    ...         matrix[offsets[i] : offsets[i + 1], offsets[i] : offsets[i + 1]].ravel()
-    ...         for i in range(3)
+    ...         matrix[offsets[i] : offsets[i + 1], offsets[j] : offsets[j + 1]].ravel()
+    ...         for i, j in blocks
     ...     ]
     ... )
-    >>> diagonal = BlockSystem.from_blocks(sizes, rows, cols, data)
-    >>> np.all(diagonal.as_array() == np.diag(np.diag(matrix)))
+    >>> packed = BlockSystem.from_blocks(sizes, rows, cols, data)
+    >>> bool(np.all(packed.as_array() == matrix))
     True
 
 ``data`` holds the blocks in the order the ``(rows, cols)`` pairs give them,
@@ -66,7 +71,7 @@ write into::
     >>> slot = filler.block_storage(0, 1)
     >>> slot.shape
     (2, 2)
-    >>> np.all(slot == 0.0)
+    >>> bool(np.all(slot == 0.0))
     True
     >>> slot[:] = [[4.0, 5.0], [6.0, 7.0]]
     >>> np.array_equal(filler.get_block(0, 1), [[4.0, 5.0], [6.0, 7.0]])
@@ -87,7 +92,7 @@ The decomposition assumes a *symmetric* sparsity pattern: whenever block
 contain its own diagonal block. :meth:`~hybsol.BlockSystem.is_valid` reports
 whether a system satisfies this::
 
-    >>> diagonal.is_valid()
+    >>> packed.is_valid()
     True
 
 Solving
@@ -102,7 +107,7 @@ decomposition can be solved any number of times::
     >>> decomposition = system.decompose()
     >>> lhs = np.arange(1, 8, dtype=float)
     >>> solution = decomposition.solve(matrix @ lhs)
-    >>> np.allclose(solution, lhs)
+    >>> bool(np.allclose(solution, lhs))
     True
 
 Before committing to a factorization, :meth:`~hybsol.BlockSystem.elimination`
@@ -131,8 +136,8 @@ nonsingular and still fail this — the saddle-point-shaped matrix below has
     >>> system.add_block(0, 0, m)
     >>> graph, decomposition = factorize(system)   # both report success
     >>> rhs = np.arange(1., 6.)
-    >>> np.linalg.norm(m @ decomposition.solve(rhs) - rhs)   # not zero
-    3.5...
+    >>> float(np.linalg.norm(m @ decomposition.solve(rhs) - rhs))   # not zero
+    3.4...
 
 An *exactly* zero pivot does raise, as ``zero pivot in LU decomposition``, and
 names the block it came from. It is a leading principal minor that merely
@@ -149,11 +154,12 @@ sparse system costs the sum of its blocks rather than the square of its
 dimension — which is what makes them usable on systems :meth:`as_array` would
 not fit in memory for::
 
+    >>> system = packed
     >>> x = np.ones(7)
-    >>> np.allclose(system.matvec(x), matrix @ x)
+    >>> bool(np.allclose(system.matvec(x), matrix @ x))
     True
     >>> right_hands = np.eye(7)[:, :3]
-    >>> np.allclose(system.matmat(right_hands), matrix @ right_hands)
+    >>> bool(np.allclose(system.matmat(right_hands), matrix @ right_hands))
     True
 
 The work is split across block rows, each writing only its own slice, so the
@@ -183,10 +189,10 @@ system actually holds::
     >>> _, decomposition = factorize(system)
     >>> stored = system.as_array()
     >>> rhs = stored @ np.array([1.0, 0.5, -0.25, 2.0])
-    >>> np.linalg.norm(stored @ decomposition.solve(rhs.copy()) - rhs)   # not zero
-    2.4e-07...
+    >>> float(np.linalg.norm(stored @ decomposition.solve(rhs.copy()) - rhs))   # not zero
+    2.4...e-07
     >>> refined = refined_solve(system, decomposition, rhs)
-    >>> np.allclose(stored @ refined, rhs)                              # at the rounding limit
+    >>> bool(np.allclose(stored @ refined, rhs))   # at the rounding limit
     True
 
 What that cannot do is undo how the system rounded its own blocks: the refined
@@ -217,10 +223,10 @@ about ``cond * 1e-7``::
     dtype('float32')
 
 The arrays a system hands back follow its precision, while
-:meth:`~hybsol.BlockSystem.solve` keeps taking and returning doubles for both
-precisions and converts at the boundary. Values passed in are converted too, so
-a double array handed to a single-precision system is narrowed on the way in —
-build the values in ``float32`` if those last bits matter.
+:meth:`~hybsol.Decomposition.solve` keeps taking and returning doubles for
+both precisions and converts at the boundary. Values passed in are converted
+too, so a double array handed to a single-precision system is narrowed on the
+way in — build the values in ``float32`` if those last bits matter.
 
 Reordering
 ----------
@@ -241,7 +247,7 @@ along with the system::
     >>> decomposition = system.decompose()
     >>> reordered_rhs = system.reorder_vector(ordering, matrix @ lhs)
     >>> reordered_lhs = decomposition.solve(reordered_rhs)
-    >>> np.allclose(system.unorder_vector(ordering, reordered_lhs), lhs)
+    >>> bool(np.allclose(system.unorder_vector(ordering, reordered_lhs), lhs))
     True
 
 .. warning::

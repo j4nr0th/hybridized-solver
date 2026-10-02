@@ -1,14 +1,9 @@
 /**
  * @file core/elimination.c
- * The symbolic half of a decomposition: walk the same elimination the
- * factorization performs, carrying only column indices, so that the pattern it
- * will produce — and the memory that pattern needs — is known before a single
- * value is touched.
- *
- * No block value is read or written. Everything this allocates comes from the
- * system's allocator and is released before it returns, so the graph a caller
- * ends up holding is a single allocation the walk had no way to size until it
- * had finished.
+ * The symbolic half of a decomposition: walk the elimination the factorization
+ * will perform, carrying only column indices, so the final pattern and the
+ * memory it needs are known before a single value is touched. The graph the
+ * caller ends up holding is one allocation only the finished walk can size.
  */
 
 #include "internal.h"
@@ -46,19 +41,10 @@ typedef struct
     uint8_t owned;
 } sym_row_t;
 
-/**
- * What the walk accumulates on top of the per-row column lists.
- *
- * Owned by the walk and handed to the caller, which copies it into the graph's
- * single allocation and releases these arrays.
- */
+/** What the walk accumulates over the per-row column lists; the caller copies it into the graph. */
 typedef struct
 {
-    /**
-     * One allocation holding ``rows`` and every per-row array, and each row's
-     * starting columns. The walk only needs them all at once and all at the same
-     * length, so there is no reason to ask for seven.
-     */
+    /** One allocation for every per-row array and each row's starting columns. */
     void *arena;
     sym_row_t *rows; /**< One per block row; ``rows[i].cols`` is a slice or owned. */
     target_row_t *status;
@@ -75,10 +61,8 @@ typedef struct
     /**
      * One entry per (row, pass) the walk scheduled, in walk order.
      *
-     * A row's passes are not derivable from its chain: two of its sources can
-     * finish in the same pass, which puts two of its steps there too, and a row
-     * that is not ready again simply sits the following pass out. So the walk
-     * writes down what it actually did.
+     * A row's passes are not derivable from its chain: two sources can finish in
+     * the same pass, and a row that is not ready again sits that pass out.
      */
     occurrence_t *occurrences;
     uint64_t n_occurrences;
@@ -86,11 +70,8 @@ typedef struct
 } walk_t;
 
 /**
- * Give row ``r`` room for ``need`` columns.
- *
- * The row's columns start life as a slice of the walk's arena, which cannot be
- * reallocated in place, so growing a row always moves it to an allocation of
- * its own. A row that never outgrows its slice never allocates again.
+ * Give row ``r`` room for ``need`` columns. Its columns start as a slice of the
+ * walk's arena, which cannot grow in place, so growing moves it to its own.
  */
 static int sym_row_reserve(const cutl_allocator_t *const alloc, sym_row_t *const r, const uint64_t need)
 {
@@ -124,8 +105,7 @@ static void walk_release(const cutl_allocator_t *const alloc, walk_t *const w)
 {
     if (w->rows != NULL)
     {
-        // A row that outgrew its arena slice owns what it holds; the rest are
-        // released with the arena below.
+        // A row that outgrew its arena slice owns what it holds; the rest go with the arena.
         for (uint64_t i = 0; i < w->n; ++i)
         {
             if (w->rows[i].owned)
@@ -139,9 +119,7 @@ static void walk_release(const cutl_allocator_t *const alloc, walk_t *const w)
 
 /**
  * Whether the diagonal block of block row ``idx`` holds nothing but zeros, which
- * no ordering could rescue.
- *
- * @return ``1`` when the block is present and entirely zero, ``0`` otherwise.
+ * no ordering could rescue: ``1`` when present and entirely zero.
  */
 static int diag_is_structurally_zero(const hybsol_system_t *const sys, const uint64_t idx)
 {
@@ -174,12 +152,8 @@ static int diag_is_structurally_zero(const hybsol_system_t *const sys, const uin
 }
 
 /**
- * The walk itself.
- *
- * Mirrors the factorization pass for pass, so a row the walk puts in a pass is
- * a row the factorization processes in that same pass. Everything the
- * factorization would have to rediscover — the final pattern, which rows are
- * ready together, how deep the elimination goes — is written down here instead.
+ * The walk itself. It mirrors the factorization pass for pass, so a row the walk
+ * puts in a pass is a row the factorization processes in that same pass.
  */
 static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t *const w)
 {
@@ -188,9 +162,7 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
 
     *w = (walk_t){.n = n, .failing_block = UINT64_MAX};
 
-    // One allocation for every per-row array and every row's starting columns.
-    // The lengths are all known here: n of each array, and the system's own
-    // column count plus one per row for the columns.
+    // One allocation for every per-row array and each row's starting columns; all the lengths are known here.
     size_t columns = n;
     for (uint64_t i = 0; i < n; ++i)
         columns += sys->rows[i].count;
@@ -251,9 +223,7 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
         for (uint64_t j = 0; j < rows[i].len; ++j)
             rows[i].cols[j] = sys->rows[i].entries[j]->col;
 
-        // Same seed the factorization uses: a row already starting at its own
-        // diagonal is finished in the very first pass; everything else waits on
-        // its first column.
+        // The factorization's own seed: a row starting at its diagonal finishes in the first pass.
         if (rows[i].len && rows[i].cols[0] == i)
         {
             // Sound here because the row is diagonal-first from the outset, before any fill-in.
@@ -277,8 +247,6 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
         }
     }
 
-    // The rows that are diagonal-first are processed in pass 0, so the passes of
-    // this loop start at 1.
     uint64_t pass = 1;
     for (;; ++pass)
     {
@@ -316,14 +284,11 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
             const uint64_t src = status[tgt].idx_src_needed;
             const sym_row_t src_row = rows[src];
 
-            if (rows[tgt].len == 0 || src_row.len == 0)
-            {
-                res = HYBSOL_ERROR_EMPTY_ROW;
-                goto done;
-            }
+            // A valid system gives every row its diagonal, and merging only grows a row.
+            CUTL_ASSERT(rows[tgt].len > 0 && src_row.len > 0, "Row %llu or its source %llu is empty.",
+                        (unsigned long long)tgt, (unsigned long long)src);
 
-            // Backward merge, identical to HYBSOL_FN(eliminate_into): walk both
-            // rows from the back until neither has a column past `src`.
+            // Backward merge, identical to HYBSOL_FN(eliminate_into): stop once neither row has a column past `src`.
             uint64_t pos_tgt = rows[tgt].len, pos_src = src_row.len, unique = 0;
             for (;; ++unique)
             {
@@ -350,9 +315,7 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
                 goto done;
             }
 
-            // Ascending union of the two suffixes, filled from the back for the
-            // same reason the factorization does: writing forward would clobber
-            // a column that has not been read yet.
+            // Ascending union of the two suffixes, filled from the back so a forward write cannot clobber.
             uint64_t at = needed, a = rows[tgt].len, b = src_row.len;
             for (uint64_t i = 0; i < unique; ++i)
             {
@@ -381,9 +344,8 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
             rows[tgt].len = needed;
         }
 
-        // Settle each pass the way the factorization settles it: the row is
-        // finished once the first entry past `src` is its own diagonal, which is
-        // also the number of eliminations it has performed.
+        // Settle each pass as the factorization does: the row is finished once the first entry past `src`
+        // is its own diagonal, which is also the number of eliminations it performed.
         for (uint64_t k = 0; k < n_ready; ++k)
         {
             const uint64_t tgt = ready[k];
@@ -393,11 +355,9 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
             uint64_t at = 0;
             while (at < row->len && row->cols[at] <= src)
                 ++at;
-            if (at >= row->len)
-            {
-                res = HYBSOL_ERROR_INTERNAL;
-                goto done;
-            }
+            // The row holds its own diagonal, so something is always past `src`.
+            CUTL_ASSERT(at < row->len, "Row %llu has no column past %llu.", (unsigned long long)tgt,
+                        (unsigned long long)src);
 
             if (row->cols[at] == tgt)
             {
@@ -418,8 +378,7 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
         }
     }
 
-    // What the walk left behind is the final pattern; the factorization's
-    // destination is exactly this, one carved block per entry.
+    // The factorization's destination is exactly this final pattern, one carved block per entry.
     uint64_t n_columns = 0;
     size_t value_bytes = 0;
     for (uint64_t i = 0; i < n; ++i)
@@ -443,52 +402,70 @@ static hybsol_result_t elimination_walk(const hybsol_system_t *const sys, walk_t
     w->n = n;
 
 done:
-    // The walk's own arrays are handed to the caller on success and released
-    // here only on failure; status and ready are slices of the arena either way.
+    // The walk's arrays reach the caller on success; status and ready are arena slices either way.
     if (res != HYBSOL_SUCCESS)
         walk_release(sys->allocator, w);
     return res;
 }
 
-uint64_t hybsol_elimination_signature(const hybsol_system_t *const sys)
+static uint64_t signature_mix(uint64_t hash, const uint64_t value)
 {
-    uint64_t hash = UINT64_C(0xcbf29ce484222325);
-    for (uint64_t i = 0; i < sys->n + 1; ++i)
+    for (size_t byte = 0; byte < sizeof(value); ++byte)
     {
-        uint64_t value = sys->block_offsets[i];
-        for (size_t byte = 0; byte < sizeof(value); ++byte)
-        {
-            hash ^= (value >> (byte * 8u)) & UINT64_C(0xff);
-            hash *= UINT64_C(0x100000001b3);
-        }
+        hash ^= (value >> (byte * 8u)) & UINT64_C(0xff);
+        hash *= UINT64_C(0x100000001b3);
     }
     return hash;
 }
 
-hybsol_result_t hybsol_elimination_create(hybsol_system_t *const sys, hybsol_elimination_t **const out)
+/**
+ * FNV-1a over everything a decomposition copies out of the system: the block
+ * offsets *and* the sparsity pattern.
+ *
+ * The pattern has to be in here. Hashing only the block sizes catches a system
+ * that was resized between the walk and the decomposition, but not one that
+ * merely gained a block -- and a graph from before that is not stale in any
+ * harmless way: the copy would skip the new block and factorize a different
+ * matrix than the one the caller holds, silently.
+ */
+uint64_t hybsol_elimination_signature(const hybsol_system_t *const sys)
+{
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    for (uint64_t i = 0; i < sys->n + 1; ++i)
+        hash = signature_mix(hash, sys->block_offsets[i]);
+    for (uint64_t i = 0; i < sys->n; ++i)
+    {
+        const hybsol_row_t *const row = sys->rows + i;
+        hash = signature_mix(hash, row->count);
+        for (uint64_t j = 0; j < row->count; ++j)
+            hash = signature_mix(hash, row->entries[j]->col);
+    }
+    return hash;
+}
+
+hybsol_result_t hybsol_elimination_create(const hybsol_system_t *const sys, hybsol_elimination_t **const out,
+                                          uint64_t *const failing_block)
 {
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
+    CUTL_ASSERT(hybsol_system_is_valid(sys),
+                "The system is not structurally valid; run hybsol_system_is_valid to find out why.");
     *out = NULL;
-
-    if (!hybsol_system_is_valid(sys))
-        return HYBSOL_ERROR_SYSTEM_INVALID;
+    if (failing_block != NULL)
+        *failing_block = UINT64_MAX;
 
     walk_t w;
     const hybsol_result_t res = elimination_walk(sys, &w);
     if (res != HYBSOL_SUCCESS)
     {
-        // There is no graph to carry the offending block, so the system does.
-        if (w.failing_block != UINT64_MAX)
-            sys->failing_block = w.failing_block;
-        *out = NULL;
+        if (failing_block != NULL)
+            *failing_block = w.failing_block;
         return res;
     }
 
     const uint64_t n = sys->n;
 
-    // How often a row is processed: once per elimination, plus once more if it
-    // is diagonal-first from the outset and so has none.
+    // Once per elimination, plus one more for a row that is diagonal-first and so has none.
     const uint64_t n_occupancy = w.n_occurrences;
 
     const size_t off_row_offset = hybsol_align_up(sizeof(hybsol_elimination_t));
@@ -499,9 +476,7 @@ hybsol_result_t hybsol_elimination_create(hybsol_system_t *const sys, hybsol_eli
     const size_t off_row_first = off_level_k + (size_t)n_occupancy * sizeof(uint64_t);
     const size_t off_row_n_elim = off_row_first + (size_t)n * sizeof(uint64_t);
     const size_t off_row_level = off_row_n_elim + (size_t)n * sizeof(uint64_t);
-    // The pass-length cursor below is scratch for the bucketing, but it is the
-    // same size as `level_offset` and lives exactly as long, so it rides along
-    // in the frame rather than asking for a second allocation.
+    // The bucketing's cursor lives exactly as long as `level_offset` and has its size, so it rides in the frame.
     const size_t off_cursor = off_row_level + (size_t)n * sizeof(uint64_t);
     const size_t total = hybsol_align_up(off_cursor + (size_t)(w.n_levels + 1) * sizeof(uint64_t));
 
@@ -548,12 +523,10 @@ hybsol_result_t hybsol_elimination_create(hybsol_system_t *const sys, hybsol_eli
     }
     graph->row_offset[n] = at;
 
-    // Each pass lists its rows in ascending index order, which is the order the
-    // walk collected them in and therefore the order the operations come out in.
-    // Note the passes a row occupies are not consecutive: it waits for its source.
+    // Each pass lists its rows in ascending index order, the order the walk collected them in and
+    // therefore the order the operations come out in. The passes a row occupies are not consecutive.
     uint64_t *const cursor = (uint64_t *)(base + off_cursor);
-    // The occurrences go into their passes in walk order, which is already
-    // ascending by row within a pass -- the ready set is collected that way.
+    // Walk order is already ascending by row within a pass: the ready set is collected that way.
     memset(cursor, 0, ((size_t)w.n_levels + 1) * sizeof(*cursor));
     for (uint64_t i = 0; i < w.n_occurrences; ++i)
         ++cursor[w.occurrences[i].pass + 1];
@@ -585,17 +558,18 @@ void hybsol_elimination_destroy(hybsol_elimination_t *const graph)
     hybsol_free(graph->allocator, graph->raw);
 }
 
-hybsol_result_t hybsol_elimination_check(hybsol_system_t *const sys)
+hybsol_result_t hybsol_elimination_check(const hybsol_system_t *const sys, uint64_t *const failing_block)
 {
     CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
-
-    if (!hybsol_system_is_valid(sys))
-        return HYBSOL_ERROR_SYSTEM_INVALID;
+    CUTL_ASSERT(hybsol_system_is_valid(sys),
+                "The system is not structurally valid; run hybsol_system_is_valid to find out why.");
+    if (failing_block != NULL)
+        *failing_block = UINT64_MAX;
 
     walk_t w;
     const hybsol_result_t res = elimination_walk(sys, &w);
-    if (res != HYBSOL_SUCCESS && w.failing_block != UINT64_MAX)
-        sys->failing_block = w.failing_block;
+    if (res != HYBSOL_SUCCESS && failing_block != NULL)
+        *failing_block = w.failing_block;
     walk_release(sys->allocator, &w);
     return res;
 }

@@ -33,12 +33,15 @@ class Precision(StrEnum):
     """The floating-point type a :class:`BlockSystem` stores its blocks in.
 
     Precision is chosen when a system is created and cannot be changed: it
-    decides the type of the blocks, of the factors the decomposition produces
-    and of every array :meth:`BlockSystem.block_storage` and
-    :meth:`BlockSystem.get_block` hand back.
+    decides the type of the blocks, of the factors the decomposition produces,
+    and of every array :meth:`BlockSystem.as_array`,
+    :meth:`BlockSystem.block_storage` and :meth:`BlockSystem.get_block` hand
+    back. Arrays that are *computed* in floating point -- the results of
+    :meth:`BlockSystem.matvec`, :meth:`BlockSystem.matmat` and
+    :meth:`Decomposition.solve` -- are always ``float64``, whatever this is.
 
     Because this is a :class:`enum.StrEnum`, a plain string works wherever a
-    member is expected — ``BlockSystem(2, 2, precision="single")`` and
+    member is expected -- ``BlockSystem(2, 2, precision="single")`` and
     ``BlockSystem(2, 2, precision=Precision.SINGLE)`` mean the same thing.
     """
 
@@ -48,5 +51,5 @@ class Precision(StrEnum):
     SINGLE = "single"
     """IEEE-754 binary32: half the memory, and a solve good to about
     ``cond * 1e-7`` rather than ``cond * eps``. Recover the difference with
-    an iterative refinement step in double precision.
+    :func:`refined_solve`, which measures the residual in double precision.
     """

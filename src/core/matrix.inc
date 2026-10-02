@@ -1,21 +1,16 @@
 /*
- * Dense matrix kernels, instantiated once per floating-point type.
- *
- * Deliberately unguarded: ``matrix.c`` includes this file twice, once for the
- * double spelling of the public API and once for the single-precision one.
- * Before each inclusion it defines
+ * Dense matrix kernels, instantiated once per floating-point type. ``matrix.c``
+ * includes this file twice, deliberately unguarded, once per public spelling,
+ * after defining
  *
  *   HYBSOL_SCALAR   the type the elements are stored in
  *   HYBSOL_ACC      the type the product loops accumulate in
  *   HYBSOL_VIEW     the view type spelling those elements
  *   HYBSOL_FN(name) the name the resulting function gets
  *
- * ``HYBSOL_ACC`` is separate from ``HYBSOL_SCALAR`` so that accumulating in
- * double while storing single needs no restructuring: casts to it are no-ops
- * for the double instantiation, which stays bit-for-bit what it was.
- *
- * Every macro is undefined at the bottom, which makes a second inclusion in
- * the same translation unit well-defined.
+ * ``HYBSOL_ACC`` is separate from ``HYBSOL_SCALAR`` so that accumulating in double while storing
+ * single needs no restructuring: casts to it are no-ops for the double instantiation. Every macro
+ * is undefined at the bottom, so a second inclusion is well-defined.
  */
 
 HYBSOL_VIEW HYBSOL_FN(view)(const uint64_t rows, const uint64_t cols, HYBSOL_SCALAR *const data)
@@ -34,12 +29,10 @@ void HYBSOL_FN(multiply)(const HYBSOL_VIEW *const a, const HYBSOL_VIEW *const b,
     const HYBSOL_SCALAR *const restrict ptr_b = b->data;
     HYBSOL_SCALAR *const restrict ptr_out = out->data;
 
-    // Ordered i-k-j rather than i-j-k: the inner loop then runs along a row of
-    // B and of out, both unit stride, so it vectorizes without being asked. In
-    // i-j-k the compiler would have to gather B by columns, which is why that
-    // spelling ran at one element per cycle. Every out[i][j] still accumulates
-    // over k in ascending order and the j-loop is elementwise, so nothing is
-    // reassociated and the result is bit-for-bit what i-j-k produced.
+    // Ordered i-k-j rather than i-j-k: the inner loop then runs along a row of B and of out, both
+    // unit stride, so it vectorizes without being asked. Every out[i][j] still accumulates over k in
+    // ascending order and the j-loop is elementwise, so nothing is reassociated and the result is
+    // bit-for-bit what i-j-k produced.
     for (uint64_t i = 0; i < a->rows; ++i)
     {
         for (uint64_t j = 0; j < out->cols; ++j)

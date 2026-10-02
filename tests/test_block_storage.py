@@ -136,7 +136,7 @@ def test_decomposition_does_not_observe_a_live_view() -> None:
 
     assert np.all(sys.as_array() == before)
     assert np.all(held == 1.0)
-    assert dec.is_factorized
+    assert dec.total_size == before.shape[0]
 
 
 def test_live_view_blocks_restructuring() -> None:

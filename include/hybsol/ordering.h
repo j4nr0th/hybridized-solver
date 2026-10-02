@@ -26,27 +26,25 @@ typedef enum hybsol_ordering_strategy
 } hybsol_ordering_strategy_t;
 
 /**
- * Compute a **coloring** of the blocks.
+ * Compute a **coloring** of the blocks: entry ``i`` of ``out_ordering`` gets the
+ * new index of old block ``i``, and the result is always a permutation of
+ * ``[0, n_blocks)``. ``max_colors`` of ``0`` lets the library pick one (the
+ * number of blocks in the densest row, which is always sufficient).
  *
- * This is **not** a factorization ordering: it is not valid input to
+ * This is **not** a factorization ordering. It is not valid input to
  * :c:func:`hybsol_system_reorder_blocks` when the goal is
- * :c:func:`hybsol_decomposition_factorize`. Choose your own permutation there,
- * with every block that has a lower connection ahead of the blocks it couples
- * to.
+ * :c:func:`hybsol_decomposition_factorize`: in an augmented system the
+ * multiplier region is structurally zero, so it colors as a perfect independent
+ * set and can be scheduled ahead of the blocks it depends on. Choose your own
+ * permutation there, with every block that has a lower connection ahead of the
+ * blocks it couples to.
  *
- * :param sys: The system to analyze; it is not modified.
- * :param strategy: Which coloring strategy; asserted one of
- *     :c:type:`hybsol_ordering_strategy_t`.
- * :param max_colors: Upper bound on the number of colors, or ``0`` to let
- *     the library pick one (the number of blocks in the densest row, which
- *     is always sufficient).
- * :param out_ordering: Destination for ``n_blocks`` entries. Entry ``i``
- *     holds the new index of old block ``i``; the result is always a
- *     permutation of ``[0, n_blocks)``. Must not be ``NULL``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` if a coloring was written,
- *     :c:enumerator:`HYBSOL_ERROR_MAX_COLORS` if ``max_colors`` was too
- *     small (``out_ordering`` is then left unspecified), or
- *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
+ * Preconditions: ``out_ordering`` non-``NULL``, ``strategy`` one of
+ * :c:type:`hybsol_ordering_strategy_t`.
+ *
+ * Returns :c:enumerator:`HYBSOL_ERROR_MAX_COLORS` if ``max_colors`` was too
+ * small, leaving ``out_ordering`` unspecified, or
+ * :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *sys, hybsol_ordering_strategy_t strategy,
                                                  uint64_t max_colors, uint64_t *out_ordering);
@@ -55,40 +53,34 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *sys, hyb
  * Reorder the blocks of the system according to a permutation.
  *
  * Row ``i`` moves to row ``new_order[i]``, column ``i`` to column
- * ``new_order[i]``, and block sizes are permuted to match, so the system
+ * ``new_order[i]``, and the block sizes are permuted to match, so the system
  * stays structurally identical up to the relabelling.
  *
- * The permutation is applied before it is checked, and is not rolled back.
+ * The permutation is applied before it is checked, and is not rolled back. What
+ * the check rejects is the order, not the shuffle: on
+ * :c:enumerator:`HYBSOL_ERROR_INVALID_ORDERING` the new order would have had to
+ * factorize a block whose diagonal is identically zero, and ``*failing_block``
+ * names it. ``failing_block`` may be ``NULL``.
  *
- * :param sys: The system to reorder.
- * :param new_order: ``n_blocks`` entries forming a permutation of
- *     ``[0, n_blocks)``; entry ``i`` is the new index of old block ``i``.
- *     Asserted to be a permutation.
- * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
- *     default and ``1`` runs serially.
- *
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`,
- *     :c:enumerator:`HYBSOL_ERROR_INVALID_ORDERING` if the new order would have
- *     to factorize a block whose diagonal is identically zero (in which case
- *     :c:func:`hybsol_system_failing_block` names it), or
- *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
+ * Preconditions: ``new_order`` is asserted to be a permutation of
+ * ``[0, n_blocks)``, and ``sys`` is asserted structurally valid.
  */
-hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *sys, const uint64_t *new_order, uint64_t n_threads);
+hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *sys, const uint64_t *new_order, uint64_t n_threads,
+                                             uint64_t *failing_block);
 
 /**
  * Apply a block ordering to a vector.
  *
- * Block ``i`` of ``in`` is written to the slot that :c:func:`hybsol_system_reorder_blocks`
- * moved it to, so the result is the vector of the reordered system. ``sys``
- * must already have been reordered with ``new_order``; the offsets it holds
- * are used to locate both slices.
+ * Block ``i`` of ``in`` is written to the slot that
+ * :c:func:`hybsol_system_reorder_blocks` moved it to, so the result is the
+ * vector of the reordered system. ``sys`` must already have been reordered with
+ * ``new_order``; the offsets it holds are used to locate both slices.
  *
- * :param sys: The system the ordering was applied to.
- * :param new_order: ``n_blocks`` entries forming a permutation.
- * :param in: Vector in the *old* ordering, of length
- *     :c:func:`hybsol_system_total_size`.
- * :param out: Destination of the same length; must not alias ``in``.
+ * ``new_order`` is ``n_blocks`` entries forming a permutation, ``in`` a vector
+ * in the *old* ordering of length :c:func:`hybsol_system_total_size`, and
+ * ``out`` a destination of the same length that must not alias ``in``.
+ *
+ * Preconditions: ``sys``, ``new_order``, ``in`` and ``out`` non-``NULL``.
  */
 void hybsol_system_reorder_vector(const hybsol_system_t *sys, const uint64_t *new_order, const double *in, double *out);
 
@@ -98,11 +90,11 @@ void hybsol_system_reorder_vector(const hybsol_system_t *sys, const uint64_t *ne
  * Block ``new_order[i]`` of ``in`` is written back to slot ``i``, restoring
  * the vector of the system as it was before the reordering.
  *
- * :param sys: The system the ordering was applied to.
- * :param new_order: ``n_blocks`` entries forming a permutation.
- * :param in: Vector in the *new* ordering, of length
- *     :c:func:`hybsol_system_total_size`.
- * :param out: Destination of the same length; must not alias ``in``.
+ * ``new_order`` is ``n_blocks`` entries forming a permutation, ``in`` a vector
+ * in the *new* ordering of length :c:func:`hybsol_system_total_size`, and
+ * ``out`` a destination of the same length that must not alias ``in``.
+ *
+ * Preconditions: ``sys``, ``new_order``, ``in`` and ``out`` non-``NULL``.
  */
 void hybsol_system_unorder_vector(const hybsol_system_t *sys, const uint64_t *new_order, const double *in, double *out);
 

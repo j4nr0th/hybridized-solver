@@ -15,12 +15,14 @@
 #include <cutl/allocators.h>
 
 /**
- * Error codes returned by the fallible functions of the hybsol API.
+ * The outcomes of the fallible functions of the hybsol API.
  *
- * These cover outcomes of the data, not caller mistakes: allocation failure, a
- * singular matrix, a system that does not decompose. Conditions the caller can
- * be asked to guarantee — index ranges, non-``NULL`` pointers, matching shapes
- * — are preconditions instead, checked with ``CUTL_ASSERT``; see
+ * Every code here is something the caller cannot know up front: an allocation
+ * that failed, a diagonal with no pivot, a block order that admits no
+ * factorization, a coloring that ran out of colors, an iterator that ran off
+ * the end of a row. Conditions the caller *can* be asked to guarantee — index
+ * ranges, non-``NULL`` pointers, matching shapes, an unfactorized
+ * decomposition — are preconditions instead, checked with ``CUTL_ASSERT``; see
  * :c:file:`hybsol/hybsol.h`.
  *
  * :c:func:`hybsol_result_str` turns a code into a short human-readable
@@ -32,44 +34,33 @@ typedef enum hybsol_result
     HYBSOL_SUCCESS = 0,
     /** A memory allocation failed. */
     HYBSOL_ERROR_OUT_OF_MEMORY,
-    /** The row contains no blocks at all. */
+    /** The row stores no blocks. */
     HYBSOL_ERROR_EMPTY_ROW,
-    /** The row contains no block with a column index greater than the given one. */
+    /** The row stores no block beyond the given column. */
     HYBSOL_ERROR_NO_MORE_COLUMNS,
     /** The requested coloring needed more colors than ``max_colors`` allowed. */
     HYBSOL_ERROR_MAX_COLORS,
     /** A diagonal block hit an exactly zero pivot and cannot be factorized. */
     HYBSOL_ERROR_SINGULAR,
-    /** The system violates the assumptions of the solver (see :c:func:`hybsol_system_is_valid`). */
-    HYBSOL_ERROR_SYSTEM_INVALID,
-    /** The operation requires a decomposed system, but none has been computed yet. */
-    HYBSOL_ERROR_NOT_DECOMPOSED,
-    /** The system has already been decomposed and can no longer be modified. */
-    HYBSOL_ERROR_ALREADY_DECOMPOSED,
     /** The block order does not admit any factorization of this system. */
     HYBSOL_ERROR_INVALID_ORDERING,
-    /** An invariant inside the library was violated; this is a bug in hybsol. */
-    HYBSOL_ERROR_INTERNAL,
 } hybsol_result_t;
 
 /**
- * Get a short, stable, human-readable description of a result code.
+ * Describe a result code.
  *
- * The returned pointer is to a string literal and never needs to be freed.
- *
- * :param result: The code to describe.
- * :returns: A NUL-terminated description; ``"unknown result code"`` for
- *     values that are not part of the enumeration.
+ * Returns a NUL-terminated string literal, never to be freed;
+ * ``"unknown result code"`` for values outside the enumeration.
  */
 const char *hybsol_result_str(hybsol_result_t result);
 
 /**
  * The floating-point type a system stores its blocks in.
  *
- * Precision is a property of a whole system, chosen when it is created: the
- * blocks, the factors produced from them and every operation that touches
- * them use this type. Vectors passed to :c:func:`hybsol_decomposition_solve` and
- * ordering helpers are always doubles regardless of it.
+ * Precision is a property of a whole system, chosen when it is created, and
+ * cannot be changed afterwards. Vectors passed to
+ * :c:func:`hybsol_decomposition_solve` and the ordering helpers are always
+ * doubles regardless of it.
  *
  * The two flavours of every value-carrying function are spelled out by
  * suffix: the unsuffixed spelling is the double one and takes

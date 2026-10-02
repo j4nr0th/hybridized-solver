@@ -2,8 +2,7 @@
  * @file src/python/elimination_type.c
  * Implementation of the :class:`hybsol.Elimination` extension type.
  *
- * Every method is a thin argument-validation shell around one call into the
- * Python-free core.
+ * Every method is a thin argument-validation shell around one core call.
  */
 
 #include "elimination_type.h"
@@ -33,14 +32,7 @@ static int ensure_elimination(PyObject *const self, PyTypeObject *const defining
     return 0;
 }
 
-/**
- * Reject an index the core would only accept under an assertion.
- *
- * @param what Name of the argument, used in the error message.
- * @param n Number of valid indices.
- * @param idx The index the caller gave.
- * @return 0 on success, -1 with a ValueError set.
- */
+/** Reject an index the core would only accept under an assertion. */
 static int check_index(const char *const what, const uint64_t n, const Py_ssize_t idx)
 {
     if (idx >= 0 && (uint64_t)idx < n)
@@ -109,13 +101,12 @@ static PyObject *elimination_repr(elimination_object *const self)
 PyDoc_STRVAR(elimination_docstring, "Elimination(n_blocks, n_levels, n_operations)\n"
                                     "The symbolic result of eliminating a system.\n"
                                     "\n"
-                                    "Produced by :meth:`BlockSystem.elimination`. It\n"
-                                    "computes no values, so it can be asked for\n"
-                                    "before a factorization is committed: it reports\n"
-                                    "the pattern the fill-in will produce, the\n"
-                                    "passes the factorization runs in, what each\n"
-                                    "will cost, and whether the block order admits\n"
-                                    "a factorization at all.\n");
+                                    "Produced by :meth:`BlockSystem.elimination`. It computes no\n"
+                                    "values, so it reports the pattern the fill-in will\n"
+                                    "produce, the passes a factorization runs in and what\n"
+                                    "it will cost. :meth:`BlockSystem.decompose` can fail on a\n"
+                                    "system this walk accepts, when a diagonal block turns out\n"
+                                    "to be singular.\n");
 
 /* ------------------------------------------------------------------------- */
 /* Per-row and per-pass queries                                               */
@@ -131,7 +122,12 @@ PyDoc_STRVAR(elimination_object_row_columns_docstring,
              "Parameters\n"
              "----------\n"
              "row : int\n"
-             "    Block row index.\n");
+             "    Block row index, in ``[0, n_blocks)``.\n"
+             "\n"
+             "Raises\n"
+             "------\n"
+             "ValueError\n"
+             "    ``row`` is outside ``[0, n_blocks)``.\n");
 
 static PyObject *elimination_object_row_columns(PyObject *const self, PyTypeObject *const defining_class,
                                                 PyObject *const *args, const Py_ssize_t nargs, PyObject *kwnames)
@@ -171,7 +167,7 @@ static PyObject *elimination_object_row_columns(PyObject *const self, PyTypeObje
     if (res != HYBSOL_SUCCESS)
     {
         PyMem_Free(columns);
-        return hybsol_raise("row_columns", res);
+        return hybsol_raise(Py_TYPE(self), "row_columns", res);
     }
 
     PyObject *const out = indices_to_tuple(columns, written);
@@ -184,13 +180,18 @@ PyDoc_STRVAR(elimination_object_level_rows_docstring, "level_rows(level: int) ->
                                                       "\n"
                                                       "A row appears in every pass from its first to its last, so a\n"
                                                       "row whose source is not ready yet simply sits a pass out.\n"
-                                                      "Within a pass the rows are in ascending index order, which is\n"
-                                                      "the order the recorded operations come out in.\n"
+                                                      "Within a pass the rows are ascending, which is the order the\n"
+                                                      "recorded operations come out in.\n"
                                                       "\n"
                                                       "Parameters\n"
                                                       "----------\n"
                                                       "level : int\n"
-                                                      "    Pass index, in ``[0, n_levels)``.\n");
+                                                      "    Pass index, in ``[0, n_levels)``.\n"
+                                                      "\n"
+                                                      "Raises\n"
+                                                      "------\n"
+                                                      "ValueError\n"
+                                                      "    ``level`` is outside ``[0, n_levels)``.\n");
 
 static PyObject *elimination_object_level_rows(PyObject *const self, PyTypeObject *const defining_class,
                                                PyObject *const *args, const Py_ssize_t nargs, PyObject *kwnames)
@@ -230,7 +231,7 @@ static PyObject *elimination_object_level_rows(PyObject *const self, PyTypeObjec
     if (res != HYBSOL_SUCCESS)
     {
         PyMem_Free(rows);
-        return hybsol_raise("level_rows", res);
+        return hybsol_raise(Py_TYPE(self), "level_rows", res);
     }
 
     PyObject *const out = indices_to_tuple(rows, written);
@@ -346,15 +347,38 @@ PyType_Spec elimination_type_spec = {
                                     elimination_object_row_columns_docstring),
                  ELIMINATION_METHOD("level_rows", elimination_object_level_rows,
                                     elimination_object_level_rows_docstring),
-                 ELIMINATION_METHOD(
-                     "row_length", elimination_object_row_length,
-                     "row_length(row: int) -> int\nBlock row ``row`` holds this many blocks at the end.\n"),
+                 ELIMINATION_METHOD("row_length", elimination_object_row_length,
+                                    "row_length(row: int) -> int\n"
+                                    "Block row ``row`` holds this many blocks at the end.\n"
+                                    "\n"
+                                    "Raises\n"
+                                    "------\n"
+                                    "ValueError\n"
+                                    "    ``row`` is outside ``[0, n_blocks)``.\n"),
                  ELIMINATION_METHOD("row_n_eliminations", elimination_object_row_n_eliminations,
-                                    "row_n_eliminations(row: int) -> int\nHow many eliminations ``row`` performs.\n"),
+                                    "row_n_eliminations(row: int) -> int\n"
+                                    "How many eliminations ``row`` performs.\n"
+                                    "\n"
+                                    "Raises\n"
+                                    "------\n"
+                                    "ValueError\n"
+                                    "    ``row`` is outside ``[0, n_blocks)``.\n"),
                  ELIMINATION_METHOD("row_first_level", elimination_object_row_first_level,
-                                    "row_first_level(row: int) -> int\nFirst pass ``row`` is processed in.\n"),
+                                    "row_first_level(row: int) -> int\n"
+                                    "First pass ``row`` is processed in.\n"
+                                    "\n"
+                                    "Raises\n"
+                                    "------\n"
+                                    "ValueError\n"
+                                    "    ``row`` is outside ``[0, n_blocks)``.\n"),
                  ELIMINATION_METHOD("row_level", elimination_object_row_level,
-                                    "row_level(row: int) -> int\nLast pass ``row`` is processed in.\n"),
+                                    "row_level(row: int) -> int\n"
+                                    "Last pass ``row`` is processed in.\n"
+                                    "\n"
+                                    "Raises\n"
+                                    "------\n"
+                                    "ValueError\n"
+                                    "    ``row`` is outside ``[0, n_blocks)``.\n"),
                  {},
              }},
             {Py_tp_getset,
@@ -382,12 +406,14 @@ PyType_Spec elimination_type_spec = {
                  {
                      .name = "value_bytes",
                      .get = elimination_object_get_value_bytes,
-                     .doc = "int : Bytes of block storage a decomposition needs.",
+                     .doc = "int : Bytes of block storage a decomposition needs, fill-in included.",
                  },
                  {
                      .name = "total_bytes",
                      .get = elimination_object_get_total_bytes,
-                     .doc = "int : Bytes this graph itself occupies.",
+                     .doc = "int : Bytes this graph itself occupies. The block storage it\n"
+                            "describes is counted separately in ``value_bytes``, so this\n"
+                            "may be the smaller of the two.",
                  },
                  {
                      .name = "precision",
@@ -397,7 +423,10 @@ PyType_Spec elimination_type_spec = {
                  {
                      .name = "failing_block",
                      .get = elimination_object_get_failing_block,
-                     .doc = "int or None : Block whose diagonal is identically zero.",
+                     .doc = "int or None : Block whose diagonal is identically zero, if\n"
+                            "any. Always ``None`` in practice: :meth:`BlockSystem.elimination`\n"
+                            "raises :exc:`ValueError` -- naming the block -- instead of\n"
+                            "returning a graph for a system that has one.",
                  },
                  {},
              }},

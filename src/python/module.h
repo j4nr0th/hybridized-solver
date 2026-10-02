@@ -3,8 +3,7 @@
  * Shared declarations of the hybsol Python extension module.
  *
  * Everything that touches Python or NumPy lives under ``src/python``; the
- * solver itself lives under ``src/core`` and is completely independent of
- * both.
+ * solver itself lives under ``src/core`` and is independent of both.
  */
 
 #pragma once
@@ -57,12 +56,7 @@ typedef struct
 MODULE_INTERNAL
 extern PyModuleDef hybsol_module_def;
 
-/**
- * Fetch the module state belonging to a type defined by this module.
- *
- * :param type: Type created from :c:data:`hybsol_module_def`.
- * :returns: The state, or ``NULL`` with an exception set.
- */
+/** Fetch the module state belonging to a type defined by this module. */
 static inline const module_state_t *module_state_from_type(PyTypeObject *type)
 {
     PyObject *const mod = PyType_GetModuleByDef(type, &hybsol_module_def);
@@ -79,51 +73,31 @@ int heap_type_traverse_type(PyObject *self, visitproc visit, void *arg);
 /**
  * Map a :c:type:`hybsol_result_t` onto the exception type used for it.
  *
- * :param res: Result code to translate.
- * :returns: A borrowed reference to an exception *type* object.
+ * ``type`` is any type of this module; it identifies the interpreter the
+ * exception belongs to. The singular-system exception is created per module
+ * instance, so it is read out of that instance's state rather than from a
+ * process-wide pointer a second interpreter would share.
  */
 MODULE_INTERNAL
-PyObject *hybsol_exception_type(hybsol_result_t res);
+PyObject *hybsol_exception_type(PyTypeObject *type, hybsol_result_t res);
 
 /**
- * Raise the exception associated with a result code.
- *
- * The message is ``"<what>: <hybsol_result_str(res)>"``.
- *
- * :param what: Short description of the operation that failed.
- * :param res: The result code; :c:enumerator:`HYBSOL_SUCCESS` is treated as
- *     :c:enumerator:`HYBSOL_ERROR_INTERNAL`, since nothing failed otherwise.
- * :returns: Always ``NULL``, so callers can ``return hybsol_raise(...)``.
+ * Raise the exception associated with a result code as
+ * ``"<what>: <hybsol_result_str(res)>"``. Always returns ``NULL``, so callers
+ * can ``return hybsol_raise(...)``.
  */
 MODULE_INTERNAL
-PyObject *hybsol_raise(const char *what, hybsol_result_t res);
+PyObject *hybsol_raise(PyTypeObject *type, const char *what, hybsol_result_t res);
 
-/**
- * Raise the exception for a result code, naming the failing block when known.
- *
- * :param what: Short description of the operation that failed.
- * :param res: The result code.
- * :param failing_block: Block index to name, or ``UINT64_MAX`` for none.
- * :returns: Always ``NULL``, so callers can ``return hybsol_raise_block(...)``.
- */
+/** As :c:func:`hybsol_raise`, naming the failing block when one is known. */
 MODULE_INTERNAL
-PyObject *hybsol_raise_block(const char *what, const hybsol_result_t res, uint64_t failing_block);
+PyObject *hybsol_raise_block(PyTypeObject *type, const char *what, const hybsol_result_t res, uint64_t failing_block);
 
-/**
- * Reject a negative thread count.
- *
- * :param n_threads: The value the caller parsed from the arguments.
- * :returns: ``0`` on success, ``-1`` with a :exc:`ValueError` set.
- */
+/** Reject a negative thread count with a :exc:`ValueError`. */
 MODULE_INTERNAL
 int hybsol_check_n_threads(Py_ssize_t n_threads);
 
-/**
- * Build the :class:`hybsol.Precision` member for a core precision.
- *
- * :param precision: The precision to name.
- * :returns: A new reference, or ``NULL`` with an exception set.
- */
+/** Build the :class:`hybsol.Precision` member for a core precision. */
 MODULE_INTERNAL
 PyObject *hybsol_precision_member(hybsol_precision_t precision);
 

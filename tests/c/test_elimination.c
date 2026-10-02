@@ -58,7 +58,7 @@ static void test_graph_of_the_fill_in_example(void)
         return;
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     CHECK(graph != NULL);
     if (graph == NULL)
     {
@@ -151,7 +151,7 @@ static void test_out_of_range_queries(void)
         return;
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     CHECK(graph != NULL);
     if (graph == NULL)
     {
@@ -177,8 +177,8 @@ static void test_graph_is_reproducible(void)
 
     hybsol_elimination_t *first = NULL;
     hybsol_elimination_t *second = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &first));
-    CHECK_OK(hybsol_elimination_create(sys, &second));
+    CHECK_OK(hybsol_elimination_create(sys, &first, NULL));
+    CHECK_OK(hybsol_elimination_create(sys, &second, NULL));
     if (first == NULL || second == NULL)
     {
         hybsol_elimination_destroy(first);
@@ -230,7 +230,7 @@ static void test_dense_system_operation_count(void)
         }
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     CHECK(graph != NULL);
     if (graph != NULL)
     {
@@ -295,18 +295,18 @@ static void test_reorder_and_decomposition_agree(void)
 
         hybsol_system_t *shuffled = NULL;
         CHECK_OK(hybsol_system_copy(sys, &shuffled));
-        if (hybsol_system_reorder_blocks(shuffled, order, 1) != HYBSOL_SUCCESS)
+        uint64_t failing = UINT64_MAX;
+        if (hybsol_system_reorder_blocks(shuffled, order, 1, &failing) != HYBSOL_SUCCESS)
         {
             // Rejected, so the failing block must be named.
-            CHECK_MSG(hybsol_system_failing_block(shuffled) < n, "trial %d named block %llu", trial,
-                      (unsigned long long)hybsol_system_failing_block(shuffled));
+            CHECK_MSG(failing < n, "trial %d named block %llu", trial, (unsigned long long)failing);
             hybsol_system_destroy(shuffled);
             continue;
         }
         accepted += 1;
 
         hybsol_elimination_t *graph = NULL;
-        const hybsol_result_t walked = hybsol_elimination_create(shuffled, &graph);
+        const hybsol_result_t walked = hybsol_elimination_create(shuffled, &graph, NULL);
         CHECK_MSG(walked == HYBSOL_SUCCESS, "trial %d: the reorder accepted a walk that did not (%s)", trial,
                   hybsol_result_str(walked));
         if (walked == HYBSOL_SUCCESS)
@@ -351,14 +351,14 @@ static void test_reorder_reports_a_block_it_creates(void)
 
     // Elements first is factorizable.
     const uint64_t good[] = {0, 1, 2};
-    CHECK_OK(hybsol_system_reorder_blocks(sys, good, 1));
+    CHECK_OK(hybsol_system_reorder_blocks(sys, good, 1, NULL));
 
     hybsol_system_t *bad_sys = NULL;
     CHECK_OK(hybsol_system_copy(sys, &bad_sys));
     const uint64_t bad[] = {1, 2, 0};
-    CHECK_RESULT(hybsol_system_reorder_blocks(bad_sys, bad, 1), HYBSOL_ERROR_INVALID_ORDERING);
-    CHECK_MSG(hybsol_system_failing_block(bad_sys) < 3, "the failing block was %llu",
-              (unsigned long long)hybsol_system_failing_block(bad_sys));
+    uint64_t failing = UINT64_MAX;
+    CHECK_RESULT(hybsol_system_reorder_blocks(bad_sys, bad, 1, &failing), HYBSOL_ERROR_INVALID_ORDERING);
+    CHECK_MSG(failing < 3, "the failing block was %llu", (unsigned long long)failing);
 
     hybsol_system_destroy(bad_sys);
     hybsol_system_destroy(sys);
@@ -367,40 +367,35 @@ static void test_reorder_reports_a_block_it_creates(void)
 static void test_rejected_systems(void)
 {
     const uint64_t sizes[] = {2, 2};
-    hybsol_elimination_t *graph = (hybsol_elimination_t *)(uintptr_t)1;
+    double values[4] = {2.0, 1.0, 1.0, 2.0};
 
-    // A row with no diagonal block.
+    // The walk asserts structural validity rather than reporting it, so
+    // hybsol_system_is_valid is what a caller checks to get a diagnosis: a row
+    // with no diagonal block, then a block below the diagonal with no mirror.
     hybsol_system_t *sys = NULL;
     CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
-    double values[4] = {2.0, 1.0, 1.0, 2.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, values));
-    CHECK_OK(hybsol_system_add_block(sys, 0, 1, 2, 2, values));
     CHECK(!hybsol_system_is_valid(sys));
-    CHECK_RESULT(hybsol_elimination_create(sys, &graph), HYBSOL_ERROR_SYSTEM_INVALID);
-    CHECK(graph == NULL);
     hybsol_system_destroy(sys);
 
-    // A block below the diagonal with no mirror above it.
     CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, values));
     CHECK_OK(hybsol_system_add_block(sys, 1, 1, 2, 2, values));
     CHECK_OK(hybsol_system_add_block(sys, 1, 0, 2, 2, values));
     CHECK(!hybsol_system_is_valid(sys));
-    CHECK_RESULT(hybsol_elimination_create(sys, &graph), HYBSOL_ERROR_SYSTEM_INVALID);
-    CHECK(graph == NULL);
     hybsol_system_destroy(sys);
 
     // A structurally zero diagonal: no ordering can factorize it, and the
-    // offending block is named.
+    // offending block is named through the out-parameter.
     CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
     double zero[4] = {0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, zero));
     CHECK(hybsol_system_is_valid(sys));
-    graph = (hybsol_elimination_t *)(uintptr_t)1;
-    CHECK_RESULT(hybsol_elimination_create(sys, &graph), HYBSOL_ERROR_INVALID_ORDERING);
+    hybsol_elimination_t *graph = (hybsol_elimination_t *)(uintptr_t)1;
+    uint64_t failing = UINT64_MAX;
+    CHECK_RESULT(hybsol_elimination_create(sys, &graph, &failing), HYBSOL_ERROR_INVALID_ORDERING);
     CHECK(graph == NULL);
-    CHECK_MSG(hybsol_system_failing_block(sys) == 0, "the failing block was %llu",
-              (unsigned long long)hybsol_system_failing_block(sys));
+    CHECK_MSG(failing == 0, "the failing block was %llu", (unsigned long long)failing);
     hybsol_system_destroy(sys);
 }
 

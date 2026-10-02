@@ -21,16 +21,8 @@ const char *hybsol_result_str(const hybsol_result_t result)
         return "maximum number of colors exceeded";
     case HYBSOL_ERROR_SINGULAR:
         return "zero pivot in LU decomposition";
-    case HYBSOL_ERROR_SYSTEM_INVALID:
-        return "block system is not valid";
-    case HYBSOL_ERROR_NOT_DECOMPOSED:
-        return "decomposition has not been factorized";
-    case HYBSOL_ERROR_ALREADY_DECOMPOSED:
-        return "decomposition has already been factorized";
     case HYBSOL_ERROR_INVALID_ORDERING:
         return "block ordering admits no factorization of this system";
-    case HYBSOL_ERROR_INTERNAL:
-        return "internal error";
     }
     return "unknown result code";
 }

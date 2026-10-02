@@ -1,9 +1,7 @@
 /*
  * The value-carrying half of the decomposition, instantiated once per
- * floating-point type.
- *
- * Unguarded on purpose: ``decomposition_numeric.c`` includes this file twice,
- * after defining
+ * floating-point type. ``decomposition_numeric.c`` includes this file twice,
+ * unguarded on purpose, after defining
  *
  *   HYBSOL_SCALAR    the type the decomposition stores its blocks in
  *   HYBSOL_ACC       the type products accumulate in
@@ -13,16 +11,9 @@
  *   HYBSOL_NARROWED  1 when ``HYBSOL_SCALAR`` is narrower than the doubles the
  *                    solve protocol hands around
  *
- * Vectors are *not* templated: the solve takes doubles for both precisions, so
- * the two kernels at the top take ``HYBSOL_SCALAR`` factors against a
- * ``hybsol_matrix_t``. Only the factors narrow; the vector arithmetic stays in
- * double, so a single-precision solve loses no accuracy it does not have to
- * lose.
- *
- * Everything here is ``static``: the instantiations are private to
- * ``decomposition_numeric.c`` and reached through the dispatchers in
- * ``internal.h``. Every macro is undefined at the bottom so a second inclusion
- * is well defined.
+ * Vectors are *not* templated: the solve takes doubles for both precisions, so the two kernels at
+ * the top take ``HYBSOL_SCALAR`` factors against a ``hybsol_matrix_t``. Everything is ``static``
+ * and every macro is undefined at the bottom, so a second inclusion is well defined.
  */
 
 #if HYBSOL_NARROWED

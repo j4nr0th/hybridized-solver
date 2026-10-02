@@ -2,8 +2,8 @@
  * @file src/python/block_system_type.c
  * Implementation of the :class:`hybsol.BlockSystem` extension type.
  *
- * Every method here is a thin argument-validation shell around one call into
- * the Python-free core; the actual algorithms live in ``src/core``.
+ * Every method here is a thin argument-validation shell around one core call;
+ * the actual algorithms live in ``src/core``.
  */
 
 #include "block_system_type.h"
@@ -39,12 +39,7 @@ static int ensure_block_system_and_state(PyObject *const self, PyTypeObject *con
     return 0;
 }
 
-/**
- * Reject unexpected positional/keyword arguments for a method taking none.
- *
- * :param what: Method name, used in the error message.
- * :returns: ``0`` if there were no arguments, ``-1`` otherwise.
- */
+/** Reject unexpected positional/keyword arguments for a method taking none. */
 static int no_arguments(const char *const what, const Py_ssize_t nargs, const PyObject *kwnames)
 {
     if (nargs != 0 || kwnames != NULL)
@@ -68,13 +63,7 @@ static int check_block_indices(const hybsol_system_t *const sys, const Py_ssize_
 
 /**
  * Reject a block the system does not store. The core asserts on this rather
- * than returning a code, so lookups must confirm the block is present before
- * asking for it.
- *
- * :param sys: The system.
- * :param row: The validated block row index.
- * :param col: The validated block column index.
- * :returns: ``0`` if the block is stored, ``-1`` otherwise.
+ * than returning a code, so lookups must confirm the block is present first.
  */
 static int require_block(const hybsol_system_t *const sys, const Py_ssize_t row, const Py_ssize_t col)
 {
@@ -87,12 +76,24 @@ static int require_block(const hybsol_system_t *const sys, const Py_ssize_t row,
 }
 
 /**
- * Reject a method that would relocate blocks a caller may still be writing to.
- *
- * :param self: The system object.
- * :param what: Method name, used in the error message.
- * :returns: ``0`` when no :meth:`block_storage` view is outstanding.
+ * Reject a system that does not satisfy the solver's structural assumptions.
+ * The core asserts on this rather than returning a code, so anything walking
+ * the pattern has to check it first.
  */
+static int require_valid_system(const hybsol_system_t *const sys, const char *const what)
+{
+    if (hybsol_system_is_valid(sys))
+    {
+        return 0;
+    }
+    PyErr_Format(PyExc_ValueError,
+                 "%s: the block system is not valid. Every row needs its diagonal block, and every block "
+                 "below the diagonal needs its mirror; is_valid() says which.",
+                 what);
+    return -1;
+}
+
+/** Reject a method that would relocate blocks a caller may still be writing to. */
 static int ensure_no_live_views(const block_system_object *const self, const char *const what)
 {
     if (self->n_live_views == 0)
@@ -132,12 +133,7 @@ static void block_view_destructor(PyObject *const capsule)
     Py_DECREF(owner);
 }
 
-/**
- * Create the base object for one array returned by :meth:`block_storage`.
- *
- * :param owner: System whose storage is being handed out.
- * :returns: A new reference, or ``NULL`` with an exception set.
- */
+/** Create the base object for one array returned by :meth:`block_storage`. */
 static PyObject *block_view_capsule(block_system_object *const owner)
 {
     PyObject *const capsule = PyCapsule_New(owner, BLOCK_VIEW_CAPSULE_NAME, block_view_destructor);
@@ -156,21 +152,15 @@ static PyObject *block_view_capsule(block_system_object *const owner)
  * Done by hand because cpyutl's ``type_check`` rejects ``None`` outright,
  * while these methods document "if not given (or ``None``), a new array is
  * created".
- *
- * :param obj: Value of the keyword, or ``NULL`` if it was omitted.
- * :returns: ``0`` with ``*out`` set (either ``NULL`` or a new reference),
- *     or ``-1`` with an exception set.
  */
 #define optional_array(obj, out) hybsol_optional_array((obj), (out))
 
 /**
  * Turn ``new_order`` into a validated ``uint64`` array of length ``n``.
  *
- * The entries must form a permutation of ``[0, n)``; that is a precondition
- * of every core function taking a permutation, so it is checked here rather
- * than left to an abort there.
- *
- * :returns: ``0`` and a new reference in ``*arr_out``, or ``-1``.
+ * The entries must be a permutation of ``[0, n)``, a precondition of every
+ * core function taking one, so it is checked here rather than left to abort
+ * there.
  */
 static int get_order_array(PyObject *const obj, const Py_ssize_t n, PyArrayObject **const arr_out)
 {
@@ -207,15 +197,10 @@ static int get_order_array(PyObject *const obj, const Py_ssize_t n, PyArrayObjec
     return 0;
 }
 
-#define check_n_threads(n_threads) hybsol_check_n_threads(n_threads)
-
 /**
  * Read ``*block_sizes`` out of any sequence of positive integers.
  *
- * :param obj: The sequence.
- * :param p_sizes: Receives a ``PyMem_Malloc``-ed array the caller must free.
- * :param p_n: Receives the number of sizes.
- * :returns: ``0`` on success, ``-1`` with an exception set otherwise.
+ * ``*p_sizes`` is a ``PyMem_Malloc``-ed array the caller must free.
  */
 static int parse_block_sizes(PyObject *const obj, uint64_t **const p_sizes, Py_ssize_t *const p_n)
 {
@@ -303,11 +288,7 @@ static int parse_precision(PyObject *const obj, hybsol_precision_t *const out)
     return 0;
 }
 
-/**
- * Allocate a Python ``BlockSystem`` of ``n`` blocks with the given sizes.
- *
- * :returns: A new reference, or ``NULL`` with an exception set.
- */
+/** Allocate a Python ``BlockSystem`` of ``n`` blocks with the given sizes. */
 static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n, const uint64_t *const sizes,
                                     const hybsol_precision_t precision)
 {
@@ -324,7 +305,7 @@ static PyObject *block_system_alloc(PyTypeObject *const type, const Py_ssize_t n
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(self);
-        return hybsol_raise("BlockSystem", res);
+        return hybsol_raise(Py_TYPE(self), "BlockSystem", res);
     }
     return (PyObject *)self;
 }
@@ -399,7 +380,9 @@ PyDoc_STRVAR(block_system_docstring, "BlockSystem(*block_sizes: int, precision: 
                                      "Block system for hybridized solver.\n"
                                      "\n"
                                      "An ``n x n`` arrangement of blocks, where block ``(i, j)`` has shape\n"
-                                     "``(block_sizes[i], block_sizes[j])``. Only a subset needs to be present;\n"
+                                     "``(block_sizes[i], block_sizes[j])``. Not every block needs to be\n"
+                                     "stored: the fill-in supplies the rest. Every diagonal block and every\n"
+                                     "mirror of a block below the diagonal *must* be stored;\n"
                                      ":meth:`is_valid` reports whether the structure is decomposable.\n"
                                      "\n"
                                      "``precision`` fixes the type blocks are stored in and computed in for\n"
@@ -466,13 +449,18 @@ static PyObject *block_system_object_as_array(PyObject *const self, PyTypeObject
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(arr);
-        return hybsol_raise("as_array", res);
+        return hybsol_raise(Py_TYPE(self), "as_array", res);
     }
     return (PyObject *)arr;
 }
 
-PyDoc_STRVAR(block_system_object_as_array_docstring, "as_array() -> numpy.typing.NDArray[numpy.double]\n"
-                                                     "Return the system representation as a full matrix.\n");
+PyDoc_STRVAR(block_system_object_as_array_docstring,
+             "as_array() -> numpy.typing.NDArray[numpy.double] | numpy.typing.NDArray[numpy.float]\n"
+             "Return the system representation as a full matrix.\n"
+             "\n"
+             "Blocks the system does not store come out zero, and the result has the\n"
+             "system's own :attr:`precision` -- ``float32`` for a single-precision\n"
+             "system, ``float64`` otherwise.\n");
 
 static PyObject *block_system_object_get_row_block_indices(PyObject *const self, PyTypeObject *const defining_class,
                                                            PyObject *const *const args, const Py_ssize_t nargs,
@@ -525,7 +513,7 @@ static PyObject *block_system_object_get_row_block_indices(PyObject *const self,
     {
         PyMem_Free(indices);
         Py_DECREF(ret);
-        return hybsol_raise("get_row_block_indices", res);
+        return hybsol_raise(Py_TYPE(self), "get_row_block_indices", res);
     }
 
     for (uint64_t i = 0; i < n_written; ++i)
@@ -593,7 +581,7 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
             hybsol_system_get_block_f32(this->system, (uint64_t)row_idx, (uint64_t)col_idx, &mat);
         if (res != HYBSOL_SUCCESS)
         {
-            return hybsol_raise("get_block", res);
+            return hybsol_raise(Py_TYPE(self), "get_block", res);
         }
         return (PyObject *)hybsol_fmatrix_to_array(&mat);
     }
@@ -603,15 +591,25 @@ static PyObject *block_system_object_get_block(PyObject *const self, PyTypeObjec
 
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("get_block", res);
+        return hybsol_raise(Py_TYPE(self), "get_block", res);
     }
 
     return (PyObject *)hybsol_matrix_to_array(&mat);
 }
 
-PyDoc_STRVAR(block_system_object_get_block_docstring, "get_block(row: int, col: int) -> "
-                                                      "numpy.typing.NDArray[numpy.double]\n"
-                                                      "Get a copy of the value of the specified block.\n");
+PyDoc_STRVAR(block_system_object_get_block_docstring,
+             "get_block(row: int, col: int) -> numpy.typing.NDArray[numpy.double] | "
+             "numpy.typing.NDArray[numpy.float]\n"
+             "Get a copy of the value of the specified block.\n"
+             "\n"
+             "The copy has the system's own :attr:`precision`, so it is ``float32``\n"
+             "for a single-precision system and ``float64`` otherwise.\n"
+             "\n"
+             "Raises\n"
+             "------\n"
+             "ValueError\n"
+             "    An index is outside ``[0, n_blocks)``, or the system does not\n"
+             "    store that block.\n");
 
 static PyObject *block_system_object_block_storage(PyObject *const self, PyTypeObject *const defining_class,
                                                    PyObject *const *const args, const Py_ssize_t nargs,
@@ -657,7 +655,7 @@ static PyObject *block_system_object_block_storage(PyObject *const self, PyTypeO
         if (res != HYBSOL_SUCCESS)
         {
             Py_DECREF(capsule);
-            return hybsol_raise("block_storage", res);
+            return hybsol_raise(Py_TYPE(self), "block_storage", res);
         }
         return (PyObject *)hybsol_fmatrix_wrap(&mat, capsule);
     }
@@ -667,24 +665,36 @@ static PyObject *block_system_object_block_storage(PyObject *const self, PyTypeO
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(capsule);
-        return hybsol_raise("block_storage", res);
+        return hybsol_raise(Py_TYPE(self), "block_storage", res);
     }
     return (PyObject *)hybsol_matrix_wrap(&mat, capsule);
 }
 
 PyDoc_STRVAR(block_system_object_block_storage_docstring,
-             "block_storage(row: int, col: int) -> numpy.typing.NDArray[numpy.double]\n"
+             "block_storage(row: int, col: int) -> numpy.typing.NDArray[numpy.double] | "
+             "numpy.typing.NDArray[numpy.float]\n"
              "Get writable storage for a block, creating it on first use.\n"
              "\n"
              "The shape is implied by the system, so this hands back the right buffer to\n"
-             "fill in place instead of building a temporary for :meth:`add_block`. The\n"
-             "first call adds the block to the sparsity pattern and zeroes it; later\n"
-             "calls return the same buffer, so nothing written so far is lost.\n"
+             "fill in place. The first call adds the block to the sparsity pattern and\n"
+             "zeroes it; later calls return the same buffer.\n"
+             "\n"
+             "The buffer has the system's own :attr:`precision`, so it is ``float32``\n"
+             "for a single-precision system and ``float64`` otherwise.\n"
              "\n"
              "The array is a view backed by the system, which it keeps alive. Value\n"
              "rewrites through the system are visible through it, but\n"
-             ":meth:`eliminate_row`, :meth:`reorder_blocks` and :meth:`decompose`\n"
-             "refuse to run while such an array is alive.\n");
+             ":meth:`eliminate_row` and :meth:`reorder_blocks` refuse to run while\n"
+             "such an array is alive. :meth:`decompose` does not: the decomposition\n"
+             "copies what it needs and leaves the system, and its storage, alone.\n"
+             "\n"
+             "Raises\n"
+             "------\n"
+             "ValueError\n"
+             "    An index is outside ``[0, n_blocks)``.\n"
+             "RuntimeError\n"
+             "    A previously returned view is still alive in front of\n"
+             "    :meth:`eliminate_row` or :meth:`reorder_blocks`.\n");
 
 static PyObject *block_system_object_get_block_size(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -826,7 +836,7 @@ static PyObject *block_system_object_first_column(PyObject *const self, PyTypeOb
     }
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("first_column", res);
+        return hybsol_raise(Py_TYPE(self), "first_column", res);
     }
     return PyLong_FromUnsignedLongLong(out);
 }
@@ -876,7 +886,7 @@ static PyObject *block_system_object_get_next_column_index(PyObject *const self,
     }
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("get_next_column_index", res);
+        return hybsol_raise(Py_TYPE(self), "get_next_column_index", res);
     }
     return PyLong_FromUnsignedLongLong(out);
 }
@@ -952,7 +962,7 @@ static PyObject *block_system_object_add_block(PyObject *const self, PyTypeObjec
     Py_DECREF(arr);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("add_block", res);
+        return hybsol_raise(Py_TYPE(self), "add_block", res);
     }
     Py_RETURN_NONE;
 }
@@ -965,10 +975,6 @@ PyDoc_STRVAR(block_system_object_add_blocks_docstring,
              "The fast assembly path: the index arrays are processed once and each row\n"
              "allocates its storage a single time. Duplicate ``(row, col)`` pairs\n"
              "accumulate, as repeated :meth:`add_block` calls would.\n"
-             "\n"
-             "Block ``k`` occupies ``block_sizes[rows[k]] * block_sizes[cols[k]]``\n"
-             "consecutive entries of ``data``, in the order implied by ``rows`` and\n"
-             "``cols``.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1093,7 +1099,7 @@ static PyObject *block_system_object_add_blocks(PyObject *const self, PyTypeObje
 
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("add_blocks", res);
+        return hybsol_raise(Py_TYPE(self), "add_blocks", res);
     }
     Py_RETURN_NONE;
 }
@@ -1146,7 +1152,7 @@ static PyObject *block_system_object_reserve(PyObject *const self, PyTypeObject 
     const hybsol_result_t res = hybsol_system_reserve(this->system, (uint64_t)row_idx, (uint64_t)capacity);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("reserve", res);
+        return hybsol_raise(Py_TYPE(self), "reserve", res);
     }
     Py_RETURN_NONE;
 }
@@ -1228,7 +1234,7 @@ static PyObject *block_system_object_multiply_row(PyObject *const self, PyTypeOb
     Py_DECREF(arr);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("multiply_row", res);
+        return hybsol_raise(Py_TYPE(self), "multiply_row", res);
     }
     Py_RETURN_NONE;
 }
@@ -1323,7 +1329,7 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
     Py_DECREF(arr);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("eliminate_row", res);
+        return hybsol_raise(Py_TYPE(self), "eliminate_row", res);
     }
     Py_RETURN_NONE;
 }
@@ -1367,7 +1373,7 @@ static PyObject *block_system_object_workspace_bytes(PyObject *const self, PyTyp
     {
         return NULL;
     }
-    if (check_n_threads(n_threads) < 0)
+    if (hybsol_check_n_threads(n_threads) < 0)
     {
         return NULL;
     }
@@ -1380,12 +1386,9 @@ PyDoc_STRVAR(block_system_object_decompose_docstring,
              "decompose(n_threads: int = 0, workspace: numpy.typing.ArrayLike | None = None) -> Decomposition\n"
              "Factorize the system and return the result.\n"
              "\n"
-             "The system is left exactly as it was assembled, so it can be\n"
-             "decomposed again -- under a different block order, or with a\n"
-             "different thread count -- and the decompositions are\n"
-             "independent. The factorization itself runs in a destination\n"
-             "that owns a copy of every block it needs, including the\n"
-             "fill-in, laid out in one allocation.\n"
+             "The system is left exactly as it was assembled, so it can be decomposed\n"
+             "again -- under a different block order, or with a different thread count\n"
+             "-- and the decompositions are independent.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1401,7 +1404,18 @@ PyDoc_STRVAR(block_system_object_decompose_docstring,
              "Returns\n"
              "-------\n"
              "Decomposition\n"
-             "    The factorized system.\n");
+             "    The factorized system.\n"
+             "\n"
+             "Raises\n"
+             "------\n"
+             "ValueError\n"
+             "    The system does not satisfy the solver's structural\n"
+             "    assumptions; a diagonal block holds nothing but zeros,\n"
+             "    which no block order can rescue; ``n_threads`` is\n"
+             "    negative; or ``workspace`` is too small or read-only.\n"
+             "hybsol.SingularSystemError\n"
+             "    A diagonal block is singular, so the LU factorization hit\n"
+             "    a zero pivot. The message names the block.\n");
 
 static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObject *const defining_class,
                                                PyObject *const *const args, const Py_ssize_t nargs, PyObject *kwnames)
@@ -1425,7 +1439,7 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     {
         return NULL;
     }
-    if (check_n_threads(n_threads) < 0)
+    if (hybsol_check_n_threads(n_threads) < 0)
     {
         return NULL;
     }
@@ -1433,6 +1447,14 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     /* A supplied workspace must be big enough for this system and this thread
      * count; the buffer is opaque, so all that can be checked here is its size. */
     const size_t needed = hybsol_workspace_bytes(this->system, (uint64_t)n_threads);
+
+    // The core asserts validity rather than reporting it, and raising is the only way out.
+    if (require_valid_system(this->system, "decompose") < 0)
+    {
+        return NULL;
+    }
+
+    uint64_t failing_block = UINT64_MAX;
     PyArrayObject *workspace = NULL;
     if (py_workspace != Py_None)
     {
@@ -1447,7 +1469,7 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     hybsol_result_t res;
 
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_elimination_create(this->system, &graph);
+    res = hybsol_elimination_create(this->system, &graph, &failing_block);
     if (res == HYBSOL_SUCCESS)
     {
         res = hybsol_decomposition_create(this->system, graph, &dec);
@@ -1466,9 +1488,10 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     {
         hybsol_elimination_destroy(graph);
         hybsol_decomposition_destroy(dec);
-        return hybsol_raise_block("decompose", res,
-                                  dec != NULL ? hybsol_decomposition_failing_block(dec)
-                                              : hybsol_system_failing_block(this->system));
+        // A rejected order is named by the walk; a singular diagonal by the
+        // factorization, the only stage that gets far enough to see one.
+        return hybsol_raise_block(Py_TYPE(self), "decompose", res,
+                                  dec != NULL ? hybsol_decomposition_failing_block(dec) : failing_block);
     }
 
     PyObject *const out = decomposition_alloc(state->type_decomposition, dec);
@@ -1485,10 +1508,9 @@ PyDoc_STRVAR(block_system_object_elimination_docstring,
              "Walk the elimination graph without computing any values.\n"
              "\n"
              "Reports the pattern the fill-in will produce, the passes a\n"
-             "factorization runs in, what it will cost, and whether the\n"
-             "current block order admits a factorization at all. Cheap\n"
-             "enough to ask for while deciding on a block structure, and it\n"
-             "touches nothing, so the system may still be assembled.\n"
+             "factorization runs in and what it will cost. Cheap enough to ask for\n"
+             "while deciding on a block structure, and it touches nothing, so the\n"
+             "system may still be assembled.\n"
              "\n"
              "Returns\n"
              "-------\n"
@@ -1499,7 +1521,9 @@ PyDoc_STRVAR(block_system_object_elimination_docstring,
              "------\n"
              "ValueError\n"
              "    The system does not satisfy the solver's structural\n"
-             "    assumptions, or its block order admits no factorization.\n");
+             "    assumptions, or a diagonal block holds nothing but zeros,\n"
+             "    which no block order can rescue. The message names the\n"
+             "    offending block.\n");
 
 static PyObject *block_system_object_elimination(PyObject *const self, PyTypeObject *const defining_class,
                                                  PyObject *const *const Py_UNUSED(args), const Py_ssize_t nargs,
@@ -1516,18 +1540,21 @@ static PyObject *block_system_object_elimination(PyObject *const self, PyTypeObj
         return NULL;
     }
 
+    // The core asserts validity rather than reporting it, and raising is the only way out.
+    if (require_valid_system(this->system, "elimination") < 0)
+    {
+        return NULL;
+    }
+
     hybsol_elimination_t *graph = NULL;
+    uint64_t failing_block = UINT64_MAX;
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_elimination_create(this->system, &graph);
+    res = hybsol_elimination_create(this->system, &graph, &failing_block);
     Py_END_ALLOW_THREADS;
 
     if (res != HYBSOL_SUCCESS)
-    {
-        // The walk rejects an unusable order by naming the block it cannot get
-        // past; with no graph built, the system carries that index.
-        return hybsol_raise_block("elimination", res, hybsol_system_failing_block(this->system));
-    }
+        return hybsol_raise_block(Py_TYPE(self), "elimination", res, failing_block);
 
     PyObject *const out = elimination_alloc(state->type_elimination, graph);
     if (!out)
@@ -1564,7 +1591,7 @@ static PyObject *block_system_object_copy(PyObject *const self, PyTypeObject *co
 
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("copy", res);
+        return hybsol_raise(Py_TYPE(self), "copy", res);
     }
 
     block_system_object *const that =
@@ -1592,7 +1619,17 @@ PyDoc_STRVAR(block_system_object_reorder_blocks_docstring,
              "    Array of indices specifying where the old values should be moved to.\n"
              "n_threads : int, default: 0\n"
              "    Number of OpenMP threads to use for reordering. ``0`` selects the\n"
-             "    OpenMP default and ``1`` reorders serially.\n");
+             "    OpenMP default and ``1`` reorders serially.\n"
+             "\n"
+             "Raises\n"
+             "------\n"
+             "ValueError\n"
+             "    ``new_order`` is not a permutation of ``[0, n_blocks)``;\n"
+             "    ``n_threads`` is negative; the system does not satisfy the\n"
+             "    solver's structural assumptions; or a diagonal block holds\n"
+             "    nothing but zeros, which no block order can rescue.\n"
+             "RuntimeError\n"
+             "    An array returned by :meth:`block_storage` is still alive.\n");
 
 static PyObject *block_system_object_reorder_blocks(PyObject *const self, PyTypeObject *const defining_class,
                                                     PyObject *const *const args, const Py_ssize_t nargs,
@@ -1621,7 +1658,7 @@ static PyObject *block_system_object_reorder_blocks(PyObject *const self, PyType
     {
         return NULL;
     }
-    if (check_n_threads(n_threads) < 0)
+    if (hybsol_check_n_threads(n_threads) < 0)
     {
         return NULL;
     }
@@ -1632,16 +1669,23 @@ static PyObject *block_system_object_reorder_blocks(PyObject *const self, PyType
         return NULL;
     }
 
+    // The core asserts validity rather than reporting it, and raising is the only way out.
+    if (require_valid_system(this->system, "reorder_blocks") < 0)
+    {
+        Py_DECREF(arr);
+        return NULL;
+    }
+
+    uint64_t failing_block = UINT64_MAX;
     hybsol_result_t res;
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_system_reorder_blocks(this->system, (const uint64_t *)PyArray_DATA(arr), (uint64_t)n_threads);
+    res = hybsol_system_reorder_blocks(this->system, (const uint64_t *)PyArray_DATA(arr), (uint64_t)n_threads,
+                                       &failing_block);
     Py_END_ALLOW_THREADS;
 
     Py_DECREF(arr);
     if (res != HYBSOL_SUCCESS)
-    {
-        return hybsol_raise_block("reorder_blocks", res, hybsol_system_failing_block(this->system));
-    }
+        return hybsol_raise_block(Py_TYPE(self), "reorder_blocks", res, failing_block);
     Py_RETURN_NONE;
 }
 
@@ -1685,10 +1729,11 @@ PyDoc_STRVAR(block_system_object_compute_reordering_docstring,
              "Find a *coloring* of the blocks, grouping them so that no two in a group\n"
              "share a non-zero off-diagonal block.\n"
              "\n"
-             "This is **not** a factorization ordering: passing it to\n"
-             ":meth:`reorder_blocks` is not valid input for :meth:`decompose`. Choose\n"
-             "the permutation yourself, with every block ahead of the blocks it couples\n"
-             "to.\n"
+             "This is **not** a factorization ordering. A coloring makes no promise\n"
+             "about which blocks come first, so :meth:`decompose` may fill in far\n"
+             "more than it would have to. Choose the permutation yourself, with every\n"
+             "block ahead of the blocks it couples to, and pass *that* to\n"
+             ":meth:`reorder_blocks`.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -1762,7 +1807,7 @@ static PyObject *block_system_object_compute_reordering(PyObject *const self, Py
         }
         else
         {
-            hybsol_raise("compute_reordering", res);
+            hybsol_raise(Py_TYPE(self), "compute_reordering", res);
         }
         Py_DECREF(arr);
         return NULL;
@@ -1770,11 +1815,7 @@ static PyObject *block_system_object_compute_reordering(PyObject *const self, Py
     return (PyObject *)arr;
 }
 
-/**
- * Shared argument handling of :meth:`reorder_vector` and :meth:`unorder_vector`.
- *
- * :returns: ``0`` with references handed to the caller, or ``-1``.
- */
+/** Shared argument handling of :meth:`reorder_vector` and :meth:`unorder_vector`. */
 static int prepare_for_reordering(PyObject *const self, PyTypeObject *const defining_class, PyObject *const *const args,
                                   const Py_ssize_t nargs, const PyObject *kwnames,
                                   const block_system_object **const p_this, PyArrayObject **const p_arr_vector,
@@ -1849,12 +1890,16 @@ PyDoc_STRVAR(block_system_object_reorder_vector_docstring,
              "numpy.typing.NDArray[numpy.double] | None = None) -> numpy.typing.NDArray[numpy.double]\n"
              "Reorder the vector based on new block ordering.\n"
              "\n"
+             "The block that was at slot ``i`` is moved to slot ``new_order[i]``, so\n"
+             "the result is the vector of the system as :meth:`reorder_blocks` left\n"
+             "it. The method is meant to be called on the reordered system.\n"
+             "\n"
              "Parameters\n"
              "----------\n"
              "new_order : array_like\n"
              "    New order of blocks, as returned by :meth:`BlockSystem.compute_reordering`.\n"
              "vector : array_like\n"
-             "    Vector that should be re-ordered.\n"
+             "    Vector in the *old* ordering.\n"
              "out : array, optional\n"
              "    Output array to receive the reordered vector contents. Must not be the same\n"
              "    array as ``vector``.\n"
@@ -1889,12 +1934,17 @@ PyDoc_STRVAR(block_system_object_unorder_vector_docstring,
              "numpy.typing.NDArray[numpy.double] | None = None) -> numpy.typing.NDArray[numpy.double]\n"
              "Undo reordering of the vector based on new block ordering.\n"
              "\n"
+             "The block that sits at slot ``new_order[i]`` is moved back to slot ``i``,\n"
+             "restoring the vector of the system as it was before\n"
+             ":meth:`reorder_blocks`. The method is meant to be called on the\n"
+             "reordered system.\n"
+             "\n"
              "Parameters\n"
              "----------\n"
              "new_order : array_like\n"
              "    New order of blocks, as returned by :meth:`BlockSystem.compute_reordering`.\n"
              "vector : array_like\n"
-             "    Vector for which the re-ordering should be redone.\n"
+             "    Vector in the *new* ordering.\n"
              "out : array, optional\n"
              "    Output array to receive the resulting vector contents. Must not be the same\n"
              "    array as ``vector``.\n"
@@ -1929,7 +1979,7 @@ static PyObject *block_system_object_unorder_vector(PyObject *const self, PyType
 /* ------------------------------------------------------------------------- */
 
 PyDoc_STRVAR(block_system_from_blocks_docstring,
-             "from_blocks(block_sizes, rows, cols, data) -> BlockSystem\n"
+             "from_blocks(block_sizes, rows, cols, data, precision=Precision.DOUBLE) -> BlockSystem\n"
              "classmethod\n"
              "Build a whole system from a flat COO description in one pass.\n"
              "\n"
@@ -1947,6 +1997,9 @@ PyDoc_STRVAR(block_system_from_blocks_docstring,
              "\n"
              "    A block and its transpose share a row-major ravel *only* when one of\n"
              "    them has a single column.\n"
+             "precision : hybsol.Precision, default: Precision.DOUBLE\n"
+             "    Type the blocks are stored in. Values are converted on the way in,\n"
+             "    so ``data`` may hold any floating-point type.\n"
              "\n"
              "Returns\n"
              "-------\n"
@@ -2012,7 +2065,7 @@ static PyObject *block_system_from_blocks(PyObject *const cls, PyObject *const *
 }
 
 PyDoc_STRVAR(block_system_from_block_list_docstring,
-             "from_block_list(blocks, block_sizes=None) -> BlockSystem\n"
+             "from_block_list(blocks, block_sizes=None, precision=Precision.DOUBLE) -> BlockSystem\n"
              "classmethod\n"
              "Build a system from a list of ``(row, col, array)`` triples.\n"
              "\n"
@@ -2025,6 +2078,10 @@ PyDoc_STRVAR(block_system_from_block_list_docstring,
              "    Size of every block on the diagonal. When omitted, the sizes are\n"
              "    inferred from the shapes of the given blocks; that is only possible\n"
              "    if every block index appears in at least one triple.\n"
+             "precision : hybsol.Precision, default: Precision.DOUBLE\n"
+             "    Type the blocks are stored in. Unlike :meth:`add_block`, the values\n"
+             "    are *not* converted: each ``value`` must already have this type, and a\n"
+             "    ``float64`` array is refused for a single-precision system.\n"
              "\n"
              "Returns\n"
              "-------\n"
@@ -2216,7 +2273,7 @@ static PyObject *block_system_from_block_list(PyObject *const cls, PyObject *con
         PyMem_Free(data);
         if (res != HYBSOL_SUCCESS)
         {
-            hybsol_raise("from_block_list", res);
+            hybsol_raise(type, "from_block_list", res);
             Py_DECREF(result);
             result = NULL;
             goto cleanup;
@@ -2288,11 +2345,10 @@ PyDoc_STRVAR(block_system_object_matvec_docstring,
              "n_threads: int = 0) -> numpy.typing.NDArray[numpy.double]\n"
              "Apply the system to a vector, ``y = A x``.\n"
              "\n"
-             "This is the operator the elimination solves against, and the one\n"
-             "worth having fast: it walks the stored blocks rather than a dense\n"
-             "form, so a sparse system costs the sum of its blocks rather than\n"
-             "the square of its dimension. It is what :func:`hybsol.refined_solve`\n"
-             "measures its residual with.\n"
+             "This is the operator the elimination solves against, and the one worth\n"
+             "having fast: it walks the stored blocks rather than a dense form, so a\n"
+             "sparse system costs the sum of its blocks rather than the square of its\n"
+             "dimension.\n"
              "\n"
              "``out`` is written, not accumulated into. The work is split across\n"
              "block rows, each of which writes only its own slice, so the system\n"
@@ -2338,7 +2394,7 @@ static PyObject *block_system_object_matvec(PyObject *const self, PyTypeObject *
     {
         return NULL;
     }
-    if (check_n_threads(n_threads) < 0)
+    if (hybsol_check_n_threads(n_threads) < 0)
     {
         return NULL;
     }
@@ -2375,13 +2431,13 @@ static PyObject *block_system_object_matvec(PyObject *const self, PyTypeObject *
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(out);
-        return hybsol_raise("matvec", res);
+        return hybsol_raise(Py_TYPE(self), "matvec", res);
     }
     return (PyObject *)out;
 }
 
 PyDoc_STRVAR(block_system_object_matmat_docstring,
-             "matmat(x: numpy.typing.NDArray, out: numpy.typing.NDArray[numpy.double] | None = None, "
+             "matmat(x: numpy.typing.ArrayLike, out: numpy.typing.NDArray[numpy.double] | None = None, "
              "n_threads: int = 0) -> numpy.typing.NDArray[numpy.double]\n"
              "Apply the system to several right-hand sides, ``y = A x``.\n"
              "\n"
@@ -2429,7 +2485,7 @@ static PyObject *block_system_object_matmat(PyObject *const self, PyTypeObject *
     {
         return NULL;
     }
-    if (check_n_threads(n_threads) < 0)
+    if (hybsol_check_n_threads(n_threads) < 0)
     {
         return NULL;
     }
@@ -2468,7 +2524,7 @@ static PyObject *block_system_object_matmat(PyObject *const self, PyTypeObject *
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(out);
-        return hybsol_raise("matmat", res);
+        return hybsol_raise(Py_TYPE(self), "matmat", res);
     }
     return (PyObject *)out;
 }

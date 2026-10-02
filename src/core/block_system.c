@@ -111,9 +111,8 @@ hybsol_result_t hybsol_row_reserve(hybsol_system_t *const sys, hybsol_row_t *con
 
 /**
  * Insert ``entry`` into ``row`` at the slot ``idx`` it was found to belong in.
- *
- * Only the pointer array moves; entries never relocate, which is what lets a
- * caller hold a pointer into one block while more are added to the same row.
+ * Only the pointer array moves; entries never relocate, so a caller can hold a
+ * pointer into one block while more are added to the same row.
  */
 static void row_place_entry(hybsol_row_t *const row, const uint64_t idx, hybsol_row_entry_t *const entry)
 {
@@ -134,12 +133,7 @@ static void row_place_entry(hybsol_row_t *const row, const uint64_t idx, hybsol_
 static hybsol_result_t row_find_or_create(const cutl_allocator_t *alloc, hybsol_system_t *sys, hybsol_row_t *row,
                                           uint64_t col, uint64_t n_values, size_t elem_size, hybsol_row_entry_t **out);
 
-/**
- * Allocate an entry for ``n_values`` elements of ``elem_size`` bytes and stamp
- * it with its column, which the row's binary search reads immediately.
- *
- * :returns: The entry, or ``NULL`` when out of memory.
- */
+/** Allocate an entry for ``n_values`` elements of ``elem_size`` bytes, stamped with its column. */
 static hybsol_row_entry_t *row_new_entry(const cutl_allocator_t *const alloc, const uint64_t col,
                                          const uint64_t n_values, const size_t elem_size)
 {
@@ -151,10 +145,9 @@ static hybsol_row_entry_t *row_new_entry(const cutl_allocator_t *const alloc, co
 }
 
 /**
- * Find the entry for ``col``, creating it zero-filled when it is absent.
- *
- * An entry already present is handed back untouched: this never clears and
- * never accumulates, so re-fetching a buffer keeps what was written into it.
+ * Find the entry for ``col``, creating it zero-filled when absent. An entry
+ * already present is handed back untouched -- this never clears or accumulates,
+ * so re-fetching a buffer keeps what was written into it.
  */
 static hybsol_result_t row_find_or_create(const cutl_allocator_t *const alloc, hybsol_system_t *const sys,
                                           hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
@@ -186,10 +179,9 @@ static hybsol_result_t row_find_or_create(const cutl_allocator_t *const alloc, h
 /* ------------------------------------------------------------------------- */
 
 /*
- * Everything that touches block values is written once in
- * ``block_numeric.inc`` and instantiated here. Both instantiations are
- * private: callers go through the spellings below, which own the precision
- * check.
+ * Everything that touches block values is written once in ``block_numeric.inc``
+ * and instantiated here. Both instantiations are private: callers go through
+ * the spellings below, which own the precision check.
  */
 #define HYBSOL_SCALAR double
 #define HYBSOL_ACC double
@@ -209,11 +201,16 @@ static hybsol_result_t row_find_or_create(const cutl_allocator_t *const alloc, h
 /* Lifetime                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * Release a row's entries. A copied system's payloads sit in one arena owned by
+ * the frame and are not freed individually; anything outside it is the row's.
+ */
 static void free_row(const hybsol_system_t *const sys, hybsol_row_t *const row)
 {
     for (uint64_t i = 0; i < row->count; ++i)
     {
-        hybsol_free(sys->allocator, row->entries[i]);
+        if (hybsol_entry_is_owned(sys, row->entries[i]))
+            hybsol_free(sys->allocator, row->entries[i]);
         row->entries[i] = NULL;
     }
     hybsol_free(sys->allocator, row->entries);
@@ -225,12 +222,10 @@ static void free_row(const hybsol_system_t *const sys, hybsol_row_t *const row)
 /**
  * Lay the system and its three fixed arrays out in one block.
  *
- * Everything here is a function of ``n_blocks`` alone, so the whole frame is
- * known before a single block is stored. Carving it once means a system costs
+ * Everything here is a function of ``n_blocks`` alone, so a system costs
  * exactly one allocation to create and one to release, whatever else it grows.
- *
- * ``sys`` is the block itself: the arrays follow it at their natural
- * alignments, and are interior pointers that are never freed individually.
+ * ``sys`` is the block itself; the arrays follow it at their natural
+ * alignments and are interior pointers that are never freed individually.
  */
 static hybsol_result_t system_frame_alloc(hybsol_system_t **const out, const uint64_t n_blocks,
                                           const cutl_allocator_t *const allocator)
@@ -249,7 +244,6 @@ static hybsol_result_t system_frame_alloc(hybsol_system_t **const out, const uin
     sys->n = n_blocks;
     sys->block_offsets = (uint64_t *)(base + off_offsets);
     sys->rows = (hybsol_row_t *)(base + off_rows);
-    sys->failing_block = UINT64_MAX;
 
     *out = sys;
     return HYBSOL_SUCCESS;
@@ -325,22 +319,40 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
     hybsol_system_t *dst = NULL;
     const hybsol_result_t framed = system_frame_alloc(&dst, sys->n, sys->allocator);
     if (framed != HYBSOL_SUCCESS)
-    {
-        *out = NULL;
         return framed;
-    }
     dst->precision = sys->precision;
-    dst->failing_block = sys->failing_block;
-
     memcpy(dst->block_offsets, sys->block_offsets, sizeof(*dst->block_offsets) * (size_t)(sys->n + 1));
+
+    // Every payload has its source's shape, so the copy's size is known before anything is stored:
+    // carve them out of one block behind the frame rather than one allocation per block.
+    const size_t elem_size = hybsol_scalar_size(sys->precision);
+    size_t values_bytes = 0;
     for (uint64_t i = 0; i < sys->n; ++i)
-        dst->rows[i] = (hybsol_row_t){0};
+    {
+        for (uint64_t j = 0; j < sys->rows[i].count; ++j)
+        {
+            const hybsol_row_entry_t *const entry = sys->rows[i].entries[j];
+            const size_t n_values = (size_t)hybsol_block_size(sys, i) * (size_t)hybsol_block_size(sys, entry->col);
+            values_bytes += hybsol_align_up(sizeof(*entry) + n_values * elem_size);
+        }
+    }
+
+    unsigned char *const values = hybsol_alloc(sys->allocator, values_bytes);
+    if (values == NULL)
+    {
+        hybsol_system_destroy(dst);
+        return HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+    dst->values = values;
+    dst->values_bytes = values_bytes;
+    size_t at = 0;
 
     for (uint64_t i = 0; i < sys->n; ++i)
     {
         const hybsol_row_t *const src = sys->rows + i;
         hybsol_row_t *const tgt = dst->rows + i;
-
+        tgt->count = src->count;
+        tgt->capacity = src->count;
         if (src->count == 0)
             continue;
 
@@ -350,28 +362,20 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
             hybsol_system_destroy(dst);
             return HYBSOL_ERROR_OUT_OF_MEMORY;
         }
-        tgt->capacity = src->count;
-        for (uint64_t j = 0; j < src->count; ++j)
-            tgt->entries[j] = NULL;
 
-        const size_t elem_size = hybsol_scalar_size(sys->precision);
         for (uint64_t j = 0; j < src->count; ++j)
         {
             const hybsol_row_entry_t *const entry = src->entries[j];
-            const uint64_t n_values = hybsol_block_size(sys, i) * hybsol_block_size(sys, entry->col);
+            const size_t n_values = (size_t)hybsol_block_size(sys, i) * (size_t)hybsol_block_size(sys, entry->col);
 
-            hybsol_row_entry_t *const copy = hybsol_alloc(sys->allocator, sizeof(*copy) + (size_t)n_values * elem_size);
-            if (copy == NULL)
-            {
-                hybsol_system_destroy(dst);
-                return HYBSOL_ERROR_OUT_OF_MEMORY;
-            }
+            hybsol_row_entry_t *const copy = (hybsol_row_entry_t *)(values + at);
+            at += hybsol_align_up(sizeof(*copy) + n_values * elem_size);
             copy->col = entry->col;
-            memcpy(copy->vals, entry->vals, (size_t)n_values * elem_size);
+            memcpy(copy->vals, entry->vals, n_values * elem_size);
             tgt->entries[j] = copy;
-            tgt->count += 1;
         }
     }
+    CUTL_ASSERT(at == values_bytes, "Carved %zu bytes of payload but sized %zu.", at, values_bytes);
 
     *out = dst;
     return HYBSOL_SUCCESS;
@@ -393,8 +397,7 @@ uint64_t hybsol_system_total_size(const hybsol_system_t *const sys)
 
 uint64_t hybsol_system_block_size(const hybsol_system_t *const sys, const uint64_t idx)
 {
-    if (idx >= sys->n)
-        return 0;
+    hybsol_require_index(sys, idx);
     return hybsol_block_size(sys, idx);
 }
 
@@ -441,15 +444,9 @@ int hybsol_system_is_valid(const hybsol_system_t *const sys)
     return 1;
 }
 
-uint64_t hybsol_system_failing_block(const hybsol_system_t *const sys)
-{
-    return sys->failing_block;
-}
-
 uint64_t hybsol_system_row_count(const hybsol_system_t *const sys, const uint64_t row)
 {
-    if (row >= sys->n)
-        return 0;
+    hybsol_require_index(sys, row);
     return sys->rows[row].count;
 }
 

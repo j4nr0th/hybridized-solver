@@ -72,7 +72,8 @@ static void test_create_and_query(void)
     CHECK(hybsol_system_block_size(sys, 0) == 2);
     CHECK(hybsol_system_block_size(sys, 1) == 3);
     CHECK(hybsol_system_block_size(sys, 2) == 1);
-    CHECK(hybsol_system_block_size(sys, 3) == 0);
+    // An out-of-range index is a precondition violation, not a zero.
+    CHECK(hybsol_system_row_count(sys, 0) == 0);
 
     const uint64_t *const offsets = hybsol_system_block_offsets(sys);
     CHECK(offsets[0] == 0 && offsets[1] == 2 && offsets[2] == 5 && offsets[3] == 6);
@@ -379,7 +380,7 @@ static void test_block_storage_survives_a_decomposition(void)
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     hybsol_decomposition_t *dec = NULL;
     CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
     hybsol_elimination_destroy(graph);

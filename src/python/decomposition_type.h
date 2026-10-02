@@ -17,13 +17,6 @@ typedef struct
 MODULE_INTERNAL
 extern PyType_Spec decomposition_type_spec;
 
-/**
- * Allocate a Python :class:`hybsol.Decomposition` owning ``decomposition``.
- *
- * :param type: The heap type to instantiate.
- * :param decomposition: The decomposition to take over; the caller keeps its
- *     own pointer valid and must not destroy it.
- * :returns: A new reference, or ``NULL`` with an exception set.
- */
+/** Allocate a :class:`hybsol.Decomposition` taking over ``decomposition``. */
 MODULE_INTERNAL
 PyObject *decomposition_alloc(PyTypeObject *type, hybsol_decomposition_t *decomposition);

@@ -11,54 +11,46 @@
 
 #include "block_system_type.h"
 
-// Set during module exec; `hybsol_exception_type` only gets a result code.
-static PyObject *hybsol_singular_error = NULL;
-
-PyObject *hybsol_exception_type(const hybsol_result_t res)
+PyObject *hybsol_exception_type(PyTypeObject *const type, const hybsol_result_t res)
 {
     switch (res)
     {
-    case HYBSOL_SUCCESS:
-    case HYBSOL_ERROR_INTERNAL:
-        return PyExc_RuntimeError;
-
     case HYBSOL_ERROR_OUT_OF_MEMORY:
         return PyExc_MemoryError;
 
-    case HYBSOL_ERROR_NOT_DECOMPOSED:
-    case HYBSOL_ERROR_ALREADY_DECOMPOSED:
-        return PyExc_RuntimeError;
+    // Distinguishing a singular system lets a caller retry at a different block
+    // granularity without swallowing every other ValueError. The exception is
+    // per module instance, so it is looked up through this interpreter's own
+    // state rather than a static that every interpreter would share.
+    case HYBSOL_ERROR_SINGULAR: {
+        const module_state_t *const state = module_state_from_type(type);
+        if (state == NULL || state->exc_singular == NULL)
+            return PyExc_ValueError;
+        return state->exc_singular;
+    }
 
-    // A singular system is worth distinguishing: a caller that wants to fall
-    // back to a different block granularity can catch it without also swallowing
-    // every other ValueError.
-    case HYBSOL_ERROR_SINGULAR:
-        return hybsol_singular_error != NULL ? hybsol_singular_error : PyExc_ValueError;
-
-    // Everything else is a condition detected in the data rather than a
-    // caller mistake (an empty row, too many colors), so it is a ValueError
-    // rather than some more exotic type.
+    // Everything else is a condition detected in the data, not a caller mistake.
     default:
         return PyExc_ValueError;
     }
 }
 
-PyObject *hybsol_raise(const char *const what, const hybsol_result_t res)
+PyObject *hybsol_raise(PyTypeObject *const type, const char *const what, const hybsol_result_t res)
 {
-    PyErr_Format(hybsol_exception_type(res), "%s: %s", what, hybsol_result_str(res));
+    PyErr_Format(hybsol_exception_type(type, res), "%s: %s", what, hybsol_result_str(res));
     return NULL;
 }
 
-PyObject *hybsol_raise_block(const char *const what, const hybsol_result_t res, const uint64_t failing_block)
+PyObject *hybsol_raise_block(PyTypeObject *const type, const char *const what, const hybsol_result_t res,
+                             const uint64_t failing_block)
 {
-    const uint64_t block = failing_block;
-    if (block != UINT64_MAX)
+    if (failing_block != UINT64_MAX)
     {
-        PyErr_Format(hybsol_exception_type(res), "%s: %s (block %llu)", what, hybsol_result_str(res),
-                     (unsigned long long)block);
+        PyErr_Format(hybsol_exception_type(type, res), "%s: %s (block %llu)", what, hybsol_result_str(res),
+                     (unsigned long long)failing_block);
         return NULL;
     }
-    return hybsol_raise(what, res);
+    return hybsol_raise(type, what, res);
 }
 
 PyObject *hybsol_precision_member(const hybsol_precision_t precision)
@@ -98,9 +90,15 @@ int hybsol_check_n_threads(const Py_ssize_t n_threads)
     return 0;
 }
 
+/*
+ * Teardown. ``exc_singular`` is *borrowed* by the state: PyModule_AddObject
+ * stole the reference the exception was created with, so the module dict owns
+ * it and releases it. Dropping one here would free the type while the dict
+ * still points at it, which is a use-after-free at shutdown rather than
+ * anything visible during a run. Clearing the borrow is all that is left.
+ */
 static void free_module_state(void *const module)
 {
-    Py_CLEAR(hybsol_singular_error);
     module_state_t *const module_state = (module_state_t *)PyModule_GetState(module);
     *module_state = (module_state_t){};
 }
@@ -149,7 +147,6 @@ static int module_exec(PyObject *const mod)
         module_state->exc_singular = NULL;
         return -1;
     }
-    hybsol_singular_error = module_state->exc_singular;
 
     return 0;
 }

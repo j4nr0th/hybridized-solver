@@ -11,22 +11,31 @@ from hybsol import Precision as Precision
 OrderingStrategy = Literal["first", "greedy", "balanced"]
 
 class SingularSystemError(ValueError):
-    """A block could not be factorized, or a solve failed its residual check.
+    """A diagonal block could not be factorized.
 
-    Raised where the failure is a property of the system rather than of the
-    call: no pivot could be repaired, the recorded block order admits no
-    factorization, or a verified solve left a relative residual above its
-    tolerance. Subclasses :class:`ValueError`, so existing handlers still
-    catch it.
+    Raised when the LU factorization of a diagonal block hits a zero pivot
+    and nothing repairs it. The failure is a property of the system rather
+    than of the call, so the caller can retry at a different block
+    granularity. The message names the block. Subclasses :class:`ValueError`,
+    so existing handlers still catch it.
+
+    Note that a *structurally* zero diagonal block -- one that holds only
+    zeros -- is not reported this way: no block order can rescue it, so
+    :meth:`BlockSystem.decompose` and :meth:`BlockSystem.elimination` raise
+    :class:`ValueError` for it instead.
     """
 
 class BlockSystem:
     """Block system for hybridized solver.
 
     The system is an ``n x n`` arrangement of blocks, where block ``(i, j)`` has
-    shape ``(block_sizes[i], block_sizes[j])``. Only a subset of the blocks needs
-    to be present; :meth:`is_valid` reports whether the structure is one the
-    solver can decompose.
+    shape ``(block_sizes[i], block_sizes[j])``. Not every block needs to be
+    stored: the fill-in supplies the rest. Every diagonal block and every mirror
+    of a block below the diagonal *must* be stored; :meth:`is_valid` reports
+    whether the structure is decomposable.
+
+    ``precision`` fixes the type blocks are stored in and computed in for the
+    life of the system.
     """
 
     def __new__(
@@ -57,6 +66,9 @@ class BlockSystem:
 
             A block and its transpose share a row-major ravel *only* when one of
             them has a single column.
+        precision : hybsol.Precision, default: Precision.DOUBLE
+            Type the blocks are stored in. Values are converted on the way in,
+            so ``data`` may hold any floating-point type.
 
         Returns
         -------
@@ -83,6 +95,10 @@ class BlockSystem:
             Size of every block on the diagonal. When omitted, the sizes are
             inferred from the shapes of the given blocks; that is only possible
             if every block index appears in at least one triple.
+        precision : hybsol.Precision, default: Precision.DOUBLE
+            Type the blocks are stored in. Unlike :meth:`add_block`, the values
+            are *not* converted: each ``value`` must already have this type,
+            and a ``float64`` array is refused for a single-precision system.
 
         Returns
         -------
@@ -151,8 +167,13 @@ class BlockSystem:
         """Check if the system has symmetric sparsity and has diagonal blocks."""
         ...
 
-    def as_array(self) -> npt.NDArray[np.double]:
-        """Return the system representation as a full matrix."""
+    def as_array(self) -> npt.NDArray[np.double] | npt.NDArray[np.float32]:
+        """Return the system representation as a full matrix.
+
+        Blocks the system does not store come out zero, and the result has the
+        system's own :attr:`precision` -- ``float32`` for a single-precision
+        system, ``float64`` otherwise.
+        """
         ...
 
     def get_row_block_indices(self, row: int) -> tuple[int, ...]:
@@ -170,8 +191,13 @@ class BlockSystem:
         """
         ...
 
-    def get_block(self, row: int, col: int) -> npt.NDArray[np.double]:
+    def get_block(
+        self, row: int, col: int
+    ) -> npt.NDArray[np.double] | npt.NDArray[np.float32]:
         """Get a copy of the value of the specified block.
+
+        The copy has the system's own :attr:`precision`, so it is ``float32``
+        for a single-precision system and ``float64`` otherwise.
 
         Parameters
         ----------
@@ -184,10 +210,18 @@ class BlockSystem:
         -------
         array
             New array with the same value as the block.
+
+        Raises
+        ------
+        ValueError
+            An index is outside ``[0, n_blocks)``, or the system does not
+            store that block.
         """
         ...
 
-    def block_storage(self, row: int, col: int) -> npt.NDArray[np.double]:
+    def block_storage(
+        self, row: int, col: int
+    ) -> npt.NDArray[np.double] | npt.NDArray[np.float32]:
         """Get writable storage for a block, creating it on first use.
 
         The shape of the block is implied by the system, so this hands back
@@ -196,11 +230,15 @@ class BlockSystem:
         block to the sparsity pattern and zeroes it; later calls return the
         same storage unchanged, so nothing written so far is lost.
 
+        The buffer has the system's own :attr:`precision`, so it is ``float32``
+        for a single-precision system and ``float64`` otherwise.
+
         The returned array is a view backed by the system, which it keeps
         alive. Operations that only rewrite values in place are visible
-        through it, as with any view, but :meth:`eliminate_row`,
-        :meth:`reorder_blocks` and :meth:`decompose` refuse to run while any
-        such array is alive.
+        through it, as with any view, but :meth:`eliminate_row` and
+        :meth:`reorder_blocks` refuse to run while any such array is alive.
+        :meth:`decompose` does not: the decomposition copies what it needs and
+        leaves the system, and its storage, alone.
 
         Parameters
         ----------
@@ -220,8 +258,8 @@ class BlockSystem:
         ValueError
             An index is outside ``[0, n_blocks)``.
         RuntimeError
-            A previously returned view is still alive in front of a method
-            that would move it.
+            A previously returned view is still alive in front of
+            :meth:`eliminate_row` or :meth:`reorder_blocks`.
         """
         ...
 
@@ -420,6 +458,17 @@ class BlockSystem:
         -------
         Decomposition
             The factorized system.
+
+        Raises
+        ------
+        ValueError
+            The system does not satisfy the solver's structural assumptions;
+            a diagonal block holds nothing but zeros, which no block order
+            can rescue; ``n_threads`` is negative; or ``workspace`` is too
+            small or read-only.
+        hybsol.SingularSystemError
+            A diagonal block is singular, so the LU factorization hit a zero
+            pivot. The message names the block.
         """
         ...
 
@@ -442,8 +491,7 @@ class BlockSystem:
         """Walk the elimination graph without computing any values.
 
         Reports the pattern the fill-in will produce, the passes a
-        factorization runs in, what it will cost, and whether the current
-        block order admits a factorization at all. Cheap enough to ask for
+        factorization runs in and what it will cost. Cheap enough to ask for
         while deciding on a block structure, and it touches nothing, so the
         system may still be assembled.
 
@@ -456,7 +504,8 @@ class BlockSystem:
         ------
         ValueError
             The system does not satisfy the solver's structural assumptions,
-            or its block order admits no factorization.
+            or a diagonal block holds nothing but zeros, which no block order
+            can rescue. The message names the offending block.
         """
         ...
 
@@ -474,6 +523,16 @@ class BlockSystem:
         n_threads : int, default: 0
             Number of OpenMP threads to use for reordering. ``0`` selects the
             OpenMP default and ``1`` reorders serially.
+
+        Raises
+        ------
+        ValueError
+            ``new_order`` is not a permutation of ``[0, n_blocks)``;
+            ``n_threads`` is negative; the system does not satisfy the
+            solver's structural assumptions; or a diagonal block holds
+            nothing but zeros, which no block order can rescue.
+        RuntimeError
+            An array returned by :meth:`block_storage` is still alive.
         """
         ...
 
@@ -487,10 +546,11 @@ class BlockSystem:
         Grouped so that no two blocks in a group share a non-zero off-diagonal
         block.
 
-        This is **not** a factorization ordering: passing it to
-        :meth:`reorder_blocks` is not valid input for :meth:`decompose`. Choose
-        the permutation yourself, with every block ahead of the blocks it couples
-        to.
+        This is **not** a factorization ordering. A coloring makes no promise
+        about which blocks come first, so :meth:`decompose` may fill in far
+        more than it would have to. Choose the permutation yourself, with every
+        block ahead of the blocks it couples to, and pass *that* to
+        :meth:`reorder_blocks`.
 
         Parameters
         ----------
@@ -596,16 +656,6 @@ class Decomposition:
         """Number of operations the factorization records."""
         ...
 
-    @property
-    def is_factorized(self) -> bool:
-        """Whether the factorization has run."""
-        ...
-
-    @property
-    def failing_block(self) -> int | None:
-        """Block whose diagonal could not be factorized, if any."""
-        ...
-
     def solve(
         self,
         val: npt.ArrayLike,
@@ -635,6 +685,13 @@ class Decomposition:
         -------
         array
             Solution of the linear system.
+
+        Raises
+        ------
+        ValueError
+            ``val`` does not hold exactly ``total_size`` values;
+            ``n_threads`` is negative; or ``out`` is not a writable
+            ``float64`` array of that length.
         """
         ...
 
@@ -645,9 +702,9 @@ class Decomposition:
         diagonal block; a two-element tuple ``(idx_row, idx_col)`` eliminates
         block ``(idx_row, idx_col)`` using block row ``idx_col``.
 
-        The list is read off the elimination graph rather than stored, so it
-        costs nothing until it is asked for and materializing it in Python is
-        ``O(ops)`` in objects.
+        The list is rebuilt from the decomposition's own copy of the schedule
+        rather than stored, so it costs nothing until it is asked for and
+        materializing it in Python is ``O(ops)`` in objects.
         """
         ...
 
@@ -656,6 +713,9 @@ class Elimination:
 
     Produced by :meth:`BlockSystem.elimination`. It computes no values, so
     it can be asked for before a factorization is committed.
+
+    A successful walk does not promise the factorization will succeed:
+    :meth:`BlockSystem.decompose` can still hit a singular diagonal block.
     """
 
     @property
@@ -680,13 +740,16 @@ class Elimination:
 
     @property
     def value_bytes(self) -> int:
-        """Bytes of block storage a decomposition needs."""
+        """Bytes of block storage a decomposition needs, fill-in included."""
         ...
 
     @property
     def total_bytes(self) -> int:
-        """Bytes this graph itself occupies."""
-        ...
+        """Bytes this graph itself occupies.
+
+        The block storage it describes is counted separately in
+        ``value_bytes``, so this may be the smaller of the two.
+        """
 
     @property
     def precision(self) -> Precision:
@@ -695,7 +758,12 @@ class Elimination:
 
     @property
     def failing_block(self) -> int | None:
-        """Block whose diagonal is identically zero, if any."""
+        """Block whose diagonal is identically zero, if any.
+
+        Always ``None`` in practice: :meth:`BlockSystem.elimination` raises
+        :class:`ValueError` -- naming the block -- instead of returning a
+        graph for a system that has one.
+        """
         ...
 
     def row_columns(self, row: int) -> tuple[int, ...]:
@@ -707,7 +775,12 @@ class Elimination:
         Parameters
         ----------
         row : int
-            Block row index.
+            Block row index, in ``[0, n_blocks)``.
+
+        Raises
+        ------
+        ValueError
+            ``row`` is outside ``[0, n_blocks)``.
         """
         ...
 
@@ -723,21 +796,50 @@ class Elimination:
         ----------
         level : int
             Pass index, in ``[0, n_levels)``.
+
+        Raises
+        ------
+        ValueError
+            ``level`` is outside ``[0, n_levels)``.
         """
         ...
 
     def row_length(self, row: int) -> int:
-        """Blocks ``row`` holds once the fill-in is complete."""
+        """Blocks ``row`` holds once the fill-in is complete.
+
+        Raises
+        ------
+        ValueError
+            ``row`` is outside ``[0, n_blocks)``.
+        """
         ...
 
     def row_n_eliminations(self, row: int) -> int:
-        """How many eliminations ``row`` performs."""
+        """How many eliminations ``row`` performs.
+
+        Raises
+        ------
+        ValueError
+            ``row`` is outside ``[0, n_blocks)``.
+        """
         ...
 
     def row_first_level(self, row: int) -> int:
-        """First pass ``row`` is processed in."""
+        """First pass ``row`` is processed in.
+
+        Raises
+        ------
+        ValueError
+            ``row`` is outside ``[0, n_blocks)``.
+        """
         ...
 
     def row_level(self, row: int) -> int:
-        """Last pass ``row`` is processed in."""
+        """Last pass ``row`` is processed in.
+
+        Raises
+        ------
+        ValueError
+            ``row`` is outside ``[0, n_blocks)``.
+        """
         ...

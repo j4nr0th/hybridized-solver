@@ -109,11 +109,9 @@ int hybsol_double_array(PyObject *const obj, const int ndim, const npy_intp *con
 int hybsol_float_array(PyObject *const obj, const int ndim, const npy_intp *const dims, const char *const name,
                        PyArrayObject **const arr_out)
 {
-    // FORCECAST is what makes a Python caller able to hand a double array to a
-    // single-precision system: there is only one door in Python, and it is the
-    // system's precision that decides the type. The C API keeps the strict
-    // rule instead -- there the caller picks a spelling, and picking the wrong
-    // one is an error rather than a silent narrowing.
+    // FORCECAST lets a caller hand a double array to a single-precision system:
+    // the system's precision picks the type. The C API keeps the strict rule --
+    // there the caller picks a spelling and picking the wrong one is an error.
     PyArrayObject *const arr = (PyArrayObject *)PyArray_FROMANY(
         obj, NPY_FLOAT, ndim, ndim, NPY_ARRAY_FORCECAST | NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
     if (!arr)
@@ -223,9 +221,9 @@ int hybsol_prepare_output(PyArrayObject *const out, const int ndim, const npy_in
 int hybsol_byte_array(PyObject *const obj, const int ndim, const size_t min_bytes, const char *const name,
                       PyArrayObject **const arr_out)
 {
-    /* PyArray_FROMANY satisfies a requested writeable flag by copying a
-     * read-only input, which would silently defeat the point of handing in a
-     * reusable buffer. Reject that up front instead. */
+    // PyArray_FROMANY satisfies a requested writeable flag by copying a
+    // read-only input, which would silently defeat the point of a reusable
+    // buffer; reject that up front.
     if (PyArray_Check(obj) && !PyArray_ISWRITEABLE((PyArrayObject *)obj))
     {
         PyErr_Format(PyExc_ValueError, "Array %s must be writable.", name);

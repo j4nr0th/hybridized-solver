@@ -18,58 +18,41 @@
 
 #include <hybsol/types.h>
 
-/**
- * A dense row-major matrix of doubles.
- */
+/** A dense row-major matrix of doubles. */
 typedef struct hybsol_matrix
 {
-    /** Number of rows. */
     uint64_t rows;
-    /** Number of columns. */
     uint64_t cols;
     /** Row-major storage of ``rows * cols`` doubles. */
     double *data;
 } hybsol_matrix_t;
 
-/**
- * Create a matrix view over existing memory.
- *
- * :param rows: Number of rows.
- * :param cols: Number of columns.
- * :param data: Storage of at least ``rows * cols`` doubles.
- * :returns: A view referring to ``data``.
- */
+/** Create a matrix view over ``rows * cols`` doubles of existing memory. */
 hybsol_matrix_t hybsol_matrix_view(uint64_t rows, uint64_t cols, double *data);
 
 /**
  * Compute ``out := a @ b``.
  *
- * :param a: Left operand, ``a->cols`` must equal ``b->rows``.
- * :param b: Right operand.
- * :param out: Destination; must be ``a->rows`` by ``b->cols``. Its storage
- *     must not overlap ``a`` or ``b`` unless it is identical to one of them.
+ * Preconditions: ``a->cols == b->rows``; ``out`` is ``a->rows x b->cols`` and
+ * must not overlap ``a`` or ``b``. ``out`` is zeroed before the product is
+ * accumulated into it, so even a view that starts out identical to an operand
+ * reads zeros rather than its own values.
  */
 void hybsol_matrix_multiply(const hybsol_matrix_t *a, const hybsol_matrix_t *b, const hybsol_matrix_t *out);
 
 /**
  * Compute ``out -= a @ b``.
  *
- * :param a: Left operand, ``a->cols`` must equal ``b->rows``.
- * :param b: Right operand.
- * :param out: Accumulator; must be ``a->rows`` by ``b->cols``.
+ * Preconditions: ``a->cols == b->rows``; ``out`` is ``a->rows x b->cols``.
  */
 void hybsol_matrix_multiply_sub_inplace(const hybsol_matrix_t *a, const hybsol_matrix_t *b, const hybsol_matrix_t *out);
 
-/**
- * Subtract ``b`` from ``a`` in place.
- *
- * :param a: Minuend, modified in place.
- * :param b: Subtrahend; must have the same shape as ``a``.
- */
+/** Subtract ``b`` from ``a`` in place. ``a`` and ``b`` must have the same shape. */
 void hybsol_matrix_subtract_inplace(const hybsol_matrix_t *a, const hybsol_matrix_t *b);
 
 /**
  * Overwrite ``m`` with its LU factorization (Doolittle, unit-lower ``L``).
+ * Asserted square; returns :c:enumerator:`HYBSOL_ERROR_SINGULAR` on a zero pivot.
  *
  * No pivoting is performed, so the caller must make the matrix safe to factor
  * without it. The requirement is on the *leading principal minors*, not on the
@@ -78,27 +61,19 @@ void hybsol_matrix_subtract_inplace(const hybsol_matrix_t *a, const hybsol_matri
  * then a step divides by a pivot that is numerically zero.
  *
  * .. warning::
- *    An *exactly* zero pivot aborts with
- *    :c:enumerator:`HYBSOL_ERROR_SINGULAR`. A leading principal minor that
- *    merely *vanishes numerically* is not detected, and produces an inaccurate
- *    factorization rather than an error. This is inherent to factorizing
- *    without pivoting; check the condition yourself if the matrix is not
- *    well behaved by construction.
- *
- * :param m: Square matrix to factor in place. Asserted square.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
- *     :c:enumerator:`HYBSOL_ERROR_SINGULAR` if a zero pivot was encountered.
+ *    A *numerically* vanishing leading minor is not detected and produces an
+ *    inaccurate factorization rather than an error. This is inherent to
+ *    factorizing without pivoting; check the condition yourself if the matrix
+ *    is not well behaved by construction.
  */
 hybsol_result_t hybsol_matrix_lu_decompose(const hybsol_matrix_t *m);
 
 /**
- * Solve ``m @ x = b`` using a factorization produced by
+ * Solve ``m @ x = b`` using a factorization from
  * :c:func:`hybsol_matrix_lu_decompose`.
  *
- * :param m: The LU factors; asserted square.
- * :param b: Right-hand side with ``m->rows`` rows.
- * :param out: Destination for ``x`` with the same shape as ``b``. May alias ``b``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
+ * Preconditions: ``m`` asserted square, ``m->rows == b->rows``, ``out`` the
+ * shape of ``b``. ``out`` may be ``b`` itself, which solves in place.
  */
 hybsol_result_t hybsol_matrix_lu_solve(const hybsol_matrix_t *m, const hybsol_matrix_t *b, const hybsol_matrix_t *out);
 
@@ -107,81 +82,56 @@ hybsol_result_t hybsol_matrix_lu_solve(const hybsol_matrix_t *m, const hybsol_ma
 /* ----------------------------------------------------------------------- */
 
 /**
- * A dense row-major matrix of floats.
- *
- * The same shape of type as :c:struct:`hybsol_matrix_t`, spelling the
- * storage a :c:enumerator:`HYBSOL_PRECISION_SINGLE` system uses. Mixing the
- * two is not resolved for you: pass the one that matches the system.
+ * A dense row-major matrix of floats: the same shape of type as
+ * :c:struct:`hybsol_matrix_t`, spelling the storage a
+ * :c:enumerator:`HYBSOL_PRECISION_SINGLE` system uses. Mixing the two is not
+ * resolved for you: pass the one that matches the system.
  */
 typedef struct hybsol_fmatrix
 {
-    /** Number of rows. */
     uint64_t rows;
-    /** Number of columns. */
     uint64_t cols;
     /** Row-major storage of ``rows * cols`` floats. */
     float *data;
 } hybsol_fmatrix_t;
 
-/**
- * Create a single-precision matrix view over existing memory.
- *
- * :param rows: Number of rows.
- * :param cols: Number of columns.
- * :param data: Storage of at least ``rows * cols`` floats.
- * :returns: A view referring to ``data``.
- */
+/** Create a single-precision matrix view over existing memory. */
 hybsol_fmatrix_t hybsol_fmatrix_view(uint64_t rows, uint64_t cols, float *data);
 
 /**
  * Compute ``out := a @ b`` in single precision.
  *
- * :param a: Left operand, ``a->cols`` must equal ``b->rows``.
- * :param b: Right operand.
- * :param out: Destination; must be ``a->rows`` by ``b->cols``. Its storage
- *     must not overlap ``a`` or ``b`` unless it is identical to one of them.
+ * Preconditions: ``a->cols == b->rows``; ``out`` is ``a->rows x b->cols`` and
+ * must not overlap ``a`` or ``b``, for the same reason as the double spelling.
  */
 void hybsol_fmatrix_multiply(const hybsol_fmatrix_t *a, const hybsol_fmatrix_t *b, const hybsol_fmatrix_t *out);
 
 /**
  * Compute ``out -= a @ b`` in single precision.
  *
- * :param a: Left operand, ``a->cols`` must equal ``b->rows``.
- * :param b: Right operand.
- * :param out: Accumulator; must be ``a->rows`` by ``b->cols``.
+ * Preconditions: ``a->cols == b->rows``; ``out`` is ``a->rows x b->cols``.
  */
 void hybsol_fmatrix_multiply_sub_inplace(const hybsol_fmatrix_t *a, const hybsol_fmatrix_t *b,
                                          const hybsol_fmatrix_t *out);
 
-/**
- * Subtract ``b`` from ``a`` in place.
- *
- * :param a: Minuend, modified in place.
- * :param b: Subtrahend; must have the same shape as ``a``.
- */
+/** Subtract ``b`` from ``a`` in place. ``a`` and ``b`` must have the same shape. */
 void hybsol_fmatrix_subtract_inplace(const hybsol_fmatrix_t *a, const hybsol_fmatrix_t *b);
 
 /**
- * Overwrite ``m`` with its LU factorization (Doolittle, unit-lower ``L``).
+ * Overwrite ``m`` with its LU factorization (Doolittle, unit-lower ``L``),
+ * with ``float`` pivots -- so a matrix that survives the double spelling can
+ * still come out singular here.
  *
- * The same unpivoted, unchecked factorization as
- * :c:func:`hybsol_matrix_lu_decompose` — with ``float`` pivots, so a matrix
- * that survives the double spelling can still come out singular here.
- *
- * :param m: Square matrix to factor in place. Asserted square.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
- *     :c:enumerator:`HYBSOL_ERROR_SINGULAR` if a zero pivot was encountered.
+ * See :c:func:`hybsol_matrix_lu_decompose` for what is and is not detected.
  */
 hybsol_result_t hybsol_fmatrix_lu_decompose(const hybsol_fmatrix_t *m);
 
 /**
- * Solve ``m @ x = b`` using a factorization produced by
+ * Solve ``m @ x = b`` using a factorization from
  * :c:func:`hybsol_fmatrix_lu_decompose`.
  *
- * :param m: The LU factors; asserted square.
- * :param b: Right-hand side with ``m->rows`` rows.
- * :param out: Destination for ``x`` with the same shape as ``b``. May alias ``b``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
+ * Preconditions: ``m`` asserted square, ``m->rows == b->rows``, ``out`` the
+ * shape of ``b``. ``out`` may be ``b`` itself, which solves in place.
  */
 hybsol_result_t hybsol_fmatrix_lu_solve(const hybsol_fmatrix_t *m, const hybsol_fmatrix_t *b,
                                         const hybsol_fmatrix_t *out);

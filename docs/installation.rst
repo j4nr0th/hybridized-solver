@@ -26,7 +26,7 @@ Dependencies
 
 - Python 3.11 or newer
 - NumPy 2.0 or newer
-- SciPy (only used by the benchmarks)
+- SciPy (only used by the examples and the benchmarks)
 - OpenMP, when available. Without it the solver falls back to a serial
   implementation; pass ``-DHYBSOL_ENABLE_OPENMP=OFF`` to build without it
   explicitly.

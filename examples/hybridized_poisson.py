@@ -139,8 +139,9 @@ print("  leading entry      :", near[0, 0])
 print("  leading 4x4 minor  :", np.linalg.det(near[:4, :4]))
 probe = BlockSystem(5)
 probe.add_block(0, 0, near)
-probe.decompose_diagonal(0)
+probe_decomposition = probe.decompose(n_threads=1)
 rhs = np.arange(1.0, 6.0)
 print(
-    "  residual after solve:", np.linalg.norm(near @ probe.solve_diagonal(0, rhs) - rhs)
+    "  residual after solve:",
+    np.linalg.norm(near @ probe_decomposition.solve(rhs.copy()) - rhs),
 )

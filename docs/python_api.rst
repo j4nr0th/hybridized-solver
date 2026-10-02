@@ -11,6 +11,11 @@ the symbolic walk in front of both, which reports what factorizing would cost
 without touching a value. The type of the values stored is chosen at
 construction from :class:`Precision`.
 
+The pipeline runs in that order: :meth:`BlockSystem.elimination` stops after
+the walk, :meth:`BlockSystem.decompose` runs all four stages and hands back the
+decomposition, and :func:`factorize` returns the walk and the decomposition
+together so both stay available.
+
 .. autoclass:: BlockSystem
    :members:
    :special-members: __new__

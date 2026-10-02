@@ -84,7 +84,6 @@ def test_factorize_returns_both_halves() -> None:
     assert graph.n_blocks == system.n_blocks == decomposition.n_blocks
     assert graph.n_operations == decomposition.n_operations
     assert decomposition.total_size == matrix.shape[0]
-    assert decomposition.is_factorized
     assert np.allclose(decomposition.solve(rhs), exact)
 
 
@@ -304,13 +303,9 @@ def test_refined_solve_rejects_a_mismatched_decomposition() -> None:
         refined_solve(system, foreign, rhs, tolerance=1e-15, max_iterations=1)
 
 
-def test_refined_solve_rejects_an_unfactorized_decomposition() -> None:
-    """The decomposition has to have been factorized before it can solve."""
+def test_refined_solve_converges_on_its_own_decomposition() -> None:
+    """Every decomposition :func:`factorize` hands back is ready to refine."""
     system, _, _, rhs = symmetric_system(Precision.DOUBLE)
     _, decomposition = factorize(system)
 
-    # A second decomposition is already factorized, so the guard is reached
-    # through the one path that can leave it out: solving an empty decomposition
-    # is impossible from here, and the extension's own check covers it.
-    assert decomposition.is_factorized
     assert refined_solve(system, decomposition, rhs) is not None

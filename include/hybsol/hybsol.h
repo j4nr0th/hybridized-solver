@@ -11,19 +11,16 @@
  * .. topic:: Preconditions
  *
  *    Conditions the caller can be asked to guarantee — index ranges,
- *    non-``NULL`` output pointers, matching shapes, matching precision
- *    spelling, a permutation, a present diagonal block — are *preconditions*.
- *    They are checked with cutl's ``CUTL_ASSERT``, which aborts with a
- *    diagnostic rather than returning a code, and each function documents them
- *    alongside its parameters (typically "asserted …"). Set ``CUTL_ASSERTS``
- *    when building the core to enable the checks; see the build options for
- *    the default.
+ *    non-``NULL`` output pointers, matching shapes and precision spelling, a
+ *    permutation, a structurally valid system, an unfactorized decomposition —
+ *    are *preconditions*, checked with cutl's ``CUTL_ASSERT`` rather than returned.
+ *    Set ``CUTL_ASSERTS`` when building the core to enable them.
  *
- *    Conditions that are outcomes of the data rather than mistakes stay
- *    returned :c:type:`hybsol_result_t` codes: allocation failure, a singular
- *    matrix, a system that does not decompose, and the other genuine runtime
- *    states. Callers that must not abort — the Python bindings, most
- *    obviously — check these conditions themselves and raise instead.
+ *    What is left as a :c:type:`hybsol_result_t` code is an outcome of the data
+ *    rather than a mistake: allocation failure, a singular matrix, a block order
+ *    that admits no factorization, and the other genuine runtime states.
+ *    Callers that must not abort — the Python bindings, most obviously — check
+ *    these themselves and raise instead.
  */
 
 #ifndef HYBSOL_HYBSOL_H

@@ -2,11 +2,8 @@
  * @file core/decomposition.c
  * The destination a decomposition writes into: laying it out from a graph,
  * filling it with the system's blocks, and walking the graph's passes to
- * factorize it.
- *
- * Nothing here allocates once the destination exists. The graph fixed the
- * pattern, so every block the factorization will ever touch has a slot, and a
- * pass reads and writes only the rows it lists.
+ * factorize it. Nothing allocates once the destination exists -- the graph
+ * fixed the pattern, so every block the factorization touches has a slot.
  */
 
 #include "internal.h"
@@ -19,19 +16,15 @@
 #define HYBSOL_WORKSPACE_MAGIC UINT64_C(0x687962736f6c7731) /* "hybsolw1" */
 
 /**
- * A factorization needs one result slot per block row and one scratch block per
- * thread. They are short-lived and entirely internal, so the caller can own
- * them: size the buffer with hybsol_workspace_bytes, hand it over, and no
- * allocation happens at all before the parallel regions. Everything lands in
- * one contiguous aligned block, so a single allocation -- or a single NumPy
- * buffer -- is all it takes.
+ * One result slot per block row and one scratch block per thread in one aligned
+ * buffer the caller owns: size it with :c:func:`hybsol_workspace_bytes` and
+ * nothing allocates before the parallel regions.
  */
 typedef struct hybsol_workspace
 {
     uint64_t magic;
-    /** ``dec->n`` the buffer was sized for. */
+    /** ``dec->n`` and the thread count the buffer was sized for. */
     uint64_t n;
-    /** Resolved thread count the buffer was sized for. */
     uint64_t n_threads;
     /** Bytes each per-thread scratch block holds. */
     size_t scratch_stride;
@@ -70,24 +63,19 @@ static size_t workspace_size(const uint64_t n, const uint64_t *const block_offse
 
 size_t hybsol_workspace_bytes(const hybsol_system_t *const sys, const uint64_t n_threads)
 {
-    if (sys == NULL)
-        return 0;
+    CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
 
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
     return workspace_size(sys->n, sys->block_offsets, hybsol_scalar_size(sys->precision), threads);
 }
 
 /**
- * Point the header at the arrays laid out behind it.
- *
- * The buffer was sized by :c:func:`hybsol_workspace_bytes`, so the arithmetic
- * here matches what that computed. The magic is written once the buffer is
- * known good.
+ * Point the header at the arrays laid out behind it, matching the arithmetic
+ * :c:func:`hybsol_workspace_bytes` used to size the buffer.
  */
-static void workspace_bind(hybsol_workspace_t *const ws, void *const buffer, const size_t buffer_bytes,
+static void workspace_bind(hybsol_workspace_t *const ws, const size_t buffer_bytes,
                            const hybsol_decomposition_t *const dec, const uint64_t threads)
 {
-    HYBSOL_MARK_USED(buffer);
     ws->magic = HYBSOL_WORKSPACE_MAGIC;
     ws->n = dec->n;
     ws->n_threads = threads;
@@ -121,19 +109,63 @@ void hybsol_decomposition_destroy(hybsol_decomposition_t *const dec)
 {
     if (dec == NULL)
         return;
-    hybsol_free(dec->allocator, dec->raw);
+    // A decomposition laid out by hybsol_decomposition_init owns no memory.
+    if (dec->raw != NULL)
+        hybsol_free(dec->allocator, dec->raw);
 }
 
-hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
-                                            hybsol_decomposition_t **const out)
+/** Where each array of a decomposition's frame sits, in layout order. */
+typedef struct
 {
+    size_t total;
+    size_t offsets;
+    size_t level_offset;
+    size_t level_rows;
+    size_t level_k;
+    size_t row_n_elim;
+    size_t row_level;
+    size_t rows;
+    size_t entries;
+    size_t values;
+} decomp_layout_t;
+
+/** Lay out a decomposition's frame -- a function of the graph alone, so a caller can size it up front. */
+static decomp_layout_t decomp_layout(const hybsol_elimination_t *const graph)
+{
+    const size_t n = (size_t)graph->n;
+    const size_t n_levels = (size_t)graph->n_levels;
+    const size_t n_occupancy = (size_t)graph->n_occupancy;
+
+    decomp_layout_t layout;
+    layout.offsets = hybsol_align_up(sizeof(hybsol_decomposition_t));
+    layout.level_offset = layout.offsets + (n + 1) * sizeof(uint64_t);
+    layout.level_rows = layout.level_offset + (n_levels + 1) * sizeof(uint64_t);
+    layout.level_k = layout.level_rows + n_occupancy * sizeof(uint64_t);
+    layout.row_n_elim = layout.level_k + n_occupancy * sizeof(uint64_t);
+    layout.row_level = layout.row_n_elim + n * sizeof(uint64_t);
+    layout.rows = layout.row_level + n * sizeof(uint64_t);
+    layout.entries = layout.rows + n * sizeof(hybsol_row_t);
+    layout.values = hybsol_align_up(layout.entries + (size_t)graph->n_columns * sizeof(hybsol_row_entry_t *));
+    layout.total = layout.values + graph->value_bytes;
+    return layout;
+}
+
+size_t hybsol_decomposition_bytes(const hybsol_elimination_t *const graph)
+{
+    CUTL_ASSERT(graph != NULL, "The graph must not be NULL.");
+    return decomp_layout(graph).total;
+}
+
+hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
+                                          void *const storage, hybsol_decomposition_t **const out)
+{
+    CUTL_ASSERT(storage != NULL, "The storage buffer must not be NULL.");
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
     CUTL_ASSERT(graph != NULL, "The graph must not be NULL.");
     *out = NULL;
 
-    // The graph describes one particular system's blocks; pairing it with a
-    // different one would size the destination wrongly.
+    // The graph describes one particular system; a different one would size the destination wrongly.
     CUTL_ASSERT(graph->n == sys->n, "The graph has %llu blocks but the system has %llu.", (unsigned long long)graph->n,
                 (unsigned long long)sys->n);
     CUTL_ASSERT(graph->precision == sys->precision, "The graph describes %s but the system stores %s.",
@@ -143,55 +175,39 @@ hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, co
                 "This graph was computed from a system with different block sizes.");
 
     const uint64_t n = sys->n;
-    const uint64_t n_levels = graph->n_levels;
-    const uint64_t n_occupancy = graph->n_occupancy;
+    const decomp_layout_t layout = decomp_layout(graph);
 
-    const size_t off_offsets = hybsol_align_up(sizeof(hybsol_decomposition_t));
-    const size_t off_level_offset = off_offsets + (size_t)(n + 1) * sizeof(uint64_t);
-    const size_t off_level_rows = off_level_offset + (size_t)(n_levels + 1) * sizeof(uint64_t);
-    const size_t off_level_k = off_level_rows + (size_t)n_occupancy * sizeof(uint64_t);
-    const size_t off_row_n_elim = off_level_k + (size_t)n_occupancy * sizeof(uint64_t);
-    const size_t off_row_level = off_row_n_elim + (size_t)n * sizeof(uint64_t);
-    const size_t off_rows = off_row_level + (size_t)n * sizeof(uint64_t);
-    const size_t off_entries = off_rows + (size_t)n * sizeof(hybsol_row_t);
-    const size_t off_values = hybsol_align_up(off_entries + (size_t)graph->n_columns * sizeof(hybsol_row_entry_t *));
-    const size_t total = off_values + graph->value_bytes;
-
-    hybsol_decomposition_t *const dec = hybsol_alloc(sys->allocator, total);
-    if (dec == NULL)
-        return HYBSOL_ERROR_OUT_OF_MEMORY;
+    unsigned char *const base = (unsigned char *)storage;
+    hybsol_decomposition_t *const dec = (hybsol_decomposition_t *)base;
     *dec = (hybsol_decomposition_t){0};
 
-    unsigned char *const base = (unsigned char *)dec;
     dec->allocator = sys->allocator;
     dec->n = n;
-    dec->n_levels = n_levels;
+    dec->n_levels = graph->n_levels;
     dec->n_occupancy = graph->n_occupancy;
     dec->n_operations = graph->n_operations;
     dec->failing_block = UINT64_MAX;
     dec->precision = sys->precision;
     dec->factorized = 0;
-    dec->raw = base;
-    dec->raw_bytes = total;
-    dec->block_offsets = (const uint64_t *)(base + off_offsets);
-    dec->level_offset = (uint64_t *)(base + off_level_offset);
-    dec->level_rows = (uint64_t *)(base + off_level_rows);
-    dec->level_k = (uint64_t *)(base + off_level_k);
-    dec->row_n_elim = (uint64_t *)(base + off_row_n_elim);
-    dec->row_level = (uint64_t *)(base + off_row_level);
-    dec->rows = (hybsol_row_t *)(base + off_rows);
-    dec->entries = (hybsol_row_entry_t **)(base + off_entries);
-    dec->values = base + off_values;
+    dec->raw = NULL;
+    dec->block_offsets = (const uint64_t *)(base + layout.offsets);
+    dec->level_offset = (uint64_t *)(base + layout.level_offset);
+    dec->level_rows = (uint64_t *)(base + layout.level_rows);
+    dec->level_k = (uint64_t *)(base + layout.level_k);
+    dec->row_n_elim = (uint64_t *)(base + layout.row_n_elim);
+    dec->row_level = (uint64_t *)(base + layout.row_level);
+    dec->rows = (hybsol_row_t *)(base + layout.rows);
+    dec->entries = (hybsol_row_entry_t **)(base + layout.entries);
+    dec->values = base + layout.values;
 
     memcpy((void *)dec->block_offsets, sys->block_offsets, (size_t)(n + 1) * sizeof(uint64_t));
-    memcpy(dec->level_offset, graph->level_offset, (size_t)(n_levels + 1) * sizeof(uint64_t));
+    memcpy(dec->level_offset, graph->level_offset, (size_t)(graph->n_levels + 1) * sizeof(uint64_t));
     memcpy(dec->level_rows, graph->level_rows, (size_t)dec->n_occupancy * sizeof(uint64_t));
     memcpy(dec->level_k, graph->level_k, (size_t)dec->n_occupancy * sizeof(uint64_t));
     memcpy(dec->row_n_elim, graph->row_n_elim, (size_t)n * sizeof(uint64_t));
     memcpy(dec->row_level, graph->row_level, (size_t)n * sizeof(uint64_t));
 
-    // The destination is the graph's pattern: one carved block per column, the
-    // system's values where it has them and zeros where the fill-in goes.
+    // One carved block per column of the graph's pattern: the system's values where it has them, zeros for fill-in.
     const size_t scalar = hybsol_scalar_size(sys->precision);
     size_t at_values = 0;
     for (uint64_t i = 0; i < n; ++i)
@@ -217,7 +233,6 @@ hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, co
             entry->col = col;
             dec->rows[i].entries[j] = entry;
 
-            // Both lists ascend, so one cursor each finds every match.
             while (j_src < sys->rows[i].count && src_entries[j_src]->col < col)
                 ++j_src;
             if (j_src < sys->rows[i].count && src_entries[j_src]->col == col)
@@ -232,6 +247,29 @@ hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, co
 
     *out = dec;
     return HYBSOL_SUCCESS;
+}
+
+hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
+                                            hybsol_decomposition_t **const out)
+{
+    CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
+    CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    CUTL_ASSERT(graph != NULL, "The graph must not be NULL.");
+
+    void *const storage = hybsol_alloc(sys->allocator, hybsol_decomposition_bytes(graph));
+    if (storage == NULL)
+    {
+        *out = NULL;
+        return HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+
+    const hybsol_result_t res = hybsol_decomposition_init(sys, graph, storage, out);
+    if (res != HYBSOL_SUCCESS)
+        hybsol_free(sys->allocator, storage);
+    else
+        // The decomposition now owns the block it was laid out in.
+        (*out)->raw = storage;
+    return res;
 }
 
 uint64_t hybsol_decomposition_n_blocks(const hybsol_decomposition_t *const dec)
@@ -269,11 +307,10 @@ uint64_t hybsol_decomposition_n_operations(const hybsol_decomposition_t *const d
 /* ------------------------------------------------------------------------- */
 
 /*
- * The list is not stored: it is a reading of the schedule the decomposition
- * already holds. Each row contributes one operation per pass it is processed
- * in -- an elimination, except in the pass where it factorizes its diagonal --
- * and the passes are walked in order, so the result is the same sequence a
- * factorization would have appended, without the array ever existing.
+ * The list is not stored: it is a reading of the schedule. Each row contributes one
+ * operation per pass it is processed in -- an elimination, except in the pass where it
+ * factorizes its diagonal -- walked in pass order, which is the sequence a factorization
+ * would have appended.
  */
 hybsol_result_t hybsol_decomposition_operations(const hybsol_decomposition_t *const dec, hybsol_operation_t *const out,
                                                 const uint64_t capacity, uint64_t *const n_written)
@@ -316,23 +353,20 @@ hybsol_result_t hybsol_decomposition_operations(const hybsol_decomposition_t *co
 /* ------------------------------------------------------------------------- */
 
 /*
- * One pass of the schedule: every row the pass lists does at most one
- * elimination, and the row whose pass this is factorizes its diagonal
- * afterwards. Each row writes only its own blocks, so the pass needs no lock
- * and no shared result other than the slot each row reports into.
+ * One pass of the schedule: every row the pass lists does at most one elimination, then factorizes its
+ * diagonal if this is its last pass. Each row writes only its own blocks, so a pass needs no lock and
+ * no shared result other than the slot each row reports into.
  */
 hybsol_result_t hybsol_decomposition_factorize_with_workspace(hybsol_decomposition_t *const dec, void *const workspace,
                                                               const size_t workspace_bytes, const uint64_t n_threads)
 {
     CUTL_ASSERT(dec != NULL, "The decomposition must not be NULL.");
     CUTL_ASSERT(workspace != NULL, "The workspace pointer must not be NULL.");
-
-    if (dec->factorized)
-        return HYBSOL_ERROR_ALREADY_DECOMPOSED;
+    CUTL_ASSERT(!dec->factorized, "This decomposition has already been factorized.");
 
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
 
-    workspace_bind((hybsol_workspace_t *)workspace, workspace, workspace_bytes, dec, threads);
+    workspace_bind((hybsol_workspace_t *)workspace, workspace_bytes, dec, threads);
     const hybsol_workspace_t *const ws = (const hybsol_workspace_t *)workspace;
     const unsigned char *const base = (const unsigned char *)workspace;
     hybsol_result_t *const results = (hybsol_result_t *)(base + ws->off_results);
@@ -349,8 +383,8 @@ hybsol_result_t hybsol_decomposition_factorize_with_workspace(hybsol_decompositi
             const uint64_t row = dec->level_rows[j];
             const uint64_t step = dec->level_k[j];
 
-            // The last elimination and the diagonal factorization share a step:
-            // the row is finished the moment its own diagonal comes first.
+            // The last elimination and the diagonal factorization share a step: the row is done once
+            // its own diagonal comes first.
             hybsol_result_t res = HYBSOL_SUCCESS;
             if (step < dec->row_n_elim[row])
                 hybsol_decomposition_eliminate(dec, row, step, workspace_scratch(ws));
@@ -363,9 +397,8 @@ hybsol_result_t hybsol_decomposition_factorize_with_workspace(hybsol_decompositi
             results[row] = res;
         }
 
-        // Settled here rather than in the region above: one thread reports the
-        // offending block, and the rows are final by the time the next pass reads
-        // them.
+        // Settled outside the region: one thread names the offending block, and the rows are final
+        // before the next pass reads them.
         for (uint64_t j = from; j < to; ++j)
         {
             if (results[dec->level_rows[j]] == HYBSOL_SUCCESS)
@@ -385,8 +418,6 @@ hybsol_result_t hybsol_decomposition_factorize(hybsol_decomposition_t *const dec
 
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
     const size_t bytes = workspace_size(dec->n, dec->block_offsets, hybsol_scalar_size(dec->precision), threads);
-    if (bytes == 0)
-        return HYBSOL_ERROR_OUT_OF_MEMORY;
 
     void *const workspace = hybsol_alloc(dec->allocator, bytes);
     if (workspace == NULL)

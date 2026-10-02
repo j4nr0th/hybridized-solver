@@ -247,14 +247,18 @@ class TestDecompositionIsGuarded:
         sys.add_block(1, 1, np.eye(3) * 4.0)
         return sys
 
-    def test_decompose_returns_a_factorized_decomposition(self) -> None:
+    def test_decompose_returns_a_solvable_decomposition(self) -> None:
         """What :meth:`BlockSystem.decompose` hands back is ready to solve."""
-        dec = self.full_system().decompose()
+        sys = self.full_system()
+        dec = sys.decompose()
 
-        assert dec.is_factorized
-        assert dec.failing_block is None
         assert dec.n_blocks == 2
         assert dec.n_operations > 0
+
+        rhs = np.ones(6)
+        assert pytest.approx(dec.solve(rhs), abs=1e-12) == np.linalg.solve(
+            sys.as_array(), rhs
+        )
 
     def test_solve_accepts_a_valid_vector(self) -> None:
         """The guard is narrow: a factorized decomposition solves normally."""

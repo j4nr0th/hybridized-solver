@@ -1,9 +1,7 @@
 /*
  * The value-carrying half of assembly and the row operations, instantiated
- * once per floating-point type.
- *
- * Unguarded on purpose: ``block_system.c`` includes this file twice, after
- * defining
+ * once per floating-point type. ``block_system.c`` includes this file twice,
+ * unguarded on purpose, after defining
  *
  *   HYBSOL_SCALAR    the type the system stores its blocks in
  *   HYBSOL_ACC       the type products accumulate in
@@ -11,23 +9,15 @@
  *   HYBSOL_KERNEL(n) the dense-kernel name matching ``HYBSOL_VIEW``
  *   HYBSOL_FN(name)  the name the resulting function gets
  *
- * Only the arithmetic is instantiated: index checks, row bookkeeping and
- * allocation sizes are shared, since an entry is ``n_values *`` the size of
- * ``HYBSOL_SCALAR`` bytes either way.
- *
- * Everything here is ``static``: the instantiations are private to
- * ``block_system.c``, which owns the precision check. Every macro is undefined
- * at the bottom so a second inclusion is well defined.
+ * Only the arithmetic is instantiated; index checks, row bookkeeping and allocation sizes are
+ * shared. Everything is ``static`` and every macro is undefined at the bottom, so a second
+ * inclusion is well defined.
  */
 
 /*
- * ``out += block @ in``, with the block in the system's precision and both
- * vectors in double.
- *
- * The dense layer's kernels either assign or subtract, neither of which is what
- * a row with several blocks needs, so this is spelled out. The products
- * accumulate in double, which is also what makes a single-precision system
- * produce a double-precision result.
+ * ``out += block @ in``, with the block in the system's precision and both vectors in double: the
+ * dense kernels only assign or subtract, and products accumulate in double, which is what makes a
+ * single-precision system produce a double-precision result.
  */
 static void HYBSOL_FN(accumulate_block)(const HYBSOL_VIEW *const a, const hybsol_matrix_t *const in,
                                         const hybsol_matrix_t *const out)
@@ -240,6 +230,9 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
                                                      const uint64_t row_src, const HYBSOL_VIEW *const mat,
                                                      HYBSOL_SCALAR *const scratch)
 {
+    hybsol_require_index(sys, row_tgt);
+    hybsol_require_index(sys, row_src);
+
     const uint64_t size_tgt = hybsol_block_size(sys, row_tgt);
     const uint64_t size_src = hybsol_block_size(sys, row_src);
     CUTL_ASSERT(mat != NULL, "The multiplier matrix must not be NULL.");
@@ -249,8 +242,8 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
 
     hybsol_row_t *const row_t = sys->rows + row_tgt;
     const hybsol_row_t *const row_s = sys->rows + row_src;
-    if (row_t->count == 0 || row_s->count == 0)
-        return HYBSOL_ERROR_EMPTY_ROW;
+    CUTL_ASSERT(row_t->count > 0 && row_s->count > 0, "Row %llu or its source %llu stores no blocks.",
+                (unsigned long long)row_tgt, (unsigned long long)row_src);
 
     // Size the intermediate buffer, and count the entries the target row will
     // hold once the two rows are merged.
@@ -310,10 +303,9 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
         buffer = owned;
     }
 
-    // Subtract the multiplier times the source entries from the target entries,
-    // working backwards so untouched entries move only once. An allocation
-    // failure part way through empties the target row, so the system at least
-    // stays walkable.
+    // Subtract the multiplier times the source entries from the target entries, working backwards
+    // so untouched entries move only once. An allocation failure part way through empties the
+    // target row, so the system at least stays walkable.
     uint64_t i, k;
     for (i = unique_cols, k = needed_size, pos_tgt = row_t->count, pos_src = row_s->count; i > 0; --i, --k)
     {
@@ -353,7 +345,8 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
                 // leave a half-updated mess.
                 for (uint64_t j = 0; j < row_t->capacity; ++j)
                 {
-                    hybsol_free(sys->allocator, row_t->entries[j]);
+                    if (hybsol_entry_is_owned(sys, row_t->entries[j]))
+                        hybsol_free(sys->allocator, row_t->entries[j]);
                     row_t->entries[j] = NULL;
                 }
                 row_t->count = 0;
@@ -407,12 +400,9 @@ static hybsol_result_t HYBSOL_FN(eliminate_row)(hybsol_system_t *const sys, cons
 }
 
 /*
- * ``y = A @ x``, accumulating block row by block row.
- *
- * Parallel over block rows: each one zeroes and writes only its own slice of
- * ``y``, and reads only the system's blocks, so no two threads touch the same
- * element. That is what lets this run while a caller reads the system
- * elsewhere, and why it needs no lock of its own.
+ * ``y = A @ x``, accumulating block row by block row. Parallel over block rows: each zeroes and
+ * writes only its own slice of ``y`` and reads only the system's blocks, so no two threads touch
+ * the same element and the caller may read the system elsewhere while this runs.
  */
 static void HYBSOL_FN(matmat)(const hybsol_system_t *const sys, const hybsol_matrix_t *const x,
                               const hybsol_matrix_t *const y, const int threads)

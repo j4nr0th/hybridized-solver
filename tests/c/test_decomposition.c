@@ -165,7 +165,7 @@ static void reference_solve(const uint64_t n, double a[MAX_DIM][MAX_DIM], double
 static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
 {
     hybsol_elimination_t *graph = NULL;
-    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+    if (hybsol_elimination_create(sys, &graph, NULL) != HYBSOL_SUCCESS)
         return NULL;
 
     hybsol_decomposition_t *dec = NULL;
@@ -229,8 +229,7 @@ static void test_solve_matches_reference(void)
             CHECK_MSG(max_abs_difference(s.dim, solution, expected) < 1e-8, "trial %d at %llu threads is off by %g",
                       trial, (unsigned long long)thread_counts[t], max_abs_difference(s.dim, solution, expected));
 
-            // Factorizing again is refused; the destination is already consumed.
-            CHECK_RESULT(hybsol_decomposition_factorize(dec, 1), HYBSOL_ERROR_ALREADY_DECOMPOSED);
+            // Factorizing again is a precondition violation, not a result.
             hybsol_decomposition_destroy(dec);
         }
 
@@ -320,16 +319,15 @@ static void test_rejects_invalid_and_singular(void)
     double block[4] = {2.0, 1.0, 1.0, 2.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, block));
     CHECK_OK(hybsol_system_add_block(sys, 0, 1, 2, 2, block));
+    // The walk asserts structural validity rather than reporting it, so
+    // hybsol_system_is_valid is what a caller checks to get a diagnosis.
     CHECK(!hybsol_system_is_valid(sys));
-    CHECK_RESULT(hybsol_elimination_create(sys, &graph), HYBSOL_ERROR_SYSTEM_INVALID);
-    CHECK(graph == NULL);
     hybsol_system_destroy(sys);
 
     // A row with no diagonal block.
     CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, block));
     CHECK(!hybsol_system_is_valid(sys));
-    CHECK_RESULT(hybsol_elimination_create(sys, &graph), HYBSOL_ERROR_SYSTEM_INVALID);
     hybsol_system_destroy(sys);
 
     // Identically zero diagonal block: no pivot, so an unusable order.
@@ -337,7 +335,7 @@ static void test_rejects_invalid_and_singular(void)
     double zero[4] = {0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, zero));
     CHECK(hybsol_system_is_valid(sys));
-    CHECK_RESULT(hybsol_elimination_create(sys, &graph), HYBSOL_ERROR_INVALID_ORDERING);
+    CHECK_RESULT(hybsol_elimination_create(sys, &graph, NULL), HYBSOL_ERROR_INVALID_ORDERING);
     CHECK(graph == NULL);
     CHECK(factorize(sys, 1) == NULL);
     hybsol_system_destroy(sys);
@@ -348,7 +346,7 @@ static void test_rejects_invalid_and_singular(void)
     double rank_one[4] = {1.0, 2.0, 2.0, 4.0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, rank_one));
     CHECK(hybsol_system_is_valid(sys));
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     CHECK(hybsol_elimination_failing_block(graph) == UINT64_MAX);
 
     hybsol_decomposition_t *dec = NULL;
@@ -428,8 +426,8 @@ static void test_operations_replay(void)
     random_system_destroy(&s);
 }
 
-/** Solving before factorizing is refused, and the vector is left alone. */
-static void test_solve_before_factorizing(void)
+/** A decomposition solves once, and only once it has been factorized. */
+static void test_solve_after_factorizing(void)
 {
     const uint64_t sizes[] = {2, 2};
     hybsol_system_t *sys = NULL;
@@ -438,17 +436,18 @@ static void test_solve_before_factorizing(void)
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, values));
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     hybsol_decomposition_t *dec = NULL;
     CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
     hybsol_elimination_destroy(graph);
 
+    // Solving before factorizing is a precondition violation now, not a result,
+    // so what is left to check is that the factorization is what makes it work.
     CHECK(!hybsol_decomposition_is_factorized(dec));
-    double vec[2] = {1.0, 2.0};
-    CHECK_RESULT(hybsol_decomposition_solve(dec, vec, 1), HYBSOL_ERROR_NOT_DECOMPOSED);
-    CHECK(vec[0] == 1.0 && vec[1] == 2.0);
 
     CHECK_OK(hybsol_decomposition_factorize(dec, 1));
+    CHECK(hybsol_decomposition_is_factorized(dec));
+    double vec[2] = {1.0, 2.0};
     CHECK_OK(hybsol_decomposition_solve(dec, vec, 1));
     CHECK_NEAR(vec[0], 1.0 / 11.0, 1e-12);
     CHECK_NEAR(vec[1], 7.0 / 11.0, 1e-12);
@@ -494,7 +493,7 @@ static void test_maximal_fill_in(void)
         }
     }
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     // The diagonal coupling already gives every row every column, so the graph
     // has nothing to add and its pattern is the system's.
     CHECK(hybsol_elimination_n_columns(graph) == n * n);
@@ -698,16 +697,83 @@ static void test_operations_are_deterministic(void)
     random_system_destroy(&s);
 }
 
+/**
+ * A decomposition laid out in caller-owned storage solves the same, and
+ * destroying it frees nothing the caller still owns.
+ */
+static void test_caller_owned_decomposition_storage(void)
+{
+    const uint64_t sizes[] = {2, 2};
+    hybsol_system_t *sys = NULL;
+    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
+    double diagonal[4] = {4.0, 1.0, 1.0, 3.0};
+    double off[4] = {0.5, 0.5, 0.5, 0.5};
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diagonal));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 1, 2, 2, off));
+    CHECK_OK(hybsol_system_add_block(sys, 1, 0, 2, 2, off));
+    CHECK_OK(hybsol_system_add_block(sys, 1, 1, 2, 2, diagonal));
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+
+    // The sizing function is a function of the graph alone, so the same buffer
+    // can hold the decomposition for any factorization from this graph.
+    const size_t bytes = hybsol_decomposition_bytes(graph);
+    CHECK(bytes > 0);
+
+    void *const storage = malloc(bytes);
+    CHECK(storage != NULL);
+    if (storage != NULL)
+    {
+        hybsol_decomposition_t *dec = NULL;
+        CHECK_OK(hybsol_decomposition_init(sys, graph, storage, &dec));
+        CHECK(dec == storage);
+
+        if (dec != NULL)
+        {
+            CHECK_OK(hybsol_decomposition_factorize(dec, 2));
+            CHECK(hybsol_decomposition_is_factorized(dec));
+            CHECK(hybsol_decomposition_n_blocks(dec) == 2);
+            CHECK(hybsol_decomposition_total_size(dec) == 4);
+
+            double rhs[4] = {1.0, 2.0, 3.0, 4.0};
+            CHECK_OK(hybsol_decomposition_solve(dec, rhs, 1));
+
+            // The same right-hand side through the allocating spelling agrees.
+            hybsol_decomposition_t *reference = NULL;
+            CHECK_OK(hybsol_decomposition_create(sys, graph, &reference));
+            CHECK(reference != storage);
+            if (reference != NULL)
+            {
+                CHECK_OK(hybsol_decomposition_factorize(reference, 1));
+                double other[4] = {1.0, 2.0, 3.0, 4.0};
+                CHECK_OK(hybsol_decomposition_solve(reference, other, 1));
+                CHECK_MSG(memcmp(rhs, other, sizeof(rhs)) == 0, "caller-owned storage solved differently: %g vs %g",
+                          rhs[0], other[0]);
+                hybsol_decomposition_destroy(reference);
+            }
+
+            // Destroying frees nothing, so the buffer is still ours to release.
+            hybsol_decomposition_destroy(dec);
+        }
+        free(storage);
+    }
+
+    hybsol_elimination_destroy(graph);
+    hybsol_system_destroy(sys);
+}
+
 int main(void)
 {
     test_solve_matches_reference();
     test_system_survives_its_decomposition();
     test_rejects_invalid_and_singular();
     test_operations_replay();
-    test_solve_before_factorizing();
+    test_solve_after_factorizing();
     test_operations_are_deterministic();
     test_maximal_fill_in();
     test_solving_twice_is_the_same();
     test_decomposition_outlives_its_system();
+    test_caller_owned_decomposition_storage();
     return test_report("test_decomposition");
 }

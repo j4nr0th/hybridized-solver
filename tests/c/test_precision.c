@@ -13,7 +13,7 @@
 static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
 {
     hybsol_elimination_t *graph = NULL;
-    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+    if (hybsol_elimination_create(sys, &graph, NULL) != HYBSOL_SUCCESS)
         return NULL;
 
     hybsol_decomposition_t *dec = NULL;

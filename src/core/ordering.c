@@ -263,7 +263,8 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
         break;
     default:
         // Unreachable: `strategy` is asserted to be an enumerator above.
-        res = HYBSOL_ERROR_INTERNAL;
+        CUTL_ASSERT(0, "Unreachable coloring strategy %d.", (int)strategy);
+        res = HYBSOL_ERROR_MAX_COLORS;
         break;
     }
 
@@ -276,14 +277,15 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
 /* ------------------------------------------------------------------------- */
 
 hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const uint64_t *const new_order,
-                                             const uint64_t n_threads)
+                                             const uint64_t n_threads, uint64_t *const failing_block)
 {
     CUTL_ASSERT(new_order != NULL, "The permutation must not be NULL.");
+    if (failing_block != NULL)
+        *failing_block = UINT64_MAX;
 
     const uint64_t n = sys->n;
 
-    // A scratch buffer per thread, so re-sorting allocates nothing from inside
-    // the parallel region.
+    // A scratch buffer per thread, so re-sorting allocates nothing inside the parallel region.
     uint64_t max_entries = 0;
     for (uint64_t i = 0; i < n; ++i)
         if (sys->rows[i].count > max_entries)
@@ -291,12 +293,9 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     if (max_entries == 0)
         max_entries = 1;
 
-    // Everything this call needs, in one allocation: the permutation check's
-    // bitmap, the two arrays the shuffle writes through, the per-thread
-    // scratch pointers, and the per-thread scratch itself. All of it is wanted
-    // for the whole call and released together at the end, so there is nothing
-    // to gain from asking for it separately -- and one request per thread for
-    // the scratch is the worst of it.
+    // Everything this call needs in one allocation: the check's bitmap, the two arrays the shuffle
+    // writes through, the per-thread scratch pointers and the scratch itself -- all wanted for the whole
+    // call and released together, where a request per thread for the scratch would be worst of all.
     const int threads = hybsol_resolve_threads(n_threads);
     const size_t off_seen = hybsol_align_up(0);
     const size_t off_scratch = off_seen + (size_t)n * sizeof(uint8_t);
@@ -357,11 +356,8 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
                         smallest = entry;
                     }
                 }
-                // Each pass removes exactly one entry, so with `inserted`
-                // passes done `row->count - inserted` are left and the loop
-                // stops before the last one. The search can therefore not come
-                // up empty, which lets the optimizer drop the NULL checks
-                // instead of printing from inside the region.
+                // Each pass removes exactly one entry, so the search can never come up empty; that lets
+                // the optimizer drop the NULL checks instead of printing from inside the region.
                 CUTL_ASSUME(smallest != NULL);
                 row->entries[inserted] = smallest;
                 inserted += 1;
@@ -383,8 +379,8 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     }
 
 #if CUTL_ENABLE_ASSERTS
-    // Checked serially: CUTL_ASSERT prints to stderr, which a parallel region
-    // declaring `default(none)` may not reference. The rows are final by now.
+    // Checked serially: CUTL_ASSERT prints to stderr, which a `default(none)` parallel region may not
+    // reference. The rows are final by now.
     for (uint64_t i = 0; i < n; ++i)
     {
         const hybsol_row_t *const row = sys->rows + i;
@@ -404,13 +400,11 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     for (uint64_t i = 0; i < n; ++i)
         sys->block_offsets[i + 1] = sys->block_offsets[i] + new_sizes[i];
 
-    // The scratch only existed to shuffle the rows into `new_rows`; the rows
-    // themselves moved into the system and the whole arena is done with.
+    // The scratch only existed to shuffle the rows; they have moved into the system, so the arena is done with.
     hybsol_free(sys->allocator, arena);
 
-    // The permutation is already applied and is not rolled back. What the walk
-    // rejects is the order, not the shuffle, so the check is worth its pass.
-    return hybsol_elimination_check(sys);
+    // The permutation is applied and not rolled back: the walk rejects the order, not the shuffle.
+    return hybsol_elimination_check(sys, failing_block);
 }
 
 /* ------------------------------------------------------------------------- */

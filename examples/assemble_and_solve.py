@@ -41,18 +41,17 @@ print(f"assembled a {dim} x {dim} system from {system.n_blocks} blocks")
 print("structurally valid:", system.is_valid())
 
 # --------------------------------------------------------------------------
-# Decompose once, then solve.
+# Decompose once, then solve. The decomposition owns a copy of the blocks, so
+# the system is left as it was assembled and could be decomposed again.
 # --------------------------------------------------------------------------
-# The right-hand side has to be built before decomposing: afterwards the
-# diagonal blocks hold LU factors instead of the original values.
 matrix = system.as_array()
 lhs = rng.random(dim)
 rhs = matrix @ lhs
 
-system.decompose()
-print(f"decomposition recorded {len(system.operations())} operations")
+decomposition = system.decompose()
+print(f"decomposition recorded {len(decomposition.operations())} operations")
 
-solution = system.solve(rhs)
+solution = decomposition.solve(rhs)
 print("solve error:", np.abs(solution - lhs).max())
 
 # --------------------------------------------------------------------------
@@ -61,9 +60,10 @@ print("solve error:", np.abs(solution - lhs).max())
 ordered = build()
 ordering = ordered.compute_reordering("greedy")
 ordered.reorder_blocks(ordering)
-ordered.decompose()
+ordered_decomposition = ordered.decompose()
 
 reordered_lhs = ordered.unorder_vector(
-    ordering, ordered.solve(ordered.reorder_vector(ordering, rhs))
+    ordering,
+    ordered_decomposition.solve(ordered.reorder_vector(ordering, rhs)),
 )
 print("reordered solve error:", np.abs(reordered_lhs - lhs).max())

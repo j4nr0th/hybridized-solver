@@ -57,7 +57,7 @@ rhs = matrix @ lhs
 # --------------------------------------------------------------------------
 ordering = system.compute_reordering("greedy")
 system.reorder_blocks(ordering)
-system.decompose()
+decomposition = system.decompose()
 
 
 def solve(b: np.ndarray) -> np.ndarray:
@@ -77,7 +77,7 @@ def solve(b: np.ndarray) -> np.ndarray:
         Solution, in the same ordering as ``b``.
     """
     reordered = system.reorder_vector(ordering, b)
-    return system.unorder_vector(ordering, system.solve(reordered))
+    return system.unorder_vector(ordering, decomposition.solve(reordered))
 
 
 def measure(x: np.ndarray) -> tuple[float, float]:

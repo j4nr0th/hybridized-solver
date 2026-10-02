@@ -1,20 +1,15 @@
 /**
  * @file core/solve.c
- * Solving with a decomposition: a level-synchronous forward substitution
- * followed by a serial back-substitution.
+ * Level-synchronous forward substitution, then a serial back-substitution.
  */
 
 #include "internal.h"
 
 /*
- * The forward substitution walks the same passes the factorization did. A row
- * in pass `p` updates its own slice of the vector and reads the slice of the
- * row it is eliminated with, which the walk put in a strictly earlier pass --
- * so every read is of a value that is already final, and no two rows in a pass
- * write the same element. That is what makes the pass parallel, and it is also
- * why the arithmetic does not depend on the thread count: each row's slice sees
- * exactly the same operations in exactly the same order however the passes are
- * spread over threads.
+ * The forward substitution walks the same passes the factorization did. A row in pass `p` writes its
+ * own slice and reads the slice of the row it is eliminated with, which the walk put in a strictly
+ * earlier pass -- so every read is already final, no two rows in a pass write the same element, and
+ * each row's slice sees the same operations in the same order at any thread count.
  */
 static void forward_substitution(const hybsol_decomposition_t *const dec, double *const vec, const int threads)
 {
@@ -45,14 +40,11 @@ hybsol_result_t hybsol_decomposition_solve(const hybsol_decomposition_t *const d
 {
     CUTL_ASSERT(dec != NULL, "The decomposition must not be NULL.");
     CUTL_ASSERT(vec != NULL, "The solution vector must not be NULL.");
-
-    if (!dec->factorized)
-        return HYBSOL_ERROR_NOT_DECOMPOSED;
+    CUTL_ASSERT(dec->factorized, "This decomposition has not been factorized.");
 
     forward_substitution(dec, vec, hybsol_resolve_threads(n_threads));
 
-    // Back substitution stays serial: row i needs every higher column it holds,
-    // which is a different dependency from the elimination's passes.
+    // Serial: row i needs every higher column it holds, a different dependency from the elimination's passes.
     hybsol_decomposition_back_substitute(dec, vec);
     return HYBSOL_SUCCESS;
 }

@@ -204,7 +204,7 @@ static int pattern_system(const pattern_t *const p, const cutl_allocator_t *cons
 static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
 {
     hybsol_elimination_t *graph = NULL;
-    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+    if (hybsol_elimination_create(sys, &graph, NULL) != HYBSOL_SUCCESS)
         return NULL;
 
     hybsol_decomposition_t *dec = NULL;
@@ -356,7 +356,7 @@ static void test_n_operations_is_exact(void)
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     const uint64_t expected = hybsol_elimination_n_operations(graph);
     CHECK_MSG(expected > 0, "the walk found no operations in a valid system");
     CHECK_MSG(expected <= p.n_blocks * (p.n_blocks + 1) / 2, "the walk found %llu operations, above the maximum %llu",
@@ -424,7 +424,7 @@ static void test_workspace_matches_internal(void)
     }
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     hybsol_decomposition_t *dec = NULL;
     CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
     hybsol_elimination_destroy(graph);
@@ -445,7 +445,7 @@ static void test_workspace_matches_internal(void)
     hybsol_system_t *second = NULL;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &second));
     graph = NULL;
-    CHECK_OK(hybsol_elimination_create(second, &graph));
+    CHECK_OK(hybsol_elimination_create(second, &graph, NULL));
     dec = NULL;
     CHECK_OK(hybsol_decomposition_create(second, graph, &dec));
     hybsol_elimination_destroy(graph);
@@ -492,7 +492,7 @@ static void test_release_in_any_order(void)
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
 
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     hybsol_decomposition_t *dec = NULL;
     CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
     CHECK_OK(hybsol_decomposition_factorize(dec, 2));
@@ -589,7 +589,7 @@ static void test_no_allocator_calls_from_parallel_regions(void)
 
         memset(&g_calls, 0, sizeof(g_calls));
         hybsol_elimination_t *graph = NULL;
-        CHECK_OK(hybsol_elimination_create(sys, &graph));
+        CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
         hybsol_decomposition_t *dec = NULL;
         CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
         hybsol_elimination_destroy(graph);
@@ -621,8 +621,8 @@ static void test_footprint_is_exact_and_stable(void)
 
     hybsol_elimination_t *first = NULL;
     hybsol_elimination_t *second = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &first));
-    CHECK_OK(hybsol_elimination_create(sys, &second));
+    CHECK_OK(hybsol_elimination_create(sys, &first, NULL));
+    CHECK_OK(hybsol_elimination_create(sys, &second, NULL));
 
     CHECK_MSG(hybsol_elimination_value_bytes(first) == hybsol_elimination_value_bytes(second),
               "the footprint changed between walks: %zu then %zu", hybsol_elimination_value_bytes(first),
@@ -733,7 +733,7 @@ static void test_allocation_counts_are_grouped(void)
     // log and the graph frame, and nothing per row.
     memset(&g_calls, 0, sizeof(g_calls));
     hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     CHECK_MSG(g_calls.allocate == 3, "the walk made %ld allocations, expected 3", g_calls.allocate);
     hybsol_elimination_destroy(graph);
 
@@ -741,13 +741,13 @@ static void test_allocation_counts_are_grouped(void)
     // builds no graph, because it only wants a verdict. The per-thread scratch
     // that used to cost one allocation a thread is inside the arena now.
     memset(&g_calls, 0, sizeof(g_calls));
-    CHECK_OK(hybsol_system_reorder_blocks(sys, order, 4));
+    CHECK_OK(hybsol_system_reorder_blocks(sys, order, 4, NULL));
     CHECK_MSG(g_calls.allocate == 3, "a reorder made %ld allocations, expected 3", g_calls.allocate);
 
     // The destination is one allocation on top of the walk's three.
     memset(&g_calls, 0, sizeof(g_calls));
     graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     hybsol_decomposition_t *dec = NULL;
     CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
     CHECK_MSG(g_calls.allocate == 4, "a decomposition made %ld allocations, expected 4", g_calls.allocate);

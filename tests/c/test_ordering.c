@@ -14,7 +14,7 @@
 static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
 {
     hybsol_elimination_t *graph = NULL;
-    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+    if (hybsol_elimination_create(sys, &graph, NULL) != HYBSOL_SUCCESS)
         return NULL;
 
     hybsol_decomposition_t *dec = NULL;
@@ -272,7 +272,7 @@ static void test_reorder_roundtrip(void)
         CHECK_OK(hybsol_system_to_dense(s.sys, dense_before));
 
         // The vector helpers use the offsets of the system they are given, so reorder it first.
-        CHECK_OK(hybsol_system_reorder_blocks(s.sys, order, 1));
+        CHECK_OK(hybsol_system_reorder_blocks(s.sys, order, 1, NULL));
         CHECK(hybsol_system_n_blocks(s.sys) == s.n_blocks);
         for (uint64_t i = 0; i < s.n_blocks; ++i)
             CHECK(hybsol_system_block_size(s.sys, order[i]) == sizes_before[i]);
@@ -334,7 +334,7 @@ static void test_reordered_system_solves_consistently(void)
 
         hybsol_system_t *reordered = NULL;
         CHECK_OK(hybsol_system_copy(s.sys, &reordered));
-        CHECK_OK(hybsol_system_reorder_blocks(reordered, order, 1));
+        CHECK_OK(hybsol_system_reorder_blocks(reordered, order, 1, NULL));
 
         double rhs[MAX_DIM];
         for (uint64_t i = 0; i < s.dim; ++i)
