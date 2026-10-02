@@ -80,7 +80,7 @@ static int require_block(const hybsol_system_t *const sys, const Py_ssize_t row,
  * The core asserts on this rather than returning a code, so anything walking
  * the pattern has to check it first.
  */
-static int require_valid_system(const hybsol_system_t *const sys, const char *const what)
+MODULE_INTERNAL int require_valid_system(const hybsol_system_t *const sys, const char *const what)
 {
     if (hybsol_system_is_valid(sys))
     {
@@ -258,7 +258,7 @@ static int parse_block_sizes(PyObject *const obj, uint64_t **const p_sizes, Py_s
  * a plain ``"single"`` works too; anything else is rejected rather than
  * quietly defaulting to double.
  */
-static int parse_precision(PyObject *const obj, hybsol_precision_t *const out)
+MODULE_INTERNAL int parse_precision(PyObject *const obj, hybsol_precision_t *const out)
 {
     if (!PyUnicode_Check(obj))
     {

@@ -192,6 +192,10 @@ hybsol_result_t hybsol_decomposition_operations(const hybsol_decomposition_t *de
  * :c:func:`hybsol_workspace_bytes`. No allocation happens inside a parallel
  * region, so the decomposition's allocator need not be thread-safe.
  *
+ * A decomposition whose factors live on a backend device has no host scratch
+ * and asserts here; factorize those with
+ * :c:func:`hybsol_decomposition_factorize`, which hands the work over.
+ *
  * Preconditions: ``dec`` non-``NULL`` and not yet factorized (asserted),
  * ``workspace`` non-``NULL`` and at least
  * :c:func:`hybsol_workspace_bytes` bytes for the same system and thread count.
@@ -210,7 +214,8 @@ hybsol_result_t hybsol_decomposition_factorize_with_workspace(hybsol_decompositi
  * from, should size a buffer once and use that spelling instead.
  *
  * Preconditions: ``dec`` non-``NULL`` and not yet factorized (asserted).
- * ``n_threads`` of ``0`` selects the OpenMP default and ``1`` runs serially.
+ * ``n_threads`` of ``0`` selects the OpenMP default and ``1`` runs serially; a
+ * decomposition on a backend device ignores it, having a scheduler of its own.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` if the scratch cannot be
  * allocated, otherwise as
@@ -264,5 +269,12 @@ void hybsol_decomposition_solve_upper(const hybsol_decomposition_t *dec, double 
  * trips an assertion above.
  */
 hybsol_result_t hybsol_decomposition_solve(const hybsol_decomposition_t *dec, double *vec, uint64_t n_threads);
+
+/**
+ * Get the index of the backend device this decomposition's factors live on, or
+ * ``UINT64_MAX`` when they are in host memory, which is what the CPU
+ * decompositions report.
+ */
+uint64_t hybsol_decomposition_device(const hybsol_decomposition_t *dec);
 
 #endif /* HYBSOL_DECOMPOSITION_H */

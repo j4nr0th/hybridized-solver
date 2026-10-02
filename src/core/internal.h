@@ -261,6 +261,26 @@ void hybsol_decomposition_back_substitute(const hybsol_decomposition_t *dec, dou
 const void *hybsol_decomposition_entry_source(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
                                               uint64_t row, uint64_t slot);
 
+/**
+ * Bytes of a decomposition frame *without* its value arena: the schedule, the
+ * pattern and the headers, for a backend that keeps the blocks somewhere else
+ * and fills :c:func:`hybsol_decomposition_init_frame` itself.
+ */
+size_t hybsol_decomposition_frame_bytes(const hybsol_elimination_t *graph, hybsol_precision_t precision);
+
+/**
+ * Lay out that arena-less frame in caller-owned storage and copy the schedule
+ * into it.
+ *
+ * Everything :c:func:`hybsol_decomposition_init` does *except* the blocks:
+ * ``rows`` and ``entries`` are carved but hold no entry pointers, ``values`` is
+ * ``NULL``, and ``backend``/``backend_state`` are ``NULL`` for the backend to
+ * fill in. A frame laid out this way is never factored on the CPU.
+ */
+hybsol_result_t hybsol_decomposition_init_frame(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
+                                                hybsol_precision_t precision, void *storage,
+                                                hybsol_decomposition_t **out);
+
 /*
  * A copy of every block the elimination will ever touch, in one allocation
  * whose layout the graph fixes: no row grows and no entry moves.
@@ -308,6 +328,12 @@ struct hybsol_decomposition
     hybsol_row_entry_t **entries;
     /** The block storage itself. */
     unsigned char *values;
+
+    /** The backend computing over this decomposition's factors, or ``NULL``
+     * for the CPU ones in ``values``. Set once, by the backend's own create. */
+    const hybsol_backend_t *backend;
+    /** Whatever the backend attached; its ``destroy`` takes it back. */
+    void *backend_state;
 };
 
 /** Number of rows/columns of block ``idx`` of a decomposition. */

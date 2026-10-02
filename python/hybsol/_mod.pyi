@@ -25,6 +25,17 @@ class SingularSystemError(ValueError):
     :class:`ValueError` for it instead.
     """
 
+class DeviceError(RuntimeError):
+    """A backend device could not be reached, or could not do what was asked.
+
+    Raised for a device index that names nothing, a device that lacks a
+    capability the operation needs (double precision, say), and for failures
+    of the device runtime itself, including a kernel build that did not
+    compile. Subclasses :class:`RuntimeError`: the machine is at fault, not
+    the call, so a caller that only wants to catch bad input still does not
+    see it.
+    """
+
 class BlockSystem:
     """Block system for hybridized solver.
 
@@ -719,6 +730,17 @@ class Decomposition:
         The list is rebuilt from the decomposition's own copy of the schedule
         rather than stored, so it costs nothing until it is asked for and
         materializing it in Python is ``O(ops)`` in objects.
+        """
+        ...
+
+    @property
+    def device(self) -> int | None:
+        """Index of the backend device the factors live on, or None.
+
+        Decompositions from :meth:`BlockSystem.decompose` keep their factors
+        in host memory and report None. A backend module -- ``hybsol.opencl``,
+        say -- produces decompositions whose factors stay on the device and
+        report its index, out of the range its own ``devices()`` lists.
         """
         ...
 

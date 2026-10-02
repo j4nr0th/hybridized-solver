@@ -23,6 +23,12 @@ const char *hybsol_result_str(const hybsol_result_t result)
         return "zero pivot in LU decomposition";
     case HYBSOL_ERROR_INVALID_ORDERING:
         return "block ordering admits no factorization of this system";
+    case HYBSOL_ERROR_NO_DEVICE:
+        return "no such device";
+    case HYBSOL_ERROR_DEVICE_CAPABILITY:
+        return "device lacks a required capability";
+    case HYBSOL_ERROR_DEVICE:
+        return "device runtime failure";
     }
     return "unknown result code";
 }

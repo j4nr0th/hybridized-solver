@@ -311,6 +311,22 @@ static PyObject *decomposition_object_get_n_operations(PyObject *const self, voi
     return PyLong_FromUnsignedLongLong(hybsol_decomposition_n_operations(this->decomposition));
 }
 
+static PyObject *decomposition_object_get_device(PyObject *const self, void *const Py_UNUSED(closure))
+{
+    decomposition_object *this;
+    if (ensure_decomposition(self, NULL, &this) < 0)
+    {
+        return NULL;
+    }
+
+    const uint64_t index = hybsol_decomposition_device(this->decomposition);
+    if (index == UINT64_MAX)
+    {
+        Py_RETURN_NONE;
+    }
+    return PyLong_FromUnsignedLongLong(index);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Type definition                                                            */
 /* ------------------------------------------------------------------------- */
@@ -357,6 +373,12 @@ PyType_Spec decomposition_type_spec = {
                      .name = "n_operations",
                      .get = decomposition_object_get_n_operations,
                      .doc = "int : Number of operations the factorization records.",
+                 },
+                 {
+                     .name = "device",
+                     .get = decomposition_object_get_device,
+                     .doc = "int | None : Index of the backend device the factors live on,"
+                            " or None when they are in host memory.",
                  },
                  {},
              }},
