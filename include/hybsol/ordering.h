@@ -5,7 +5,7 @@
  * The idea is to group blocks so that no two blocks of the same group share
  * a non-zero off-diagonal block ("coloring"), then order the unknowns group
  * by group. This concentrates the non-zero structure and makes the
- * elimination in :c:func:`hybsol_system_decompose` cheaper.
+ * factorization in :c:func:`hybsol_decomposition_factorize` cheaper.
  */
 
 #ifndef HYBSOL_ORDERING_H
@@ -30,8 +30,9 @@ typedef enum hybsol_ordering_strategy
  *
  * This is **not** a factorization ordering: it is not valid input to
  * :c:func:`hybsol_system_reorder_blocks` when the goal is
- * :c:func:`hybsol_system_decompose`. Choose your own permutation there, with
- * every block that has a lower connection ahead of the blocks it couples to.
+ * :c:func:`hybsol_decomposition_factorize`. Choose your own permutation there,
+ * with every block that has a lower connection ahead of the blocks it couples
+ * to.
  *
  * :param sys: The system to analyze; it is not modified.
  * :param strategy: Which coloring strategy; asserted one of

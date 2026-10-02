@@ -130,17 +130,16 @@ def test_reordered_system_solves_consistently(nb: int, bs: int) -> None:
             if np.any(block):
                 sys.add_block(i, j, block)
 
-    reference = sys.copy()
-    reference.decompose()
+    reference = sys.copy().decompose()
 
     lhs = rng.random(dim)
     rhs = mat @ lhs
 
     ordered = sys.copy()
     ordered.reorder_blocks(ordering)
-    ordered.decompose()
+    decomposition = ordered.decompose()
 
-    solution = ordered.solve(ordered.reorder_vector(ordering, rhs))
+    solution = decomposition.solve(ordered.reorder_vector(ordering, rhs))
     assert pytest.approx(ordered.unorder_vector(ordering, solution)) == lhs
     assert pytest.approx(reference.solve(rhs)) == lhs
 

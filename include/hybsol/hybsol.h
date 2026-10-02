@@ -30,7 +30,8 @@
 #define HYBSOL_HYBSOL_H
 
 #include <hybsol/block_system.h>
-#include <hybsol/decompose.h>
+#include <hybsol/decomposition.h>
+#include <hybsol/elimination.h>
 #include <hybsol/matrix.h>
 #include <hybsol/ordering.h>
 #include <hybsol/types.h>

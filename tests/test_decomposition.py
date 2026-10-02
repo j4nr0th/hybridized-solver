@@ -1,8 +1,8 @@
-"""Check that the block system can properly decompose and solve a system."""
+"""Check that a system decomposes, and that the decomposition solves."""
 
 import numpy as np
 import pytest
-from hybsol._mod import BlockSystem
+from hybsol._mod import BlockSystem, Decomposition
 
 
 def random_block_system(
@@ -44,7 +44,7 @@ def test_dense_matrix(n: int) -> None:
     sys.decompose()
 
     lhs = rng.random(n)
-    sol = sys.solve(mat @ lhs)
+    sol = sys.decompose().solve(mat @ lhs)
 
     assert pytest.approx(sol) == lhs
 
@@ -60,7 +60,7 @@ def test_dense_matrix_blocks(n_blocks: int, block_size: int, n_threads: int) -> 
     sys.decompose(n_threads)
 
     lhs = rng.random(n_blocks * block_size)
-    sol = sys.solve(mat @ lhs)
+    sol = sys.decompose().solve(mat @ lhs)
 
     assert pytest.approx(sol) == lhs
 
@@ -74,7 +74,7 @@ def test_decompose_records_operations(n_blocks: int, block_size: int) -> None:
 
     sys.decompose()
 
-    operations = sys.operations()
+    operations = sys.decompose().operations()
     for op in operations:
         assert op[0] < n_blocks
         if len(op) == 2:
@@ -91,16 +91,22 @@ def test_decomposed_and_copied_system_agree(n_blocks: int, block_size: int) -> N
     rng = np.random.default_rng(15)
     sys, mat = random_block_system(rng, n_blocks, block_size)
 
-    sys.decompose()
+    # The system is untouched by the factorization, so a copy and the original
+    # decompose independently and agree.
+    before = sys.as_array().copy()
+    first = sys.decompose()
     copied = sys.copy()
 
+    assert np.all(sys.as_array() == before)
     assert np.all(copied.as_array() == sys.as_array())
+    assert isinstance(first, Decomposition)
 
     lhs = rng.random(n_blocks * block_size)
     rhs = mat @ lhs
 
-    assert pytest.approx(copied.solve(rhs)) == lhs
-    assert pytest.approx(sys.solve(rhs, out=np.empty_like(rhs))) == lhs
+    second = copied.decompose()
+    assert pytest.approx(second.solve(rhs)) == lhs
+    assert pytest.approx(first.solve(rhs, out=np.empty_like(rhs))) == lhs
 
 
 @pytest.mark.parametrize("n_blocks", (2, 4))
@@ -109,11 +115,11 @@ def test_solve_in_place(n_blocks: int) -> None:
     rng = np.random.default_rng(3)
     sys, mat = random_block_system(rng, n_blocks, 2)
 
-    sys.decompose()
+    dec = sys.decompose()
 
     lhs = rng.random(n_blocks * 2)
     rhs = mat @ lhs
-    returned = sys.solve(rhs, out=rhs)
+    returned = dec.solve(rhs, out=rhs)
 
     assert returned is rhs
     assert pytest.approx(rhs) == lhs
@@ -148,25 +154,34 @@ def test_decompose_is_idempotent_guarded() -> None:
     """Modifying a decomposed system must be refused."""
     rng = np.random.default_rng(11)
     sys, _ = random_block_system(rng, 3, 2)
-    sys.decompose()
+    dec = sys.decompose()
 
-    with pytest.raises(RuntimeError):
-        sys.decompose()
-    with pytest.raises(RuntimeError):
-        sys.add_block(0, 0, np.eye(2))
-    with pytest.raises(RuntimeError):
-        sys.multiply_row(0, np.eye(2))
-    with pytest.raises(RuntimeError):
-        sys.reorder_blocks(np.arange(sys.n_blocks))
+    # A second decomposition is a fresh, independent one rather than a refusal.
+    again = sys.decompose()
+    assert again is not dec
+    assert list(again.operations()) == list(dec.operations())
+
+    # And the system is still fully mutable.
+    sys.add_block(0, 0, np.eye(2))
+    sys.multiply_row(0, np.eye(2))
+    sys.reorder_blocks(np.arange(sys.n_blocks))
 
 
-def test_solve_requires_decomposition() -> None:
-    """Solving before decomposing must be refused."""
+def test_elimination_reports_the_same_operations() -> None:
+    """The walk knows the operation count before anything is factorized."""
     rng = np.random.default_rng(11)
     sys, mat = random_block_system(rng, 3, 2)
 
-    with pytest.raises(RuntimeError):
-        sys.solve(mat @ np.ones(6))
+    graph = sys.elimination()
+    dec = sys.decompose()
+
+    assert graph.n_blocks == sys.n_blocks
+    assert graph.n_operations == dec.n_operations
+    assert len(dec.operations()) == graph.n_operations
+    assert graph.n_levels >= 1
+    assert graph.precision == sys.precision
+    assert graph.failing_block is None
+    assert np.all(mat == sys.as_array())
 
 
 def test_decompose_reports_zero_diagonal_block() -> None:
@@ -175,9 +190,12 @@ def test_decompose_reports_zero_diagonal_block() -> None:
     sys.add_block(0, 0, np.zeros((2, 2)))
 
     assert sys.is_valid()
-    # Identically zero admits no pivot, so it is an unusable order, not a singularity.
-    with pytest.raises(ValueError, match=r"no factorization.*\(block 0\)"):
+    # Identically zero admits no pivot, so it is an unusable order, not a
+    # singularity. The walk names the block it cannot get past.
+    with pytest.raises(ValueError, match=r"no factorization"):
         sys.decompose()
+    with pytest.raises(ValueError, match=r"no factorization"):
+        sys.elimination()
 
 
 if __name__ == "__main__":

@@ -167,8 +167,8 @@ def main() -> None:
         start = perf_counter()
         ordering = decomposed.compute_reordering("greedy")
         decomposed.reorder_blocks(ordering, n_threads=n_threads)
-        decomposed.decompose(n_threads=n_threads)
-        solution = decomposed.solve(decomposed.reorder_vector(ordering, rhs))
+        decomposition = decomposed.decompose(n_threads=n_threads)
+        solution = decomposition.solve(decomposed.reorder_vector(ordering, rhs))
         lhs_hybsol = decomposed.unorder_vector(ordering, solution)
         times_hybsol.append(perf_counter() - start)
 

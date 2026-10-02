@@ -118,8 +118,9 @@ def test_block_storage_view_is_single_for_a_single_system() -> None:
     view[:] = np.arange(view.size, dtype=np.float32).reshape(view.shape)
     assert np.array_equal(system.get_block(1, 2), view)
 
-    with pytest.raises(RuntimeError, match="block_storage"):
-        system.decompose()
+    # The view is the system's own storage, not a copy; writing through it
+    # writes through the system. (Whether a factorization tolerates a live view
+    # is covered in test_block_storage.py.)
 
 
 def test_values_are_converted_on_the_way_in() -> None:
@@ -172,9 +173,9 @@ def test_classmethods_take_precision() -> None:
 def test_single_solve_is_accurate_to_float() -> None:
     """A single-precision solve lands where ``cond * 1e-7`` says it must."""
     system, matrix = build(Precision.SINGLE)
-    system.decompose()
+    dec = system.decompose()
 
-    solution = system.solve(np.ones(sum(SIZES)))
+    solution = dec.solve(np.ones(sum(SIZES)))
     residual = np.abs(matrix.astype(np.float64) @ solution - 1.0).max()
 
     assert solution.dtype == np.float64
@@ -190,11 +191,8 @@ def test_single_and_double_agree_to_float_accuracy() -> None:
         reference_matrix(SIZES).astype(np.float64), np.ones(sum(SIZES))
     )
 
-    single.decompose()
-    double.decompose()
-
-    single_error = np.abs(single.solve(np.ones(sum(SIZES))) - exact).max()
-    double_error = np.abs(double.solve(np.ones(sum(SIZES))) - exact).max()
+    single_error = np.abs(single.decompose().solve(np.ones(sum(SIZES))) - exact).max()
+    double_error = np.abs(double.decompose().solve(np.ones(sum(SIZES))) - exact).max()
 
     assert double_error < 1e-10
     assert single_error < max(

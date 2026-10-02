@@ -9,6 +9,29 @@
 
 #include <string.h>
 
+/** Walk the graph, lay out the destination and factorize it. */
+static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
+{
+    hybsol_elimination_t *graph = NULL;
+    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+        return NULL;
+
+    hybsol_decomposition_t *dec = NULL;
+    if (hybsol_decomposition_create(sys, graph, &dec) != HYBSOL_SUCCESS)
+    {
+        hybsol_elimination_destroy(graph);
+        return NULL;
+    }
+    hybsol_elimination_destroy(graph);
+
+    if (hybsol_decomposition_factorize(dec, n_threads) != HYBSOL_SUCCESS)
+    {
+        hybsol_decomposition_destroy(dec);
+        return NULL;
+    }
+    return dec;
+}
+
 #define MAX_DIM 6
 
 /** Build a well-conditioned ``n_block x n_block`` block system in `precision`. */
@@ -156,7 +179,13 @@ static void test_single_decompose_and_solve(void)
     }
 
     CHECK(hybsol_system_is_valid(sys));
-    CHECK_OK(hybsol_system_decompose(sys, 1));
+    hybsol_decomposition_t *const dec = factorize(sys, 1);
+    CHECK(dec != NULL);
+    if (dec == NULL)
+    {
+        hybsol_system_destroy(sys);
+        return;
+    }
 
     // Solving takes and returns doubles whatever the storage is. The right-hand
     // side is the image of x_j = j + 1, so that is what the solve must return.
@@ -171,7 +200,7 @@ static void test_single_decompose_and_solve(void)
     double vec[5];
     memcpy(vec, rhs_vec, sizeof(vec));
 
-    CHECK_OK(hybsol_system_solve(sys, vec));
+    CHECK_OK(hybsol_decomposition_solve(dec, vec, 1));
 
     // A float solve cannot do better than cond * 1e-7 or so.
     double exact[5];
@@ -197,28 +226,87 @@ static void test_single_decompose_and_solve(void)
     double replay[5];
     for (uint64_t i = 0; i < 5; ++i)
         replay[i] = rhs_vec[i];
-    hybsol_system_apply_operations(sys, hybsol_system_n_operations(sys), hybsol_system_operations(sys), replay);
-    hybsol_system_solve_upper(sys, replay);
+    const uint64_t n_ops = hybsol_decomposition_n_operations(dec);
+    hybsol_operation_t *const ops = malloc(sizeof(*ops) * n_ops);
+    CHECK(ops != NULL);
+    if (ops != NULL)
+    {
+        uint64_t written = 0;
+        CHECK_OK(hybsol_decomposition_operations(dec, ops, n_ops, &written));
+        CHECK(written == n_ops);
+        hybsol_decomposition_apply_operations(dec, written, ops, replay);
+        free(ops);
+    }
+    hybsol_decomposition_solve_upper(dec, replay);
     for (uint64_t i = 0; i < 5; ++i)
         CHECK_NEAR(replay[i], vec[i], 1e-12);
 
-    // The diagonal solve has a float spelling too.
-    hybsol_system_t *diag = NULL;
-    const uint64_t one[1] = {2};
-    const float entries[4] = {4.0f, 0.0f, 0.0f, 4.0f};
-    CHECK_OK(hybsol_system_create_with_precision(1, one, HYBSOL_PRECISION_SINGLE, &diag, &CUTL_STD_ALLOCATOR));
-    CHECK_OK(hybsol_system_add_block_f32(diag, 0, 0, 2, 2, entries));
-    CHECK_OK(hybsol_system_decompose_diagonal(diag, 0));
+    hybsol_decomposition_destroy(dec);
+    hybsol_system_destroy(sys);
+}
 
-    float rhs_f[2] = {8.0f, 4.0f};
-    float x_f[2] = {0.0f, 0.0f};
-    const hybsol_fmatrix_t b = hybsol_fmatrix_view(2, 1, rhs_f);
-    const hybsol_fmatrix_t x = hybsol_fmatrix_view(2, 1, x_f);
-    CHECK_OK(hybsol_system_solve_diagonal_f32(diag, 0, &b, &x));
-    CHECK_NEAR(x_f[0], 2.0f, 1e-6);
-    CHECK_NEAR(x_f[1], 1.0f, 1e-6);
+/**
+ * A single-precision factorization leaves its system untouched and agrees with
+ * itself across thread counts, exactly as the double spelling does.
+ */
+static void test_single_system_survives_its_decomposition(void)
+{
+    const uint64_t thread_counts[] = {1, 2, 4};
+    double full[MAX_DIM][MAX_DIM];
+    hybsol_system_t *const sys = build_system(HYBSOL_PRECISION_SINGLE, 2, (const uint64_t[2]){2, 3}, full);
+    CHECK(sys != NULL);
+    if (sys == NULL)
+    {
+        return;
+    }
 
-    hybsol_system_destroy(diag);
+    const uint64_t dim = hybsol_system_total_size(sys);
+    float before[MAX_DIM * MAX_DIM] = {0};
+    CHECK_OK(hybsol_system_to_dense_f32(sys, before));
+
+    double rhs[5], baseline[5];
+    for (uint64_t i = 0; i < 5; ++i)
+    {
+        rhs[i] = 0.0;
+        for (uint64_t j = 0; j < 5; ++j)
+            rhs[i] += full[i][j] * (double)(j + 1);
+    }
+
+    for (size_t t = 0; t < sizeof(thread_counts) / sizeof(thread_counts[0]); ++t)
+    {
+        hybsol_decomposition_t *const dec = factorize(sys, thread_counts[t]);
+        CHECK(dec != NULL);
+        if (dec == NULL)
+        {
+            continue;
+        }
+
+        float after[MAX_DIM * MAX_DIM] = {0};
+        CHECK_OK(hybsol_system_to_dense_f32(sys, after));
+        CHECK_MSG(memcmp(before, after, sizeof(float) * dim * dim) == 0,
+                  "the single-precision factorization rewrote the system at %llu threads",
+                  (unsigned long long)thread_counts[t]);
+
+        double solution[5];
+        memcpy(solution, rhs, sizeof(rhs));
+        CHECK_OK(hybsol_decomposition_solve(dec, solution, thread_counts[t]));
+        if (t == 0)
+        {
+            memcpy(baseline, solution, sizeof(baseline));
+        }
+        else
+        {
+            CHECK_MSG(memcmp(baseline, solution, sizeof(baseline)) == 0,
+                      "thread count %llu produced a different single-precision solution",
+                      (unsigned long long)thread_counts[t]);
+        }
+
+        for (uint64_t i = 0; i < 5; ++i)
+            CHECK_NEAR(solution[i], (double)(i + 1), 1e-3);
+
+        hybsol_decomposition_destroy(dec);
+    }
+
     hybsol_system_destroy(sys);
 }
 
@@ -233,17 +321,24 @@ static void test_double_is_unchanged(void)
         return;
     }
 
-    CHECK_OK(hybsol_system_decompose(sys, 1));
+    hybsol_decomposition_t *const dec = factorize(sys, 1);
+    CHECK(dec != NULL);
+    if (dec == NULL)
+    {
+        hybsol_system_destroy(sys);
+        return;
+    }
 
     double vec[5] = {0};
     for (uint64_t i = 0; i < 5; ++i)
         for (uint64_t j = 0; j < 5; ++j)
             vec[i] += full[i][j] * (double)(j + 1);
-    CHECK_OK(hybsol_system_solve(sys, vec));
+    CHECK_OK(hybsol_decomposition_solve(dec, vec, 1));
 
     for (uint64_t i = 0; i < 5; ++i)
         CHECK_NEAR(vec[i], (double)(i + 1), 1e-12);
 
+    hybsol_decomposition_destroy(dec);
     hybsol_system_destroy(sys);
 }
 
@@ -253,6 +348,7 @@ int main(void)
     test_single_assembly_and_readback();
     test_copy_preserves_precision();
     test_single_decompose_and_solve();
+    test_single_system_survives_its_decomposition();
     test_double_is_unchanged();
     return test_report("test_precision");
 }

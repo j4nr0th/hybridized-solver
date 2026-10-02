@@ -153,12 +153,12 @@ if __name__ == "__main__":
         activate_stack_trampoline("perf")
         ordering = decomp_me.compute_reordering("greedy")
         decomp_me.reorder_blocks(ordering, n_threads=N_THREADS)
-        decomp_me.decompose(n_threads=N_THREADS)
+        decomposition = decomp_me.decompose(n_threads=N_THREADS)
         # `rhs` still lives in the old ordering, so it goes through
         # reorder_vector first and the solution comes back through
         # unorder_vector.
         prhs = decomp_me.reorder_vector(ordering, rhs)
-        plhs_me = decomp_me.solve(prhs)
+        plhs_me = decomposition.solve(prhs)
         lhs_me = decomp_me.unorder_vector(ordering, plhs_me)
         deactivate_stack_trampoline()
         t1 = perf_counter() - t

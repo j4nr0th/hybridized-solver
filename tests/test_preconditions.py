@@ -15,16 +15,20 @@ from hybsol import BlockSystem, Precision
 def full_system(n: int = 2) -> BlockSystem:
     """Build a complete, decomposable system of ``n`` blocks of size 2.
 
+    Diagonally dominant with a nonzero off-diagonal, so it is structurally
+    valid *and* factorizable: every structural precondition holds, and only the
+    argument under test is at fault.
+
     Returns
     -------
     BlockSystem
-        A system with every diagonal block present, so the structural
-        preconditions hold and only the argument under test is at fault.
+        A symmetric system with every block present and a full-rank LU.
     """
     sys = BlockSystem(2, n)
     for i in range(n):
         for j in range(n):
-            sys.add_block(i, j, np.eye(2) * 4.0)
+            block = np.ones((2, 2)) if i != j else np.eye(2) * 4.0
+            sys.add_block(i, j, block)
     return sys
 
 
@@ -58,19 +62,12 @@ class TestIndexPreconditions:
         with pytest.raises(ValueError, match="range"):
             sys.get_next_column_index(index, 0)
         with pytest.raises(ValueError, match="range"):
-            sys.decompose_diagonal(index)
-        with pytest.raises(ValueError, match="range"):
-            sys.row_apply_decomposition(index)
-        with pytest.raises(ValueError, match="range"):
-            sys.solve_diagonal(index, np.zeros(2))
-        with pytest.raises(ValueError, match="range"):
             sys.multiply_row(index, np.eye(2))
 
-    def test_solve_accepts_a_valid_index(self) -> None:
-        """An in-range index still works, so the guard is not blanket-rejecting."""
-        sys = full_system()
-        sys.decompose_diagonal(1)
-        assert sys.solve_diagonal(1, np.ones(2)).shape == (2,)
+    def test_solve_accepts_a_valid_vector(self) -> None:
+        """An in-range call still works, so the guards are not blanket-rejecting."""
+        decomposition = full_system().decompose()
+        assert decomposition.solve(np.ones(4)).shape == (4,)
 
 
 class TestShapePreconditions:
@@ -92,14 +89,13 @@ class TestShapePreconditions:
         with pytest.raises(ValueError):
             sys.multiply_row(0, np.ones((2, 3)))
 
-    def test_solve_diagonal_rejects_wrong_shapes(self) -> None:
-        """Right-hand side and destination must match the diagonal's size."""
-        sys = full_system()
-        sys.decompose_diagonal(0)
+    def test_solve_rejects_wrong_shapes(self) -> None:
+        """Right-hand side and destination must match the system's size."""
+        decomposition = full_system().decompose()
+        with pytest.raises(ValueError, match="val"):
+            decomposition.solve(np.zeros(5))
         with pytest.raises(ValueError):
-            sys.solve_diagonal(0, np.zeros(5))
-        with pytest.raises(ValueError):
-            sys.solve_diagonal(0, np.zeros(2), np.zeros(7))
+            decomposition.solve(np.zeros(4), out=np.zeros(7))
 
     def test_add_blocks_rejects_out_of_range_index(self) -> None:
         """Bulk assembly validates every index in the arrays."""
@@ -160,20 +156,13 @@ class TestStructuralPreconditions:
         with pytest.raises(ValueError):
             sys.decompose()
 
-    @pytest.mark.parametrize(
-        "call",
-        [
-            lambda s: s.decompose_diagonal(1),
-            lambda s: s.row_apply_decomposition(1),
-            lambda s: s.solve_diagonal(1, np.zeros(2)),
-        ],
-    )
-    def test_methods_reject_a_row_without_a_diagonal(self, call) -> None:
-        """Each diagonal-using method checks the row has its diagonal first."""
+    @pytest.mark.parametrize("entry", ["elimination", "decompose"])
+    def test_pipeline_rejects_a_row_without_a_diagonal(self, entry: str) -> None:
+        """A missing diagonal is refused by both entry points, as a ValueError."""
         sys = BlockSystem(2, 2)
         sys.add_block(0, 0, np.eye(2))
-        with pytest.raises(ValueError, match="diagonal"):
-            call(sys)
+        with pytest.raises(ValueError, match="not valid"):
+            getattr(sys, entry)()
 
     def test_eliminate_row_requires_the_source_column(self) -> None:
         """The target row must actually hold the column being eliminated."""
@@ -233,9 +222,81 @@ class TestPrecisionIsHandledNotAborted:
         for i in range(2):
             for j in range(2):
                 sys.add_block(i, j, np.eye(2) * (4.0 if i == j else 1.0))
-        sys.decompose()
+        dec = sys.decompose()
 
         # The dense operator is [[4, 1], [1, 4]], so a right-hand side of
         # ones has the constant solution 1 / 5 in every component.
-        solution = sys.solve(np.ones(4))
+        solution = dec.solve(np.ones(4))
         assert np.allclose(solution, np.full(4, 0.2), atol=1e-5)
+
+
+class TestDecompositionIsGuarded:
+    """The decomposition and the graph check their arguments before the core.
+
+    The core asserts on these, so reaching it unchecked would abort the
+    interpreter rather than raise.
+    """
+
+    @staticmethod
+    def full_system() -> BlockSystem:
+        """Build a decomposable 2 x 2 system with blocks of size 3."""
+        sys = BlockSystem(3, 3)
+        sys.add_block(0, 0, np.eye(3) * 4.0)
+        sys.add_block(0, 1, np.ones((3, 3)))
+        sys.add_block(1, 0, np.ones((3, 3)))
+        sys.add_block(1, 1, np.eye(3) * 4.0)
+        return sys
+
+    def test_decompose_returns_a_factorized_decomposition(self) -> None:
+        """What :meth:`BlockSystem.decompose` hands back is ready to solve."""
+        dec = self.full_system().decompose()
+
+        assert dec.is_factorized
+        assert dec.failing_block is None
+        assert dec.n_blocks == 2
+        assert dec.n_operations > 0
+
+    def test_solve_accepts_a_valid_vector(self) -> None:
+        """The guard is narrow: a factorized decomposition solves normally."""
+        dec = self.full_system().decompose()
+        solution = dec.solve(np.ones(6))
+        assert solution.shape == (6,)
+
+    def test_elimination_rejects_an_invalid_system(self) -> None:
+        """A system the solver cannot use is refused, not asserted on."""
+        sys = BlockSystem(2, 2)
+        sys.add_block(0, 1, np.eye(2))
+        sys.add_block(1, 0, np.eye(2))
+
+        with pytest.raises(ValueError, match="not valid"):
+            sys.elimination()
+        with pytest.raises(ValueError, match="not valid"):
+            sys.decompose()
+
+    @pytest.mark.parametrize("bad", (-1, 2, 99))
+    def test_graph_queries_check_their_index(self, bad: int) -> None:
+        """Row and pass indices are range-checked before the core is called."""
+        graph = self.full_system().elimination()
+
+        with pytest.raises(ValueError, match="range"):
+            graph.row_columns(bad)
+        with pytest.raises(ValueError, match="range"):
+            graph.row_level(bad)
+        with pytest.raises(ValueError, match="range"):
+            graph.row_length(bad)
+        with pytest.raises(ValueError, match="range"):
+            graph.level_rows(bad)
+
+    def test_decompose_rejects_a_negative_thread_count(self) -> None:
+        """A negative thread count is a caller mistake, not an OpenMP default."""
+        sys = self.full_system()
+        with pytest.raises(ValueError, match="non-negative"):
+            sys.decompose(-1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sys.workspace_bytes(-1)
+
+    def test_solve_rejects_a_negative_thread_count(self) -> None:
+        """The solve takes a thread count too, and checks it the same way."""
+        dec = self.full_system().decompose()
+        with pytest.raises(ValueError, match="non-negative"):
+            dec.solve(np.ones(6), n_threads=-1)

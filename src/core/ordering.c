@@ -278,28 +278,12 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *const sy
 hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const uint64_t *const new_order,
                                              const uint64_t n_threads)
 {
-    hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
     CUTL_ASSERT(new_order != NULL, "The permutation must not be NULL.");
 
     const uint64_t n = sys->n;
-    // `new_order` has to be a permutation of [0, n)
-    uint8_t *const seen = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*seen));
-    if (seen == NULL)
-        return HYBSOL_ERROR_OUT_OF_MEMORY;
-    memset(seen, 0, (size_t)n * sizeof(*seen));
-    for (uint64_t i = 0; i < n; ++i)
-    {
-        CUTL_ASSERT(new_order[i] < n && !seen[new_order[i]],
-                    "new_order must be a permutation of [0, %llu), but it repeats %llu at position %llu.",
-                    (unsigned long long)n, (unsigned long long)new_order[i], (unsigned long long)i);
-        seen[new_order[i]] = 1;
-    }
-    hybsol_free(sys->allocator, seen);
 
-    // A scratch buffer per thread, so re-sorting allocates nothing from
-    // inside the parallel region
+    // A scratch buffer per thread, so re-sorting allocates nothing from inside
+    // the parallel region.
     uint64_t max_entries = 0;
     for (uint64_t i = 0; i < n; ++i)
         if (sys->rows[i].count > max_entries)
@@ -307,37 +291,43 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     if (max_entries == 0)
         max_entries = 1;
 
+    // Everything this call needs, in one allocation: the permutation check's
+    // bitmap, the two arrays the shuffle writes through, the per-thread
+    // scratch pointers, and the per-thread scratch itself. All of it is wanted
+    // for the whole call and released together at the end, so there is nothing
+    // to gain from asking for it separately -- and one request per thread for
+    // the scratch is the worst of it.
     const int threads = hybsol_resolve_threads(n_threads);
-    hybsol_row_entry_t ***const scratch = hybsol_alloc(sys->allocator, (size_t)threads * sizeof(*scratch));
-    hybsol_row_t *const new_rows = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*new_rows));
-    uint64_t *const new_sizes = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*new_sizes));
-    uint8_t *const new_flags = hybsol_alloc(sys->allocator, (size_t)n * sizeof(*new_flags));
-    if (scratch == NULL || new_rows == NULL || new_sizes == NULL || new_flags == NULL)
-    {
-        hybsol_free(sys->allocator, scratch);
-        hybsol_free(sys->allocator, new_rows);
-        hybsol_free(sys->allocator, new_sizes);
-        hybsol_free(sys->allocator, new_flags);
+    const size_t off_seen = hybsol_align_up(0);
+    const size_t off_scratch = off_seen + (size_t)n * sizeof(uint8_t);
+    const size_t off_new_rows = off_scratch + (size_t)threads * sizeof(hybsol_row_entry_t **);
+    const size_t off_new_sizes = off_new_rows + (size_t)n * sizeof(hybsol_row_t);
+    const size_t off_entries = off_new_sizes + (size_t)n * sizeof(uint64_t);
+    const size_t total = off_entries + (size_t)threads * (size_t)max_entries * sizeof(hybsol_row_entry_t *);
+
+    unsigned char *const arena = hybsol_alloc(sys->allocator, total);
+    if (arena == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
-    }
+    memset(arena, 0, total);
+
+    uint8_t *const seen = (uint8_t *)(arena + off_seen);
+    hybsol_row_entry_t ***const scratch = (hybsol_row_entry_t ***)(arena + off_scratch);
+    hybsol_row_t *const new_rows = (hybsol_row_t *)(arena + off_new_rows);
+    uint64_t *const new_sizes = (uint64_t *)(arena + off_new_sizes);
+    hybsol_row_entry_t **const entry_buffers = (hybsol_row_entry_t **)(arena + off_entries);
     for (int t = 0; t < threads; ++t)
-        scratch[t] = NULL;
-    for (int t = 0; t < threads; ++t)
+        scratch[t] = entry_buffers + (size_t)t * (size_t)max_entries;
+
+    // `new_order` has to be a permutation of [0, n)
+    for (uint64_t i = 0; i < n; ++i)
     {
-        scratch[t] = hybsol_alloc(sys->allocator, (size_t)max_entries * sizeof(*scratch[t]));
-        if (scratch[t] == NULL)
-        {
-            for (int u = 0; u < threads; ++u)
-                hybsol_free(sys->allocator, scratch[u]);
-            hybsol_free(sys->allocator, scratch);
-            hybsol_free(sys->allocator, new_rows);
-            hybsol_free(sys->allocator, new_sizes);
-            hybsol_free(sys->allocator, new_flags);
-            return HYBSOL_ERROR_OUT_OF_MEMORY;
-        }
+        CUTL_ASSERT(new_order[i] < n && !seen[new_order[i]],
+                    "new_order must be a permutation of [0, %llu), but it repeats %llu at position %llu.",
+                    (unsigned long long)n, (unsigned long long)new_order[i], (unsigned long long)i);
+        seen[new_order[i]] = 1;
     }
 
-#pragma omp parallel default(none) shared(sys, n, new_order, new_rows, new_sizes, new_flags, scratch) if (threads > 1) \
+#pragma omp parallel default(none) shared(sys, n, new_order, new_rows, new_sizes, scratch) if (threads > 1)            \
     num_threads(threads)
     {
         hybsol_row_entry_t **const entry_buffer = scratch[HYBSOL_THREAD_NUM()];
@@ -378,22 +368,18 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
             }
         }
 
-        // Move the rows, their diagonal state and their sizes into place
+        // Move the rows and their sizes into place
 #pragma omp for schedule(static)
         for (uint64_t i = 0; i < n; ++i)
         {
             const uint64_t new_idx = new_order[i];
             new_rows[new_idx] = sys->rows[i];
-            new_flags[new_idx] = sys->diag_decomposed[i];
             new_sizes[new_idx] = hybsol_block_size(sys, i);
         }
 
 #pragma omp for schedule(static)
         for (uint64_t i = 0; i < n; ++i)
-        {
             sys->rows[i] = new_rows[i];
-            sys->diag_decomposed[i] = new_flags[i];
-        }
     }
 
 #if CUTL_ENABLE_ASSERTS
@@ -417,17 +403,14 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     sys->block_offsets[0] = 0;
     for (uint64_t i = 0; i < n; ++i)
         sys->block_offsets[i + 1] = sys->block_offsets[i] + new_sizes[i];
-    hybsol_free(sys->allocator, new_sizes);
 
-    // The permutation is already applied and is not rolled back.
-    hybsol_fill_plan_t plan;
-    const hybsol_result_t ordered = hybsol_fill_plan_compute(sys, &plan);
-    if (ordered != HYBSOL_SUCCESS)
-    {
-        return ordered;
-    }
+    // The scratch only existed to shuffle the rows into `new_rows`; the rows
+    // themselves moved into the system and the whole arena is done with.
+    hybsol_free(sys->allocator, arena);
 
-    return HYBSOL_SUCCESS;
+    // The permutation is already applied and is not rolled back. What the walk
+    // rejects is the order, not the shuffle, so the check is worth its pass.
+    return hybsol_elimination_check(sys);
 }
 
 /* ------------------------------------------------------------------------- */

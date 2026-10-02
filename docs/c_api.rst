@@ -45,24 +45,38 @@ allocators and a bare ``malloc`` pointer may be handed to the library. Pass
 provides arena, fixed-size-pool and validating allocators.
 
 The allocator need only be safe for the phases that run one at a time.
-:c:func:`hybsol_system_decompose_with_workspace` is parallel and never calls it
-from inside a parallel region, so a plain bump arena with no locking at all can
-be supplied. The fill-in comes from one pool the library allocates up front,
-sized exactly by :c:func:`hybsol_fill_plan`, which walks the elimination graph
-symbolically before any thread starts; the pool is owned by the system and
-released with it. A pool found too small would mean the symbolic walk and the
-factorization disagree, so that one allocation falls back to the allocator
-under a lock rather than failing.
+:c:func:`hybsol_decomposition_factorize_with_workspace` is parallel and never
+calls it from inside a parallel region, so a plain bump arena with no locking
+at all can be supplied. That falls out of the split: the destination's whole
+layout — every block, including the fill-in — is fixed by
+:c:func:`hybsol_elimination_create` before any thread starts, and carved in one
+allocation, so the factorization itself allocates nothing. The operation list is
+read back off the same schedule on demand rather than stored.
 
-The transient scratch comes from a buffer the caller supplies, sized by
-:c:func:`hybsol_workspace_bytes`; :c:func:`hybsol_system_decompose` allocates
-that buffer itself. The recorded operation list is sized to
-:c:func:`hybsol_system_operation_bound` before the parallel region starts, so
-appending to it neither grows nor locks.
+The pipeline has five stages, each usable on its own:
 
-Indices and counts are ``uint64_t`` throughout, and a system is an opaque
-:c:type:`hybsol_system_t` that :c:func:`hybsol_system_create` builds and
-:c:func:`hybsol_system_destroy` releases.
+#. :c:func:`hybsol_elimination_create` walks the elimination graph
+   symbolically, computing no values, and reports the final pattern, the passes
+   the factorization runs in, the exact memory it will need, and whether the
+   block order admits a factorization at all.
+#. :c:func:`hybsol_decomposition_create` lays out the destination in one
+   allocation and copies the system's blocks into it.
+#. :c:func:`hybsol_decomposition_factorize` walks the graph, factorizing in
+   place.
+#. :c:func:`hybsol_decomposition_solve` substitutes forward — one pass at a
+   time, parallel across the rows of a pass — and back-substitutes serially.
+
+The transient scratch for the factorization comes from a buffer the caller
+supplies, sized by :c:func:`hybsol_workspace_bytes`;
+:c:func:`hybsol_decomposition_factorize` allocates that buffer itself. A
+decomposition owns a copy of the blocks it factorizes, so the system it came
+from is unchanged and may be released or decomposed again.
+
+Indices and counts are ``uint64_t`` throughout. The three opaque types are
+:c:type:`hybsol_system_t` (built by :c:func:`hybsol_system_create`),
+:c:type:`hybsol_elimination_t` (by :c:func:`hybsol_elimination_create`) and
+:c:type:`hybsol_decomposition_t` (by :c:func:`hybsol_decomposition_create`),
+each with its own destroy.
 
 The headers
 -----------
@@ -73,6 +87,8 @@ The headers
 
 .. c:autodoc:: include/hybsol/block_system.h
 
-.. c:autodoc:: include/hybsol/decompose.h
+.. c:autodoc:: include/hybsol/elimination.h
+
+.. c:autodoc:: include/hybsol/decomposition.h
 
 .. c:autodoc:: include/hybsol/ordering.h

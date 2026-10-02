@@ -10,6 +10,29 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** Walk the graph, lay out the destination and factorize it. */
+static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
+{
+    hybsol_elimination_t *graph = NULL;
+    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+        return NULL;
+
+    hybsol_decomposition_t *dec = NULL;
+    if (hybsol_decomposition_create(sys, graph, &dec) != HYBSOL_SUCCESS)
+    {
+        hybsol_elimination_destroy(graph);
+        return NULL;
+    }
+    hybsol_elimination_destroy(graph);
+
+    if (hybsol_decomposition_factorize(dec, n_threads) != HYBSOL_SUCCESS)
+    {
+        hybsol_decomposition_destroy(dec);
+        return NULL;
+    }
+    return dec;
+}
+
 #define MAX_BLOCKS 40
 #define MAX_DIM (MAX_BLOCKS * 4)
 
@@ -317,15 +340,27 @@ static void test_reordered_system_solves_consistently(void)
         for (uint64_t i = 0; i < s.dim; ++i)
             rhs[i] = rng_next(&r);
 
-        CHECK_OK(hybsol_system_decompose(s.sys, 1));
-        CHECK_OK(hybsol_system_decompose(reordered, 0));
+        hybsol_decomposition_t *plain = factorize(s.sys, 1);
+        hybsol_decomposition_t *shuffled = factorize(reordered, 0);
+        CHECK(plain != NULL && shuffled != NULL);
+        if (plain == NULL || shuffled == NULL)
+        {
+            hybsol_decomposition_destroy(plain);
+            hybsol_decomposition_destroy(shuffled);
+            hybsol_system_destroy(reordered);
+            random_system_destroy(&s);
+            return;
+        }
 
         double reference[MAX_DIM], actual[MAX_DIM], permuted_rhs[MAX_DIM];
         memcpy(reference, rhs, sizeof(double) * s.dim);
-        CHECK_OK(hybsol_system_solve(s.sys, reference));
+        CHECK_OK(hybsol_decomposition_solve(plain, reference, 1));
 
         hybsol_system_reorder_vector(reordered, order, rhs, permuted_rhs);
-        CHECK_OK(hybsol_system_solve(reordered, permuted_rhs));
+        CHECK_OK(hybsol_decomposition_solve(shuffled, permuted_rhs, 0));
+
+        hybsol_decomposition_destroy(plain);
+        hybsol_decomposition_destroy(shuffled);
 
         // `permuted_rhs` now holds the reordered solution.
         hybsol_system_unorder_vector(reordered, order, permuted_rhs, actual);

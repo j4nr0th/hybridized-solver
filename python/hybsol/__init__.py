@@ -1,15 +1,30 @@
 """Hybridized block solver.
 
-The heavy lifting happens in a small, dependency-free C core that is exposed
-to Python through the :class:`BlockSystem` extension type.
+The heavy lifting happens in a small, dependency-free C core, exposed to
+Python through three extension types: :class:`BlockSystem` for the assembled
+system, :class:`Decomposition` for a factorized one, and :class:`Elimination`
+for the symbolic walk that decides what factorizing would cost.
 """
 
 from enum import StrEnum
 
 from hybsol._mod import BlockSystem as BlockSystem
+from hybsol._mod import Decomposition as Decomposition
+from hybsol._mod import Elimination as Elimination
 from hybsol._mod import SingularSystemError as SingularSystemError
+from hybsol.pipeline import factorize as factorize
+from hybsol.pipeline import refined_solve as refined_solve
 
-__all__ = ["BlockSystem", "Precision", "SingularSystemError", "__version__"]
+__all__ = [
+    "BlockSystem",
+    "Decomposition",
+    "Elimination",
+    "Precision",
+    "SingularSystemError",
+    "__version__",
+    "factorize",
+    "refined_solve",
+]
 
 __version__ = "0.0.1a"
 

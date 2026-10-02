@@ -152,9 +152,9 @@ int hybsol_system_is_valid(const hybsol_system_t *sys);
 /**
  * Get the block whose diagonal could not be factorized.
  *
- * Set by :c:func:`hybsol_system_decompose` and
- * :c:func:`hybsol_system_decompose_diagonal` when a diagonal block has no
- * pivot, so that a failure can name the block.
+ * Set by :c:func:`hybsol_elimination_create` and
+ * :c:func:`hybsol_system_reorder_blocks` when a diagonal block has no pivot, so
+ * that a failure can name the block.
  *
  * :param sys: The system.
  * :returns: The zero-based block index, or ``UINT64_MAX`` when the last
@@ -362,8 +362,7 @@ hybsol_result_t hybsol_system_add_blocks_f32(hybsol_system_t *sys, uint64_t n_en
  *
  * The pointer stays valid while other blocks are added, since each block owns
  * its allocation, but not across :c:func:`hybsol_system_reorder_blocks` or
- * :c:func:`hybsol_system_decompose`, which rebuild the rows. Writing the
- * diagonal block invalidates that row's cached factorization.
+ * :c:func:`hybsol_system_eliminate_row_with`, which rebuild the rows.
  *
  * :param sys: The system.
  * :param row: Block row index; asserted in range.
@@ -473,6 +472,55 @@ hybsol_result_t hybsol_system_eliminate_row_with_f32(hybsol_system_t *sys, uint6
 hybsol_result_t hybsol_system_eliminate_row(hybsol_system_t *sys, uint64_t row_tgt, uint64_t row_src);
 
 /**
+ * Apply the system to a single vector, ``y = A x``.
+ *
+ * This is the operator the elimination solves against, and the one worth having
+ * fast: it walks the stored blocks rather than a dense form, so a sparse system
+ * costs the sum of its blocks rather than the square of its dimension. The
+ * factorizations' correctness rests on being able to measure ``rhs - A x``
+ * against the system, which is what this is for.
+ *
+ * Both vectors are ``size x 1``. ``x`` may be narrower than the system's
+ * precision; it is widened as it is read. ``y`` is written, not accumulated
+ * into, and must not be ``x``.
+ *
+ * The work is split across block rows, each of which writes only its own slice
+ * of ``y``, so the system is only ever read and a caller may keep using it
+ * meanwhile.
+ *
+ * :param sys: The system. Not modified.
+ * :param x: Input of length ``total_size``; must not be ``NULL``.
+ * :param y: Destination of length ``total_size``; must not be ``NULL`` and
+ *     must not overlap ``x``.
+ * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
+ *     default and ``1`` runs it serially.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
+ */
+hybsol_result_t hybsol_system_matvec(const hybsol_system_t *sys, const hybsol_matrix_t *x, hybsol_matrix_t *y,
+                                     uint64_t n_threads);
+
+/**
+ * Apply the system to several right-hand sides, ``y = A x``.
+ *
+ * The same walk as :c:func:`hybsol_system_matvec`, done for every column of
+ * ``x`` at once, so the pattern is traversed once rather than once per column.
+ * With one column the two are identical.
+ *
+ * ``x`` is ``total_size x k`` and ``y`` is ``total_size x k``, both
+ * row-major. ``y`` is written, not accumulated into, and must not overlap ``x``.
+ *
+ * :param sys: The system. Not modified.
+ * :param x: Input of ``total_size`` rows; must not be ``NULL``.
+ * :param y: Destination with the same shape; must not be ``NULL`` and must not
+ *     overlap ``x``.
+ * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
+ *     default and ``1`` runs it serially.
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
+ */
+hybsol_result_t hybsol_system_matmat(const hybsol_system_t *sys, const hybsol_matrix_t *x, hybsol_matrix_t *y,
+                                     uint64_t n_threads);
+
+/**
  * Write the system as a dense matrix.
  *
  * Missing blocks are written as zeros.
@@ -493,6 +541,7 @@ hybsol_result_t hybsol_system_to_dense(const hybsol_system_t *sys, double *out);
  *     Must not be ``NULL``.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`.
  */
+
 hybsol_result_t hybsol_system_to_dense_f32(const hybsol_system_t *sys, float *out);
 
 #endif /* HYBSOL_BLOCK_SYSTEM_H */

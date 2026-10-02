@@ -116,13 +116,27 @@ def test_block_storage_rejects_bad_indices(
         sys.block_storage(row, col)
 
 
-def test_block_storage_rejects_decomposed_system() -> None:
-    """Storage cannot be created once the pattern is frozen by a factorization."""
+def test_block_storage_survives_a_decomposition() -> None:
+    """A factorization writes elsewhere, so the system keeps serving storage."""
     sys = two_block_system()
     sys.decompose()
 
-    with pytest.raises(RuntimeError, match="already been decomposed"):
-        sys.block_storage(0, 1)
+    view = sys.block_storage(0, 1)
+    view[:] = 2.5
+    assert np.all(sys.get_block(0, 1) == 2.5)
+
+
+def test_decomposition_does_not_observe_a_live_view() -> None:
+    """The factorization copies what it needs, so a held view is not in the way."""
+    sys = two_block_system()
+    held = sys.block_storage(0, 1)
+    before = sys.as_array().copy()
+
+    dec = sys.decompose()
+
+    assert np.all(sys.as_array() == before)
+    assert np.all(held == 1.0)
+    assert dec.is_factorized
 
 
 def test_live_view_blocks_restructuring() -> None:
@@ -130,8 +144,6 @@ def test_live_view_blocks_restructuring() -> None:
     sys = two_block_system()
     held = sys.block_storage(0, 1)
 
-    with pytest.raises(RuntimeError, match="block_storage"):
-        sys.decompose()
     with pytest.raises(RuntimeError, match="block_storage"):
         sys.reorder_blocks(np.array([1, 0], dtype=np.uint64))
     with pytest.raises(RuntimeError, match="block_storage"):
@@ -160,19 +172,20 @@ def test_releasing_the_view_lifts_the_guard() -> None:
     sys = two_block_system()
     keep = sys.block_storage(0, 0)
     drop = sys.block_storage(1, 1)
+    flip = np.array([1, 0], dtype=np.uint64)
 
     with pytest.raises(RuntimeError, match="2 array"):
-        sys.decompose()
+        sys.reorder_blocks(flip)
 
     del drop
     gc.collect()
 
     with pytest.raises(RuntimeError, match="1 array"):
-        sys.decompose()
+        sys.reorder_blocks(flip)
 
     del keep
     gc.collect()
-    sys.decompose()
+    sys.reorder_blocks(flip)
 
 
 def test_view_keeps_the_system_alive() -> None:

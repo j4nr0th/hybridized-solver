@@ -4,10 +4,6 @@
 
 #include "internal.h"
 
-/* ------------------------------------------------------------------------- */
-/* Lookup helpers                                                            */
-/* ------------------------------------------------------------------------- */
-
 uint64_t hybsol_row_find_geq(const hybsol_row_t *const row, const uint64_t val)
 {
     const uint64_t size = row->count;
@@ -87,14 +83,14 @@ hybsol_result_t hybsol_row_reserve(hybsol_system_t *const sys, hybsol_row_t *con
     // Not `realloc`: the old array may come from a different allocator than
     // the new one, so the release has to go through whichever owns it.
     const size_t old_bytes = (size_t)row->capacity * sizeof(*row->entries);
-    hybsol_row_entry_t **const ptr = hybsol_alloc(hybsol_current_alloc(sys), (size_t)new_capacity * sizeof(*ptr));
+    hybsol_row_entry_t **const ptr = hybsol_alloc(sys->allocator, (size_t)new_capacity * sizeof(*ptr));
     if (ptr == NULL)
         return HYBSOL_ERROR_OUT_OF_MEMORY;
 
     if (row->entries != NULL)
     {
         memcpy(ptr, row->entries, old_bytes);
-        hybsol_free(hybsol_ptr_is_pooled(sys, row->entries) ? hybsol_current_alloc(sys) : sys->allocator, row->entries);
+        hybsol_free(sys->allocator, row->entries);
     }
 
     for (uint64_t i = row->capacity; i < new_capacity; ++i)
@@ -105,16 +101,9 @@ hybsol_result_t hybsol_row_reserve(hybsol_system_t *const sys, hybsol_row_t *con
     return HYBSOL_SUCCESS;
 }
 
-hybsol_result_t hybsol_require_mutable(const hybsol_system_t *const sys)
-{
-    return sys->decomposed ? HYBSOL_ERROR_ALREADY_DECOMPOSED : HYBSOL_SUCCESS;
-}
-
-void hybsol_invalidate_diagonal(hybsol_system_t *const sys, const uint64_t idx)
-{
-    if (idx < sys->n)
-        sys->diag_decomposed[idx] = 0;
-}
+/* ------------------------------------------------------------------------- */
+/* Lookup helpers                                                             */
+/* ------------------------------------------------------------------------- */
 
 /* ------------------------------------------------------------------------- */
 /* Assembly                                                                   */
@@ -224,13 +213,10 @@ static void free_row(const hybsol_system_t *const sys, hybsol_row_t *const row)
 {
     for (uint64_t i = 0; i < row->count; ++i)
     {
-        // Pooled entries are released with the system, not one by one
-        if (!hybsol_ptr_is_pooled(sys, row->entries[i]))
-            hybsol_free(sys->allocator, row->entries[i]);
+        hybsol_free(sys->allocator, row->entries[i]);
         row->entries[i] = NULL;
     }
-    if (!hybsol_ptr_is_pooled(sys, row->entries))
-        hybsol_free(sys->allocator, row->entries);
+    hybsol_free(sys->allocator, row->entries);
     row->entries = NULL;
     row->count = 0;
     row->capacity = 0;
@@ -249,10 +235,9 @@ static void free_row(const hybsol_system_t *const sys, hybsol_row_t *const row)
 static hybsol_result_t system_frame_alloc(hybsol_system_t **const out, const uint64_t n_blocks,
                                           const cutl_allocator_t *const allocator)
 {
-    const size_t off_offsets = hybsol_pool_align(sizeof(hybsol_system_t));
+    const size_t off_offsets = hybsol_align_up(sizeof(hybsol_system_t));
     const size_t off_rows = off_offsets + (size_t)(n_blocks + 1) * sizeof(uint64_t);
-    const size_t off_diag = off_rows + (size_t)n_blocks * sizeof(hybsol_row_t);
-    const size_t total = hybsol_pool_align(off_diag + (size_t)n_blocks * sizeof(uint8_t));
+    const size_t total = hybsol_align_up(off_rows + (size_t)n_blocks * sizeof(hybsol_row_t));
 
     hybsol_system_t *const sys = hybsol_alloc(allocator, total);
     if (sys == NULL)
@@ -264,7 +249,6 @@ static hybsol_result_t system_frame_alloc(hybsol_system_t **const out, const uin
     sys->n = n_blocks;
     sys->block_offsets = (uint64_t *)(base + off_offsets);
     sys->rows = (hybsol_row_t *)(base + off_rows);
-    sys->diag_decomposed = (uint8_t *)(base + off_diag);
     sys->failing_block = UINT64_MAX;
 
     *out = sys;
@@ -303,7 +287,6 @@ hybsol_result_t hybsol_system_create_with_precision(const uint64_t n_blocks,
     {
         sys->block_offsets[i + 1] = sys->block_offsets[i] + block_sizes[i];
         sys->rows[i] = (hybsol_row_t){0};
-        sys->diag_decomposed[i] = 0;
     }
 
     *out = sys;
@@ -329,12 +312,8 @@ void hybsol_system_destroy(hybsol_system_t *const sys)
     for (uint64_t i = 0; i < sys->n; ++i)
         free_row(sys, sys->rows + i);
 
-    // The pool goes after the rows: the pooled check they rely on reads its
-    // bounds. The frame goes last -- it holds `sys` itself, and the three arrays
-    // above are interior pointers into it rather than blocks of their own.
-    hybsol_pool_free(sys);
-
-    hybsol_free(sys->allocator, sys->ops);
+    // The frame goes last: it holds `sys` itself, and the arrays above are
+    // interior pointers into it rather than blocks of their own.
     hybsol_free(sys->allocator, sys);
 }
 
@@ -351,13 +330,9 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
         return framed;
     }
     dst->precision = sys->precision;
-    dst->decomposed = sys->decomposed;
-    dst->n_ops = sys->n_ops;
-    dst->ops_capacity = sys->n_ops;
     dst->failing_block = sys->failing_block;
 
     memcpy(dst->block_offsets, sys->block_offsets, sizeof(*dst->block_offsets) * (size_t)(sys->n + 1));
-    memcpy(dst->diag_decomposed, sys->diag_decomposed, sizeof(*dst->diag_decomposed) * (size_t)sys->n);
     for (uint64_t i = 0; i < sys->n; ++i)
         dst->rows[i] = (hybsol_row_t){0};
 
@@ -396,17 +371,6 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
             tgt->entries[j] = copy;
             tgt->count += 1;
         }
-    }
-
-    if (sys->n_ops > 0)
-    {
-        dst->ops = hybsol_alloc(sys->allocator, sizeof(*dst->ops) * (size_t)sys->n_ops);
-        if (dst->ops == NULL)
-        {
-            hybsol_system_destroy(dst);
-            return HYBSOL_ERROR_OUT_OF_MEMORY;
-        }
-        memcpy(dst->ops, sys->ops, sizeof(*dst->ops) * (size_t)sys->n_ops);
     }
 
     *out = dst;
@@ -576,10 +540,6 @@ hybsol_result_t hybsol_system_reserve(hybsol_system_t *const sys, const uint64_t
 {
     hybsol_require_index(sys, row);
 
-    const hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
     return hybsol_row_reserve(sys, sys->rows + row, capacity);
 }
 
@@ -679,13 +639,40 @@ hybsol_result_t hybsol_system_eliminate_row(hybsol_system_t *const sys, const ui
     return hybsol_f64_eliminate_row(sys, row_tgt, row_src, NULL);
 }
 
-hybsol_result_t hybsol_system_eliminate_row_scratch(hybsol_system_t *const sys, const uint64_t row_tgt,
-                                                    const uint64_t row_src, void *const scratch)
+/* ------------------------------------------------------------------------- */
+/* Applying the system                                                       */
+/* ------------------------------------------------------------------------- */
+
+hybsol_result_t hybsol_system_matmat(const hybsol_system_t *const sys, const hybsol_matrix_t *const x,
+                                     hybsol_matrix_t *const y, const uint64_t n_threads)
 {
-    // The multiplier is a block of the system itself, so either precision works
+    CUTL_ASSERT(x != NULL && y != NULL, "The input and destination vectors must not be NULL.");
+
+    const uint64_t dim = hybsol_system_total_size(sys);
+    CUTL_ASSERT(x->rows == dim && y->rows == dim, "The vectors have %llu and %llu rows, but the system has %llu.",
+                (unsigned long long)x->rows, (unsigned long long)y->rows, (unsigned long long)dim);
+    CUTL_ASSERT(x->cols == y->cols, "The input has %llu columns but the destination has %llu.",
+                (unsigned long long)x->cols, (unsigned long long)y->cols);
+    CUTL_ASSERT(x->data != y->data, "The destination must not be the input; the result would overwrite it.");
+
+    const int threads = hybsol_resolve_threads(n_threads);
     if (sys->precision == HYBSOL_PRECISION_SINGLE)
-        return hybsol_f32_eliminate_row(sys, row_tgt, row_src, (float *)scratch);
-    return hybsol_f64_eliminate_row(sys, row_tgt, row_src, (double *)scratch);
+        hybsol_f32_matmat(sys, x, y, threads);
+    else
+        hybsol_f64_matmat(sys, x, y, threads);
+    return HYBSOL_SUCCESS;
+}
+
+hybsol_result_t hybsol_system_matvec(const hybsol_system_t *const sys, const hybsol_matrix_t *const x,
+                                     hybsol_matrix_t *const y, const uint64_t n_threads)
+{
+    CUTL_ASSERT(x != NULL && y != NULL, "The input and destination vectors must not be NULL.");
+    CUTL_ASSERT(x->cols == 1 && y->cols == 1,
+                "A vector multiply takes size x 1 views, but these are %llu x %llu and %llu x %llu.",
+                (unsigned long long)x->rows, (unsigned long long)x->cols, (unsigned long long)y->rows,
+                (unsigned long long)y->cols);
+
+    return hybsol_system_matmat(sys, x, y, n_threads);
 }
 
 /* ------------------------------------------------------------------------- */

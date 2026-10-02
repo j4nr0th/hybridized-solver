@@ -220,8 +220,8 @@ class BlockSystem:
         ValueError
             An index is outside ``[0, n_blocks)``.
         RuntimeError
-            The system has already been decomposed, or a previously returned
-            view is still alive in front of a method that would move it.
+            A previously returned view is still alive in front of a method
+            that would move it.
         """
         ...
 
@@ -282,6 +282,74 @@ class BlockSystem:
         """
         ...
 
+    def matvec(
+        self,
+        x: npt.ArrayLike,
+        out: npt.NDArray[np.double] | None = None,
+        n_threads: int = 0,
+    ) -> npt.NDArray[np.double]:
+        """Apply the system to a vector, ``y = A x``.
+
+        This is the operator the elimination solves against, and the one worth
+        having fast: it walks the stored blocks rather than a dense form, so a
+        sparse system costs the sum of its blocks rather than the square of its
+        dimension. It is what :func:`hybsol.refined_solve` measures its
+        residual with.
+
+        ``out`` is written, not accumulated into. The work is split across block
+        rows, each of which writes only its own slice, so the system is only read
+        and stays usable throughout.
+
+        Parameters
+        ----------
+        x : array_like
+            Right-hand side of length ``sum(block_sizes)``. Narrower floating
+            point is widened as it is read.
+        out : array, optional
+            Array to write the result to. If not given (or ``None``), a new array
+            is created.
+        n_threads : int, default: 0
+            Number of OpenMP threads; ``0`` selects the OpenMP default and ``1``
+            runs it serially.
+
+        Returns
+        -------
+        array
+            The result, always in double precision.
+        """
+        ...
+
+    def matmat(
+        self,
+        x: npt.ArrayLike,
+        out: npt.NDArray[np.double] | None = None,
+        n_threads: int = 0,
+    ) -> npt.NDArray[np.double]:
+        """Apply the system to several right-hand sides, ``y = A x``.
+
+        The same walk as :meth:`matvec`, done for every column of ``x`` at once,
+        so the pattern is traversed once rather than once per column. With one
+        column the two are identical.
+
+        Parameters
+        ----------
+        x : array_like
+            Two-dimensional input of ``sum(block_sizes)`` rows. Narrower floating
+            point is widened as it is read.
+        out : array, optional
+            Array to write the result to, with the same shape as ``x``. If not
+            given (or ``None``), a new array is created.
+        n_threads : int, default: 0
+            Number of OpenMP threads; ``0`` selects the OpenMP default and ``1``
+            runs it serially.
+
+        Returns
+        -------
+        array
+            The result, always in double precision.
+        """
+        ...
+
     def multiply_row(self, row: int, val: npt.ArrayLike, start: int = 0) -> None:
         """Multiply the row by the matrix.
 
@@ -324,76 +392,34 @@ class BlockSystem:
         """
         ...
 
-    def decompose_diagonal(self, idx: int) -> None:
-        """Decomposes the diagonal block using LU decomposition.
-
-        Performs an LU decomposition on the block ``(idx, idx)``. This
-        is done in preparation to a call to ``solve_diagonal``.
-
-        Parameters
-        ----------
-        idx : int
-            Index of the block to decompose.
-        """
-        ...
-
-    def solve_diagonal(
-        self, idx: int, val: npt.ArrayLike, out: npt.NDArray[np.double] | None = None
-    ) -> npt.NDArray[np.double]:
-        """Use the previously decomposed diagonal to solve the linear system.
-
-        Parameters
-        ----------
-        idx : int
-            Index of the diagonal to use. For this method to make any sense, a call to
-            :meth:`decompose_diagonal` should have been made for the same block ``idx``.
-        val : array_like
-            Value to use as the right side of the matrix.
-        out : array, optional
-            Array to write the result to. If not given (or ``None``), a new array
-            is created.
-
-        Returns
-        -------
-        array
-            Result, which if ``out`` was ``None`` will be in a new array, otherwise
-            another reference to ``out`` is returned.
-        """
-        ...
-
-    def row_apply_decomposition(self, row: int) -> None:
-        """Apply the decomposition of the diagonal block to the rest of the same row.
-
-        Parameters
-        ----------
-        row : int
-            Index of the row to perform this on. This row must have had its diagonal
-            block decomposed by a call to :meth:`decompose_diagonal` with ``row``
-            passed to it before.
-        """
-        ...
-
     def decompose(
         self,
         n_threads: int = 0,
         workspace: npt.NDArray[np.uint8] | None = None,
-    ) -> None:
-        """Decompose the block system.
+    ) -> Decomposition:
+        """Factorize the system and return the result.
 
-        The system must be valid (see :meth:`is_valid`). After a successful
-        decomposition the system is frozen: no further blocks may be added,
-        eliminated or reordered.
+        The system is left exactly as it was assembled, so it can be
+        decomposed again -- under a different block order, or with a
+        different thread count -- and the decompositions are independent.
+        The factorization runs in a destination that owns a copy of every
+        block it needs, including the fill-in.
 
         Parameters
         ----------
         n_threads : int, default: 0
             Number of OpenMP threads to use. ``0`` selects the OpenMP default
-            (usually every core) and ``1`` runs the decomposition serially.
+            (usually every core) and ``1`` runs the factorization serially.
         workspace : numpy.typing.NDArray[numpy.uint8], optional
             A writable 1-D array of at least :meth:`workspace_bytes` bytes.
             Passing one keeps the scratch out of the library's allocator, so a
             buffer can be reused across systems. Its contents are overwritten.
             Omit it and the scratch is allocated internally.
+
+        Returns
+        -------
+        Decomposition
+            The factorized system.
         """
         ...
 
@@ -412,38 +438,30 @@ class BlockSystem:
         """
         ...
 
-    def operations(self) -> tuple[tuple[int, ...], ...]:
-        """Get the recorded operations as tuples of one or two ints.
+    def elimination(self) -> Elimination:
+        """Walk the elimination graph without computing any values.
 
-        A one-element tuple ``(idx_row,)`` solves with the LU factors of the
-        diagonal block; a two-element tuple ``(idx_row, idx_col)`` eliminates
-        block ``(idx_row, idx_col)`` using block row ``idx_col``.
-        """
-        ...
-
-    def solve(
-        self, val: npt.ArrayLike, out: npt.NDArray[np.double] | None = None
-    ) -> npt.NDArray[np.double]:
-        """Solve the system for the given right side.
-
-        Parameters
-        ----------
-        val : array_like
-            Right-hand side of length ``sum(block_sizes)``.
-        out : array, optional
-            Array to write the solution to. If not given (or ``None``), a new array
-            is created. It may be the same array as ``val``, in which case the
-            solution overwrites the right-hand side in place.
+        Reports the pattern the fill-in will produce, the passes a
+        factorization runs in, what it will cost, and whether the current
+        block order admits a factorization at all. Cheap enough to ask for
+        while deciding on a block structure, and it touches nothing, so the
+        system may still be assembled.
 
         Returns
         -------
-        array
-            Solution of the linear system.
+        Elimination
+            The symbolic result for this system.
+
+        Raises
+        ------
+        ValueError
+            The system does not satisfy the solver's structural assumptions,
+            or its block order admits no factorization.
         """
         ...
 
     def copy(self) -> BlockSystem:
-        """Create a deep copy of the system, including its decomposition."""
+        """Create a deep copy of the system."""
         ...
 
     def reorder_blocks(self, new_order: npt.ArrayLike, n_threads: int = 0) -> None:
@@ -553,4 +571,173 @@ class BlockSystem:
             Un-re-ordered contents of ``vector``. If ``out`` was specified, this is just a
             reference to it, otherwise a new array is created.
         """
+        ...
+
+class Decomposition:
+    """A factorized block system.
+
+    Produced by :meth:`BlockSystem.decompose`. It owns a copy of every
+    block the elimination needs, so the system it came from is unchanged
+    and can be decomposed again under a different block order.
+    """
+
+    @property
+    def n_blocks(self) -> int:
+        """Number of blocks."""
+        ...
+
+    @property
+    def total_size(self) -> int:
+        """Rows of the matrix the decomposition solves."""
+        ...
+
+    @property
+    def n_operations(self) -> int:
+        """Number of operations the factorization records."""
+        ...
+
+    @property
+    def is_factorized(self) -> bool:
+        """Whether the factorization has run."""
+        ...
+
+    @property
+    def failing_block(self) -> int | None:
+        """Block whose diagonal could not be factorized, if any."""
+        ...
+
+    def solve(
+        self,
+        val: npt.ArrayLike,
+        out: npt.NDArray[np.double] | None = None,
+        n_threads: int = 0,
+    ) -> npt.NDArray[np.double]:
+        """Solve the system for the given right side.
+
+        The forward substitution runs one elimination pass at a time,
+        parallel across the block rows of a pass; the back substitution that
+        follows is serial. The answer does not depend on the thread count,
+        and the decomposition may be solved any number of times.
+
+        Parameters
+        ----------
+        val : array_like
+            Right-hand side of length ``sum(block_sizes)``.
+        out : array, optional
+            Array to write the solution to. If not given (or ``None``), a new array
+            is created. It may be the same array as ``val``, in which case the
+            solution overwrites the right-hand side in place.
+        n_threads : int, default: 0
+            Number of OpenMP threads for the forward substitution; ``0``
+            selects the OpenMP default and ``1`` runs it serially.
+
+        Returns
+        -------
+        array
+            Solution of the linear system.
+        """
+        ...
+
+    def operations(self) -> tuple[tuple[int, ...], ...]:
+        """Get the recorded operations as tuples of one or two ints.
+
+        A one-element tuple ``(idx_row,)`` solves with the LU factors of the
+        diagonal block; a two-element tuple ``(idx_row, idx_col)`` eliminates
+        block ``(idx_row, idx_col)`` using block row ``idx_col``.
+
+        The list is read off the elimination graph rather than stored, so it
+        costs nothing until it is asked for and materializing it in Python is
+        ``O(ops)`` in objects.
+        """
+        ...
+
+class Elimination:
+    """The symbolic result of eliminating a system.
+
+    Produced by :meth:`BlockSystem.elimination`. It computes no values, so
+    it can be asked for before a factorization is committed.
+    """
+
+    @property
+    def n_blocks(self) -> int:
+        """Number of blocks."""
+        ...
+
+    @property
+    def n_columns(self) -> int:
+        """Blocks the final pattern holds, fill-in included."""
+        ...
+
+    @property
+    def n_operations(self) -> int:
+        """Operations a factorization of this system records."""
+        ...
+
+    @property
+    def n_levels(self) -> int:
+        """Passes the elimination takes."""
+        ...
+
+    @property
+    def value_bytes(self) -> int:
+        """Bytes of block storage a decomposition needs."""
+        ...
+
+    @property
+    def total_bytes(self) -> int:
+        """Bytes this graph itself occupies."""
+        ...
+
+    @property
+    def precision(self) -> Precision:
+        """The precision the analyzed system stores."""
+        ...
+
+    @property
+    def failing_block(self) -> int | None:
+        """Block whose diagonal is identically zero, if any."""
+        ...
+
+    def row_columns(self, row: int) -> tuple[int, ...]:
+        """Column indices ``row`` holds once the fill-in is complete.
+
+        Includes every block the system already stores and every block the
+        elimination adds, in increasing order.
+
+        Parameters
+        ----------
+        row : int
+            Block row index.
+        """
+        ...
+
+    def level_rows(self, level: int) -> tuple[int, ...]:
+        """Block rows the given elimination pass processes.
+
+        A row appears in every pass from its first to its last, so a row
+        whose source is not ready yet simply sits a pass out. Within a pass
+        the rows are in ascending index order, which is the order the recorded
+        operations come out in.
+
+        Parameters
+        ----------
+        level : int
+            Pass index, in ``[0, n_levels)``.
+        """
+        ...
+
+    def row_length(self, row: int) -> int:
+        """Blocks ``row`` holds once the fill-in is complete."""
+        ...
+
+    def row_n_eliminations(self, row: int) -> int:
+        """How many eliminations ``row`` performs."""
+        ...
+
+    def row_first_level(self, row: int) -> int:
+        """First pass ``row`` is processed in."""
+        ...
+
+    def row_level(self, row: int) -> int:
+        """Last pass ``row`` is processed in."""
         ...

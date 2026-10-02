@@ -73,10 +73,11 @@ write into::
     True
 
 The view keeps the system alive and re-fetching the same block returns the
-same storage unchanged. Since :meth:`~hybsol.BlockSystem.decompose` and
-:meth:`~hybsol.BlockSystem.reorder_blocks` move blocks around, they refuse to
+same storage unchanged. Since :meth:`~hybsol.BlockSystem.reorder_blocks` and
+:meth:`~hybsol.BlockSystem.eliminate_row` move blocks around, they refuse to
 run while any array from :meth:`~hybsol.BlockSystem.block_storage` is still
-alive.
+alive. A factorization does not: it copies what it needs into its own
+destination, so the system is untouched and a view stays valid.
 
 Structural requirements
 -----------------------
@@ -92,15 +93,24 @@ whether a system satisfies this::
 Solving
 -------
 
-:meth:`~hybsol.BlockSystem.decompose` factorizes the system in place and
-records the operations it performed. The system is frozen afterwards, but it
-can be solved any number of times::
+:meth:`~hybsol.BlockSystem.decompose` factorizes the system and returns a
+:class:`~hybsol.Decomposition`. The system itself is left exactly as it was
+assembled, so it can be decomposed again — under a different block order, or
+with a different thread count — and the decompositions are independent. A
+decomposition can be solved any number of times::
 
-    >>> system.decompose()
+    >>> decomposition = system.decompose()
     >>> lhs = np.arange(1, 8, dtype=float)
-    >>> solution = system.solve(matrix @ lhs)
+    >>> solution = decomposition.solve(matrix @ lhs)
     >>> np.allclose(solution, lhs)
     True
+
+Before committing to a factorization, :meth:`~hybsol.BlockSystem.elimination`
+walks the same graph without touching a value. It reports the pattern the
+fill-in will produce, the passes the factorization will run in, what it will
+cost in memory and operations, and whether the current block order admits a
+factorization at all — which makes it the cheap way to choose a block
+granularity, or to check an order, before committing to either.
 
 The factorization does not pivot, so the caller must hand it blocks that are
 safe to factor without that. The requirement is on the *leading principal
@@ -111,7 +121,7 @@ nonsingular and still fail this — the saddle-point-shaped matrix below has
 ``1.8e-15``, and factorizing it returns a wrong answer with no error::
 
     >>> import numpy as np
-    >>> from hybsol import BlockSystem
+    >>> from hybsol import BlockSystem, factorize
     >>> m = np.array([[2., -1., -1., 0., 1.],
     ...               [-1., 2., 0., -1., 0.],
     ...               [-1., 0., 2., -1., 0.],
@@ -119,15 +129,69 @@ nonsingular and still fail this — the saddle-point-shaped matrix below has
     ...               [1., 0., 0., 0., 0.]])
     >>> system = BlockSystem(5)
     >>> system.add_block(0, 0, m)
-    >>> system.decompose_diagonal(0)          # reports success
+    >>> graph, decomposition = factorize(system)   # both report success
     >>> rhs = np.arange(1., 6.)
-    >>> np.linalg.norm(m @ system.solve_diagonal(0, rhs) - rhs)   # not zero
+    >>> np.linalg.norm(m @ decomposition.solve(rhs) - rhs)   # not zero
     3.5...
 
 An *exactly* zero pivot does raise, as ``zero pivot in LU decomposition``, and
 names the block it came from. It is a leading principal minor that merely
 vanishes *numerically* that slips through, and that is inherent to
 factorizing without pivoting rather than something the solver can detect.
+
+Applying the system
+-------------------
+
+:meth:`~hybsol.BlockSystem.matvec` and
+:meth:`~hybsol.BlockSystem.matmat` apply the system to a vector and to several
+right-hand sides. They walk the stored blocks rather than a dense form, so a
+sparse system costs the sum of its blocks rather than the square of its
+dimension — which is what makes them usable on systems :meth:`as_array` would
+not fit in memory for::
+
+    >>> x = np.ones(7)
+    >>> np.allclose(system.matvec(x), matrix @ x)
+    True
+    >>> right_hands = np.eye(7)[:, :3]
+    >>> np.allclose(system.matmat(right_hands), matrix @ right_hands)
+    True
+
+The work is split across block rows, each writing only its own slice, so the
+system is only read: a live :meth:`~hybsol.BlockSystem.block_storage` view stays
+valid, and the operator is safe to call while something else reads the system.
+
+Accuracy
+--------
+
+:meth:`~hybsol.BlockSystem.decompose` and
+:meth:`~hybsol.BlockSystem.elimination` are the two stages :func:`factorize`
+runs for you, returning both so the graph stays available.
+
+:func:`refined_solve` improves a solve by measuring the residual against the
+*system* rather than against the factors, and correcting it in double
+precision. For a single-precision system that is the difference between an
+answer limited by the factorization and the exact solve of the matrix the
+system actually holds::
+
+    >>> from hybsol import Precision, refined_solve
+    >>> diagonal = np.array([[3.0, 1.0], [1.0, 3.0]])
+    >>> coupling = np.array([[0.5, 0.2], [0.2, 0.5]])
+    >>> system = BlockSystem(2, 2, precision=Precision.SINGLE)
+    >>> for i, j, block in ((0, 0, diagonal), (0, 1, coupling),
+    ...                     (1, 0, coupling), (1, 1, diagonal)):
+    ...     system.add_block(i, j, block)
+    >>> _, decomposition = factorize(system)
+    >>> stored = system.as_array()
+    >>> rhs = stored @ np.array([1.0, 0.5, -0.25, 2.0])
+    >>> np.linalg.norm(stored @ decomposition.solve(rhs.copy()) - rhs)   # not zero
+    2.4e-07...
+    >>> refined = refined_solve(system, decomposition, rhs)
+    >>> np.allclose(stored @ refined, rhs)                              # at the rounding limit
+    True
+
+What that cannot do is undo how the system rounded its own blocks: the refined
+answer is the exact solve of the *stored* matrix, which is still only as far
+from the real matrix as that rounding is.
 
 Even when the condition holds, an unpivoted factorization gives up a few digits
 against a pivoted reference. They are bought back with a step of iterative
@@ -174,9 +238,9 @@ along with the system::
     ...         )
     >>> ordering = system.compute_reordering("greedy")
     >>> system.reorder_blocks(ordering)
-    >>> system.decompose()
+    >>> decomposition = system.decompose()
     >>> reordered_rhs = system.reorder_vector(ordering, matrix @ lhs)
-    >>> reordered_lhs = system.solve(reordered_rhs)
+    >>> reordered_lhs = decomposition.solve(reordered_rhs)
     >>> np.allclose(system.unorder_vector(ordering, reordered_lhs), lhs)
     True
 
@@ -196,3 +260,6 @@ along with the system::
    the multipliers. :meth:`~hybsol.BlockSystem.reorder_blocks` checks the order
    it is given and names any block that cannot be factorized, so the mistake
    surfaces at the reorder rather than at :meth:`~hybsol.BlockSystem.decompose`.
+   :meth:`~hybsol.BlockSystem.elimination` answers the same question without
+   committing to anything, which is what to reach for while still deciding on a
+   block structure.

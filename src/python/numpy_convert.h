@@ -163,3 +163,13 @@ int hybsol_prepare_output(PyArrayObject *out, int ndim, const npy_intp *dims, in
  * @return 0 on success, -1 with an exception set.
  */
 int hybsol_byte_array(PyObject *obj, int ndim, size_t min_bytes, const char *name, PyArrayObject **arr_out);
+
+/**
+ * Read an optional output array keyword.
+ *
+ * :param obj: Value of the keyword, or ``NULL`` if it was omitted.
+ * :param out: Receives ``NULL`` for an omitted keyword or ``None``, else a new
+ *     reference to the given array.
+ * :returns: ``0`` on success, ``-1`` with an exception set.
+ */
+int hybsol_optional_array(PyObject *obj, PyArrayObject **out);

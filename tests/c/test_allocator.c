@@ -2,16 +2,16 @@
  * Decomposing with a caller-supplied allocator that is deliberately *not*
  * thread-safe.
  *
- * A decomposition allocates its fill-in from a pool the library sizes exactly
- * up front, so it never calls the system's allocator from inside a parallel
- * region -- not to allocate, and not to release either. Without that this test
- * is a race, and on a multi-core box it faults; with it a plain bump allocator
- * -- no lock at all -- works and gives the standard allocator's answers.
+ * The elimination graph fixes the destination's layout before any thread
+ * starts, so a factorization never calls the system's allocator from inside a
+ * parallel region -- not to allocate, and not to release either. Without that
+ * this test is a race, and on a multi-core box it faults; with it a plain bump
+ * allocator -- no lock at all -- works and gives the standard allocator's
+ * answers.
  */
 
 #include "test_util.h"
 
-#include <hybsol/decompose.h>
 #include <hybsol/hybsol.h>
 
 #include <stdint.h>
@@ -200,11 +200,34 @@ static int pattern_system(const pattern_t *const p, const cutl_allocator_t *cons
     return hybsol_system_add_blocks(*out, p->n_entries, p->rows, p->cols, p->data) == HYBSOL_SUCCESS;
 }
 
+/** Walk the graph, lay out the destination and factorize it. */
+static hybsol_decomposition_t *factorize(hybsol_system_t *const sys, const uint64_t n_threads)
+{
+    hybsol_elimination_t *graph = NULL;
+    if (hybsol_elimination_create(sys, &graph) != HYBSOL_SUCCESS)
+        return NULL;
+
+    hybsol_decomposition_t *dec = NULL;
+    if (hybsol_decomposition_create(sys, graph, &dec) != HYBSOL_SUCCESS)
+    {
+        hybsol_elimination_destroy(graph);
+        return NULL;
+    }
+    hybsol_elimination_destroy(graph);
+
+    if (hybsol_decomposition_factorize(dec, n_threads) != HYBSOL_SUCCESS)
+    {
+        hybsol_decomposition_destroy(dec);
+        return NULL;
+    }
+    return dec;
+}
+
 /**
  * Decompose and solve, then checksum the answer.
  *
- * The matrix is read first: decompose overwrites the blocks in place with the
- * LU factors.
+ * The matrix is read first; the decomposition copies the blocks it needs and
+ * leaves the system as it stands.
  */
 static int solve_checksum(hybsol_system_t *const sys, const uint64_t n_threads, double *const checksum)
 {
@@ -231,8 +254,8 @@ static int solve_checksum(hybsol_system_t *const sys, const uint64_t n_threads, 
         x[i] = 1.0;
     }
 
-    ok = ok && hybsol_system_decompose(sys, n_threads) == HYBSOL_SUCCESS &&
-         hybsol_system_solve(sys, x) == HYBSOL_SUCCESS;
+    hybsol_decomposition_t *const dec = ok ? factorize(sys, n_threads) : NULL;
+    ok = ok && dec != NULL && hybsol_decomposition_solve(dec, x, n_threads) == HYBSOL_SUCCESS;
     if (ok)
     {
         double sum = 0.0;
@@ -241,6 +264,7 @@ static int solve_checksum(hybsol_system_t *const sys, const uint64_t n_threads, 
         *checksum = sum;
     }
 
+    hybsol_decomposition_destroy(dec);
     free(a);
     free(b);
     free(x);
@@ -308,7 +332,6 @@ static void test_parallel_with_lock_free_allocator(void)
 
         CHECK_MSG(pattern_system(&p, alloc, &sys), "assembling at %llu threads", (unsigned long long)n_threads);
         CHECK_MSG(solve_checksum(sys, n_threads, &checksum), "solve at %llu threads", (unsigned long long)n_threads);
-        CHECK_MSG(hybsol_system_is_decomposed(sys) != 0, "decomposed at %llu threads", (unsigned long long)n_threads);
         CHECK_MSG(checksum == with_std, "at %llu threads got %.17g, reference %.17g", (unsigned long long)n_threads,
                   checksum, with_std);
 
@@ -319,28 +342,46 @@ static void test_parallel_with_lock_free_allocator(void)
     pattern_free(&p);
 }
 
-/** The operation list is sized to a proven bound, so a decomposition must stay
- * inside it rather than grow. */
-static void test_operation_bound_holds(void)
+/**
+ * The walk knows exactly how many operations there will be, so the count it
+ * reports is the count the decomposition materializes -- and a fully coupled
+ * system reaches the maximum the structure allows.
+ */
+static void test_n_operations_is_exact(void)
 {
     pattern_t p;
     CHECK_MSG(pattern_build(&p, 32, 4), "building the pattern");
 
     hybsol_system_t *sys = NULL;
-    double checksum = 0.0;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
-    CHECK(solve_checksum(sys, 2, &checksum));
 
-    const uint64_t n = p.n_blocks;
-    const uint64_t bound = hybsol_system_operation_bound(sys);
-    const uint64_t recorded = hybsol_system_n_operations(sys);
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    const uint64_t expected = hybsol_elimination_n_operations(graph);
+    CHECK_MSG(expected > 0, "the walk found no operations in a valid system");
+    CHECK_MSG(expected <= p.n_blocks * (p.n_blocks + 1) / 2, "the walk found %llu operations, above the maximum %llu",
+              (unsigned long long)expected, (unsigned long long)(p.n_blocks * (p.n_blocks + 1) / 2));
 
-    CHECK_MSG(bound == n * (n + 1) / 2, "bound should be n(n+1)/2 = %llu, got %llu",
-              (unsigned long long)(n * (n + 1) / 2), (unsigned long long)bound);
-    CHECK_MSG(recorded <= bound, "recorded %llu operations but the bound is %llu", (unsigned long long)recorded,
-              (unsigned long long)bound);
-    CHECK_MSG(recorded > 0, "a valid decomposition recorded no operations");
+    hybsol_decomposition_t *dec = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
+    CHECK_OK(hybsol_decomposition_factorize(dec, 2));
 
+    CHECK_MSG(hybsol_decomposition_n_operations(dec) == expected, "the decomposition says %llu, the walk said %llu",
+              (unsigned long long)hybsol_decomposition_n_operations(dec), (unsigned long long)expected);
+
+    hybsol_operation_t *const ops = malloc(sizeof(*ops) * expected);
+    CHECK(ops != NULL);
+    if (ops != NULL)
+    {
+        uint64_t written = 0;
+        CHECK_OK(hybsol_decomposition_operations(dec, ops, expected, &written));
+        CHECK_MSG(written == expected, "materialized %llu operations, expected %llu", (unsigned long long)written,
+                  (unsigned long long)expected);
+        free(ops);
+    }
+
+    hybsol_decomposition_destroy(dec);
+    hybsol_elimination_destroy(graph);
     hybsol_system_destroy(sys);
     pattern_free(&p);
 }
@@ -382,22 +423,35 @@ static void test_workspace_matches_internal(void)
         x[i] = 1.0;
     }
 
-    CHECK_OK(hybsol_system_decompose_with_workspace(sys, workspace, bytes, n_threads));
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    hybsol_decomposition_t *dec = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
+    hybsol_elimination_destroy(graph);
+
+    CHECK_OK(hybsol_decomposition_factorize_with_workspace(dec, workspace, bytes, n_threads));
     // The header is written first, and its magic proves the caller's buffer is what got used.
     CHECK_MSG(memcmp(workspace, "1wlosbyh", 8) == 0, "the caller's workspace was not written to");
 
-    CHECK_OK(hybsol_system_solve(sys, x));
+    CHECK_OK(hybsol_decomposition_solve(dec, x, n_threads));
     double got = 0.0;
     for (uint64_t i = 0; i < total; ++i)
         got += x[i];
     CHECK_MSG(got == expected, "workspace solve gave %.17g, internal gave %.17g", got, expected);
-    const uint64_t ops = hybsol_system_n_operations(sys);
+    const uint64_t ops = hybsol_decomposition_n_operations(dec);
+    hybsol_decomposition_destroy(dec);
 
     /* The same buffer, reused for a second system of the same shape. */
     hybsol_system_t *second = NULL;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &second));
-    CHECK_OK(hybsol_system_decompose_with_workspace(second, workspace, bytes, n_threads));
-    CHECK_MSG(hybsol_system_n_operations(second) == ops, "reusing a workspace changed the operation count");
+    graph = NULL;
+    CHECK_OK(hybsol_elimination_create(second, &graph));
+    dec = NULL;
+    CHECK_OK(hybsol_decomposition_create(second, graph, &dec));
+    hybsol_elimination_destroy(graph);
+    CHECK_OK(hybsol_decomposition_factorize_with_workspace(dec, workspace, bytes, n_threads));
+    CHECK_MSG(hybsol_decomposition_n_operations(dec) == ops, "reusing a workspace changed the operation count");
+    hybsol_decomposition_destroy(dec);
 
     hybsol_system_destroy(second);
     hybsol_system_destroy(sys);
@@ -425,25 +479,34 @@ static void test_workspace_scales_with_threads(void)
     pattern_free(&p);
 }
 
-/** Copying and destroying a decomposed system must not trip over pooled memory. */
-static void test_copy_after_decompose(void)
+/**
+ * A decomposition and the graph it came from are separate allocations, so the
+ * system, the graph and the decomposition can go in any order.
+ */
+static void test_release_in_any_order(void)
 {
     pattern_t p;
     CHECK_MSG(pattern_build(&p, 16, 4), "building the pattern");
 
     hybsol_system_t *sys = NULL;
-    double checksum = 0.0;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
-    CHECK(solve_checksum(sys, 2, &checksum));
 
-    hybsol_system_t *copy = NULL;
-    CHECK_OK(hybsol_system_copy(sys, &copy));
-    CHECK_MSG(hybsol_system_n_operations(copy) == hybsol_system_n_operations(sys), "copy lost operations");
-    CHECK_MSG(hybsol_system_is_decomposed(copy) != 0, "copy is not marked decomposed");
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    hybsol_decomposition_t *dec = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
+    CHECK_OK(hybsol_decomposition_factorize(dec, 2));
 
-    /* Both must be releasable, in either order. */
-    hybsol_system_destroy(copy);
+    // The system first: the decomposition owns its own copy of the blocks.
     hybsol_system_destroy(sys);
+    CHECK(hybsol_decomposition_n_operations(dec) > 0);
+    CHECK(hybsol_decomposition_is_factorized(dec));
+
+    // Then the graph, which the decomposition already copied what it needs of.
+    hybsol_elimination_destroy(graph);
+    CHECK(hybsol_decomposition_n_blocks(dec) == p.n_blocks);
+
+    hybsol_decomposition_destroy(dec);
     pattern_free(&p);
 }
 
@@ -525,7 +588,13 @@ static void test_no_allocator_calls_from_parallel_regions(void)
                   (unsigned long long)thread_counts[t]);
 
         memset(&g_calls, 0, sizeof(g_calls));
-        CHECK_OK(hybsol_system_decompose(sys, thread_counts[t]));
+        hybsol_elimination_t *graph = NULL;
+        CHECK_OK(hybsol_elimination_create(sys, &graph));
+        hybsol_decomposition_t *dec = NULL;
+        CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
+        hybsol_elimination_destroy(graph);
+        CHECK_OK(hybsol_decomposition_factorize(dec, thread_counts[t]));
+        hybsol_decomposition_destroy(dec);
 
         CHECK_MSG(g_calls.allocate > 0, "nothing was allocated at all, so the test proves nothing");
         CHECK_MSG(g_calls.from_parallel == 0,
@@ -538,8 +607,11 @@ static void test_no_allocator_calls_from_parallel_regions(void)
     }
 }
 
-/** The plan is exact, so a decomposition needs no allocator call it did not budget. */
-static void test_fill_plan_is_exact_and_stable(void)
+/**
+ * The walk is exact, so the destination it sizes needs no allocator call it did
+ * not budget, and two walks of the same system agree to the byte.
+ */
+static void test_footprint_is_exact_and_stable(void)
 {
     pattern_t p;
     CHECK_MSG(pattern_build(&p, 16, 4), "building the pattern");
@@ -547,32 +619,167 @@ static void test_fill_plan_is_exact_and_stable(void)
     hybsol_system_t *sys = NULL;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
 
-    hybsol_fill_plan_t first, second;
-    CHECK_OK(hybsol_fill_plan(sys, &first));
-    CHECK_OK(hybsol_fill_plan(sys, &second));
-    CHECK_MSG(first.pool_bytes == second.pool_bytes, "the plan changed between calls: %zu then %zu", first.pool_bytes,
-              second.pool_bytes);
-    CHECK_MSG(first.pool_bytes > 0, "a system with fill-in planned a zero-byte pool");
-    CHECK_MSG(first.operations == p.n_blocks * (p.n_blocks + 1) / 2, "operation bound was %llu, expected %llu",
-              (unsigned long long)first.operations, (unsigned long long)(p.n_blocks * (p.n_blocks + 1) / 2));
+    hybsol_elimination_t *first = NULL;
+    hybsol_elimination_t *second = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &first));
+    CHECK_OK(hybsol_elimination_create(sys, &second));
 
-    // An already decomposed system has no meaningful plan left to give.
-    CHECK_OK(hybsol_system_decompose(sys, 2));
-    CHECK_RESULT(hybsol_fill_plan(sys, &first), HYBSOL_ERROR_ALREADY_DECOMPOSED);
+    CHECK_MSG(hybsol_elimination_value_bytes(first) == hybsol_elimination_value_bytes(second),
+              "the footprint changed between walks: %zu then %zu", hybsol_elimination_value_bytes(first),
+              hybsol_elimination_value_bytes(second));
+    CHECK_MSG(hybsol_elimination_total_bytes(first) == hybsol_elimination_total_bytes(second),
+              "the graph's own size changed between walks");
+    CHECK_MSG(hybsol_elimination_value_bytes(first) > 0, "a system with fill-in planned a zero-byte arena");
 
+    // The graph outlives the system, which is what lets a caller release the
+    // system before it factors anything.
     hybsol_system_destroy(sys);
+    CHECK(hybsol_elimination_n_blocks(first) == p.n_blocks);
+    CHECK(hybsol_elimination_n_columns(first) > 0);
+
+    hybsol_elimination_destroy(first);
+    hybsol_elimination_destroy(second);
     pattern_free(&p);
+}
+
+/**
+ * A chain: diagonal blocks plus one off-diagonal either side.
+ *
+ * Eliminating a chain adds no fill-in, so no row ever outgrows the columns the
+ * walk seeded it with. That makes the allocation counts below exact rather
+ * than bounded, which is the point: they are pinned so a future edit cannot
+ * quietly reintroduce a per-row or a per-thread allocation.
+ */
+static hybsol_system_t *chain_system(const cutl_allocator_t *const alloc, const uint64_t n_blocks,
+                                     const uint64_t block_size, uint64_t *const order_out)
+{
+    uint64_t *const sizes = (uint64_t *)malloc(sizeof(*sizes) * n_blocks);
+    for (uint64_t i = 0; i < n_blocks; ++i)
+        sizes[i] = block_size;
+
+    hybsol_system_t *sys = NULL;
+    if (hybsol_system_create(n_blocks, sizes, &sys, alloc) != HYBSOL_SUCCESS)
+    {
+        free(sizes);
+        return NULL;
+    }
+    free(sizes);
+
+    const size_t values = (size_t)block_size * (size_t)block_size;
+    double *const block = (double *)malloc(sizeof(*block) * values);
+    double *const coupling = (double *)malloc(sizeof(*coupling) * values);
+    if (block == NULL || coupling == NULL)
+    {
+        free(block);
+        free(coupling);
+        hybsol_system_destroy(sys);
+        return NULL;
+    }
+    for (size_t k = 0; k < values; ++k)
+    {
+        coupling[k] = 0.25;
+        block[k] = 0.5;
+    }
+    // Diagonally dominant, so the factorization stays off a zero pivot.
+    for (uint64_t k = 0; k < block_size; ++k)
+        block[k * block_size + k] = 8.0 + (double)k;
+
+    for (uint64_t i = 0; i < n_blocks; ++i)
+    {
+        hybsol_system_add_block(sys, i, i, block_size, block_size, block);
+        if (i + 1 < n_blocks)
+        {
+            hybsol_system_add_block(sys, i, i + 1, block_size, block_size, coupling);
+            hybsol_system_add_block(sys, i + 1, i, block_size, block_size, coupling);
+        }
+    }
+    free(block);
+    free(coupling);
+
+    for (uint64_t i = 0; i < n_blocks; ++i)
+        order_out[i] = n_blocks - 1 - i;
+    return sys;
+}
+
+/**
+ * Each stage makes a fixed number of allocations, whatever the system is.
+ *
+ * The walk's arrays share one allocation and the graph's own scratch rides in
+ * its frame; a reorder's scratch is a single block instead of one allocation a
+ * thread; the destination is already one allocation and factorizing adds none.
+ */
+static void test_allocation_counts_are_grouped(void)
+{
+    const uint64_t n_blocks = 32;
+    const uint64_t block_size = 4;
+    uint64_t *const order = (uint64_t *)malloc(sizeof(*order) * n_blocks);
+    CHECK(order != NULL);
+    if (order == NULL)
+    {
+        return;
+    }
+
+    const cutl_allocator_t counting = {
+        .state = NULL, .allocate = count_alloc, .reallocate = count_realloc, .deallocate = count_dealloc};
+    hybsol_system_t *const sys = chain_system(&counting, n_blocks, block_size, order);
+    CHECK(sys != NULL);
+    if (sys == NULL)
+    {
+        free(order);
+        return;
+    }
+
+    // A chain needs no fill-in, so the walk allocates the arena, the occurrence
+    // log and the graph frame, and nothing per row.
+    memset(&g_calls, 0, sizeof(g_calls));
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    CHECK_MSG(g_calls.allocate == 3, "the walk made %ld allocations, expected 3", g_calls.allocate);
+    hybsol_elimination_destroy(graph);
+
+    // A reorder is its own arena, then the walk's two for the order check -- which
+    // builds no graph, because it only wants a verdict. The per-thread scratch
+    // that used to cost one allocation a thread is inside the arena now.
+    memset(&g_calls, 0, sizeof(g_calls));
+    CHECK_OK(hybsol_system_reorder_blocks(sys, order, 4));
+    CHECK_MSG(g_calls.allocate == 3, "a reorder made %ld allocations, expected 3", g_calls.allocate);
+
+    // The destination is one allocation on top of the walk's three.
+    memset(&g_calls, 0, sizeof(g_calls));
+    graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    hybsol_decomposition_t *dec = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
+    CHECK_MSG(g_calls.allocate == 4, "a decomposition made %ld allocations, expected 4", g_calls.allocate);
+    hybsol_elimination_destroy(graph);
+
+    // And factorizing adds none at all: the destination is already laid out.
+    const size_t workspace_bytes = hybsol_workspace_bytes(sys, 4);
+    void *const workspace = malloc(workspace_bytes);
+    CHECK(workspace != NULL);
+    if (workspace != NULL)
+    {
+        memset(&g_calls, 0, sizeof(g_calls));
+        CHECK_OK(hybsol_decomposition_factorize_with_workspace(dec, workspace, workspace_bytes, 4));
+        CHECK_MSG(g_calls.allocate == 0, "factorizing allocated %ld times, expected none", g_calls.allocate);
+        free(workspace);
+    }
+
+    hybsol_decomposition_destroy(dec);
+    hybsol_system_destroy(sys);
+    free(order);
 }
 
 int main(void)
 {
     test_serial_with_lock_free_allocator();
     test_parallel_with_lock_free_allocator();
-    test_operation_bound_holds();
+    test_n_operations_is_exact();
     test_workspace_matches_internal();
     test_workspace_scales_with_threads();
-    test_copy_after_decompose();
+    test_release_in_any_order();
     test_no_allocator_calls_from_parallel_regions();
-    test_fill_plan_is_exact_and_stable();
+    test_footprint_is_exact_and_stable();
+    test_allocation_counts_are_grouped();
     return test_report("test_allocator");
 }

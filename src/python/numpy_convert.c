@@ -251,3 +251,19 @@ int hybsol_byte_array(PyObject *const obj, const int ndim, const size_t min_byte
     *arr_out = arr;
     return 0;
 }
+
+int hybsol_optional_array(PyObject *const obj, PyArrayObject **const out)
+{
+    if (obj == NULL || obj == Py_None)
+    {
+        *out = NULL;
+        return 0;
+    }
+    if (!PyArray_Check(obj))
+    {
+        PyErr_Format(PyExc_TypeError, "Argument \"out\" must be a numpy array or None, got %R.", Py_TYPE(obj));
+        return -1;
+    }
+    *out = (PyArrayObject *)obj;
+    return 0;
+}

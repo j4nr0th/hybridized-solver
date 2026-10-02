@@ -56,12 +56,14 @@ endif ()
 # Core: a plain, Python-free static library.
 # ---------------------------------------------------------------------------
 add_library(hybsol_core STATIC
-        src/core/alloc.c
         src/core/block_system.c
-        src/core/decompose.c
+        src/core/decomposition.c
+        src/core/decomposition_numeric.c
+        src/core/elimination.c
         src/core/matrix.c
         src/core/ordering.c
-        src/core/symbolic.c)
+        src/core/result.c
+        src/core/solve.c)
 add_library(hybsol::hybsol ALIAS hybsol_core)
 
 target_compile_features(hybsol_core PUBLIC c_std_17)
@@ -135,6 +137,8 @@ Python_add_library(_mod MODULE
         src/python/module.c
         src/python/numpy_convert.c
         src/python/block_system_type.c
+        src/python/decomposition_type.c
+        src/python/elimination_type.c
         WITH_SOABI)
 
 target_link_libraries(_mod PRIVATE hybsol_core cpyutl)

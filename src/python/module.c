@@ -6,6 +6,9 @@
 #define PY_ARRAY_UNIQUE_SYMBOL _mod
 #include "module.h"
 
+#include "decomposition_type.h"
+#include "elimination_type.h"
+
 #include "block_system_type.h"
 
 // Set during module exec; `hybsol_exception_type` only gets a result code.
@@ -46,9 +49,9 @@ PyObject *hybsol_raise(const char *const what, const hybsol_result_t res)
     return NULL;
 }
 
-PyObject *hybsol_raise_block(const char *const what, const hybsol_result_t res, const hybsol_system_t *const sys)
+PyObject *hybsol_raise_block(const char *const what, const hybsol_result_t res, const uint64_t failing_block)
 {
-    const uint64_t block = sys == NULL ? UINT64_MAX : hybsol_system_failing_block(sys);
+    const uint64_t block = failing_block;
     if (block != UINT64_MAX)
     {
         PyErr_Format(hybsol_exception_type(res), "%s: %s (block %llu)", what, hybsol_result_str(res),
@@ -56,6 +59,43 @@ PyObject *hybsol_raise_block(const char *const what, const hybsol_result_t res, 
         return NULL;
     }
     return hybsol_raise(what, res);
+}
+
+PyObject *hybsol_precision_member(const hybsol_precision_t precision)
+{
+    PyObject *const mod = PyImport_ImportModule("hybsol");
+    if (mod == NULL)
+    {
+        return NULL;
+    }
+    PyObject *const cls = PyObject_GetAttrString(mod, "Precision");
+    Py_DECREF(mod);
+    if (cls == NULL)
+    {
+        return NULL;
+    }
+
+    PyObject *const value = PyUnicode_FromString(precision == HYBSOL_PRECISION_SINGLE ? "single" : "double");
+    if (value == NULL)
+    {
+        Py_DECREF(cls);
+        return NULL;
+    }
+
+    PyObject *const member = PyObject_CallOneArg(cls, value);
+    Py_DECREF(value);
+    Py_DECREF(cls);
+    return member;
+}
+
+int hybsol_check_n_threads(const Py_ssize_t n_threads)
+{
+    if (n_threads < 0)
+    {
+        PyErr_SetString(PyExc_ValueError, "Number of threads must be non-negative.");
+        return -1;
+    }
+    return 0;
 }
 
 static void free_module_state(void *const module)
@@ -81,6 +121,18 @@ static int module_exec(PyObject *const mod)
 
     module_state->type_block_system = cpyutl_add_type_from_spec_to_module(mod, &block_system_type_spec, NULL);
     if (!module_state->type_block_system)
+    {
+        return -1;
+    }
+
+    module_state->type_decomposition = cpyutl_add_type_from_spec_to_module(mod, &decomposition_type_spec, NULL);
+    if (!module_state->type_decomposition)
+    {
+        return -1;
+    }
+
+    module_state->type_elimination = cpyutl_add_type_from_spec_to_module(mod, &elimination_type_spec, NULL);
+    if (!module_state->type_elimination)
     {
         return -1;
     }

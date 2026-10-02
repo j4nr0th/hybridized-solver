@@ -68,7 +68,7 @@ const char *hybsol_result_str(hybsol_result_t result);
  *
  * Precision is a property of a whole system, chosen when it is created: the
  * blocks, the factors produced from them and every operation that touches
- * them use this type. Vectors passed to :c:func:`hybsol_system_solve` and the
+ * them use this type. Vectors passed to :c:func:`hybsol_decomposition_solve` and
  * ordering helpers are always doubles regardless of it.
  *
  * The two flavours of every value-carrying function are spelled out by

@@ -4,7 +4,8 @@ set(HYBSOL_TEST_EXECUTABLES
         test_matrix
         test_block_system
         test_assembly
-        test_decompose
+        test_elimination
+        test_decomposition
         test_ordering
         test_precision
         test_allocator)

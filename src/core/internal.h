@@ -56,7 +56,7 @@
 /*
  * The allocation helpers every core file goes through. They take the
  * allocator explicitly rather than reading a global, which is what lets two
- * systems use different allocators and keeps concurrent use safe.
+ * objects use different allocators and keeps concurrent use safe.
  *
  * A zero size yields NULL, matching cutl's allocators, so the `== NULL`
  * out-of-memory checks callers make stay correct.
@@ -77,86 +77,17 @@ static inline void hybsol_free(const cutl_allocator_t *const alloc, void *const 
 }
 
 /* ------------------------------------------------------------------------- */
-/* The fill-in pool                                                           */
+/* Alignment                                                                  */
 /* ------------------------------------------------------------------------- */
 
-/*
- * A decomposition allocates from inside OpenMP parallel regions, so a caller
- * supplying an allocator that is not thread-safe would be raced. Instead, every
- * allocation a decomposition makes comes out of one pool the library allocates
- * before the first region starts, sized exactly by the symbolic pass in
- * `hybsol_fill_plan_compute`.
- *
- * Threads share that pool, so the carve is a single relaxed atomic bump: no
- * lock, and no call into the system's allocator at all on the common path. A
- * pool that turns out too small -- which would mean the symbolic pass and the
- * real elimination disagree -- falls back to the allocator under a lock, so a
- * divergence costs speed rather than correctness.
- *
- * The pool is spelled as a `cutl_allocator_t`, so every existing
- * `hybsol_alloc(alloc, size)` call site keeps its shape and only the allocator
- * pointer changes between phases.
- */
+/** Granularity every carved block starts at; wide enough for any scalar stored. */
+#define HYBSOL_ALIGN 64u
 
-/** Granularity the pool carves on; wide enough for any scalar stored. */
-#define HYBSOL_REGION_ALIGN 64u
-
-/**
- * Bytes of prefix on every pool carve.
- *
- * The symbolic pass adds this to each payload when sizing the pool, so it has
- * to match the header `pool_allocate` actually writes; ``alloc.c`` builds it
- * from the same expression.
- */
-#define HYBSOL_POOL_HDR_BYTES (2u * sizeof(size_t))
-
-/* ------------------------------------------------------------------------- */
-/* Decomposition scratch                                                      */
-/* ------------------------------------------------------------------------- */
-
-/** How far along a row is between elimination passes. */
-typedef enum
+/** Round ``value`` up to :c:enumerator:`HYBSOL_ALIGN`. */
+static inline size_t hybsol_align_up(const size_t value)
 {
-    TARGET_FREE,
-    TARGET_IN_USE,
-    TARGET_DONE,
-} target_status_t;
-
-typedef struct
-{
-    target_status_t status;
-    /** Column of the row this one is waiting on before it can be eliminated. */
-    uint64_t idx_src_needed;
-} target_row_t;
-
-/** Distinguishes a bound workspace from an arbitrary or stale buffer. */
-#define HYBSOL_WORKSPACE_MAGIC UINT64_C(0x687962736f6c7731) /* "hybsolw1" */
-
-/** Layout of a bound workspace. The arrays follow it in one contiguous block. */
-typedef struct hybsol_workspace
-{
-    uint64_t magic;
-    /** ``sys->n`` the buffer was sized for. */
-    uint64_t n;
-    /** Resolved thread count the buffer was sized for. */
-    uint64_t n_threads;
-    /** Bytes each per-thread scratch block holds. */
-    size_t scratch_stride;
-    /** Total the caller had to supply. */
-    size_t total_bytes;
-    /** Byte offsets of each array within the buffer. */
-    size_t off_target_status;
-    size_t off_ready;
-    size_t off_results;
-    size_t off_scratch;
-} hybsol_workspace_t;
-
-/** Record the layout of the arrays that follow the header in ``buffer``. */
-void hybsol_workspace_bind(hybsol_workspace_t *ws, void *buffer, size_t buffer_bytes, const hybsol_system_t *sys,
-                           uint64_t threads);
-
-/** The scratch block belonging to the calling thread, or ``NULL`` if it has none. */
-void *hybsol_workspace_scratch(const hybsol_workspace_t *ws);
+    return (value + (HYBSOL_ALIGN - 1)) & ~(size_t)(HYBSOL_ALIGN - 1);
+}
 
 /* ------------------------------------------------------------------------- */
 /* Storage layout                                                             */
@@ -183,8 +114,7 @@ typedef struct hybsol_row_entry
  * The stored blocks of a single block row, kept sorted by column.
  *
  * No allocator is carried: everything that allocates or frees on a row's
- * behalf already holds the owning system, and takes the allocator from it via
- * :c:func:`hybsol_current_alloc`.
+ * behalf already holds the owning system, and takes the allocator from it.
  */
 typedef struct hybsol_row
 {
@@ -211,74 +141,191 @@ struct hybsol_system
     uint64_t *block_offsets;
     /** One row per block row. */
     hybsol_row_t *rows;
-    /** Per-row flag: the diagonal block currently holds LU factors. */
-    uint8_t *diag_decomposed;
     /**
      * The block whose diagonal could not be factorized, or ``UINT64_MAX``, so a
      * failure can name the offending block.
      */
     uint64_t failing_block;
-    /** Recorded operations, or ``NULL`` while the system is undecomposed. */
-    hybsol_operation_t *ops;
-    /** Number of recorded operations. */
-    uint64_t n_ops;
-    /** Slots allocated in ``ops``. */
-    uint64_t ops_capacity;
-    /** Non-zero once :c:func:`hybsol_system_decompose` succeeded. */
-    uint8_t decomposed;
     /** Type every stored block is held in. */
     hybsol_precision_t precision;
-    /**
-     * Fill-in pool, owned by the system; ``NULL`` when no decomposition is
-     * running, which is what routes every other phase back to ``allocator``.
-     *
-     * Armed before the first parallel region and disarmed after the last, but
-     * the memory stays: the blocks carved out of it are the system's fill-in
-     * and are released with the system rather than individually.
-     */
-    unsigned char *pool;
-    /** Bytes of ``pool``. */
-    size_t pool_size;
-    /** Next free byte in ``pool``. Only ever touched by an atomic bump. */
-    size_t pool_used;
-    /** What to hand back to the allocator: ``pool`` is this rounded up. */
-    unsigned char *pool_raw;
-    /** Allocator handing out of the pool, with ``state`` pointing at the system. */
-    cutl_allocator_t pool_alloc;
-    /**
-     * Non-zero only while a decomposition is running.
-     *
-     * Separate from ``pool`` staying non-NULL: the pool has to remain
-     * recognisable for as long as the system lives, because that is what
-     * :c:func:`hybsol_ptr_is_pooled` uses to tell fill-in from ordinary
-     * allocations when the system is destroyed.
-     */
-    uint8_t pool_armed;
 };
 
 /* ------------------------------------------------------------------------- */
-/* Allocation routing                                                          */
+/* The elimination graph                                                      */
 /* ------------------------------------------------------------------------- */
 
-/**
- * Which allocator the calling thread should use for ``sys`` right now.
- *
- * While a decomposition is running that is the fill-in pool, which threads
- * share through one atomic bump; everywhere else it is the system's own
- * allocator.
+/*
+ * What the symbolic walk produces: the pattern every block row ends up with,
+ * the passes the rows are processed in, and the exact size of the storage a
+ * decomposition needs. Nothing here depends on a block value, so the whole
+ * structure is a function of the system's pattern alone.
  */
-static inline const cutl_allocator_t *hybsol_current_alloc(const hybsol_system_t *const sys)
+struct hybsol_elimination
 {
-    return sys->pool_armed ? &sys->pool_alloc : sys->allocator;
-}
+    /** Allocator the walk allocated through; every pointer above is interior. */
+    const cutl_allocator_t *allocator;
+    uint64_t n;
+    /** Sum of the final row lengths. */
+    uint64_t n_columns;
+    /** Exact number of operations a factorization records. */
+    uint64_t n_operations;
+    /** Number of passes; at least 1. */
+    uint64_t n_levels;
+    /** Number of (row, pass) pairs the passes hold in total. */
+    uint64_t n_occupancy;
+    /** Bytes the decomposition's value arena has to carve. */
+    size_t value_bytes;
+    /** FNV-1a over the system's ``n + 1`` block offsets. */
+    uint64_t signature;
+    /** Precision of the analyzed system. */
+    hybsol_precision_t precision;
+    /** The block whose diagonal is identically zero, or ``UINT64_MAX``. */
+    uint64_t failing_block;
+    /** ``n + 1`` prefix into ``cols``. */
+    uint64_t *row_offset;
+    /** ``n_columns`` column indices, ascending within each row. */
+    uint64_t *cols;
+    /** ``n_levels + 1`` prefix into ``level_rows``. */
+    uint64_t *level_offset;
+    /** ``n_occupancy`` block row indices, ascending within each pass. */
+    uint64_t *level_rows;
+    /**
+     * ``n_occupancy`` step indices, paired with ``level_rows``.
+     *
+     * The step is the row's ``k``-th elimination when it is below
+     * ``row_n_elim``, and the diagonal factorization when it equals it. A row's
+     * passes are not consecutive -- it waits for its source -- so the step has
+     * to be carried alongside the row rather than derived from the pass.
+     */
+    uint64_t *level_k;
+    /** ``n``; the first pass a row is processed in. */
+    uint64_t *row_first;
+    /** ``n``; how many eliminations a row performs. */
+    uint64_t *row_n_elim;
+    /** ``n``; the last pass a row is processed in. */
+    uint64_t *row_level;
+    /** The allocator's pointer; everything above is interior to it. */
+    unsigned char *raw;
+    /** Size of ``raw``. */
+    size_t raw_bytes;
+};
 
 /**
- * Whether ``ptr`` came out of ``sys``'s pool rather than its allocator.
+ * Whether ``sys``'s current block order admits a factorization at all.
  *
- * Pooled memory is owned by the system: it is released with the system, never
- * individually, so a caller holding a pooled pointer must skip the free.
+ * Runs the same walk as :c:func:`hybsol_elimination_create` and throws the
+ * result away, so a caller reordering blocks can reject a permutation before
+ * anything is factorized. Sets ``sys->failing_block`` when it rejects one.
  */
-int hybsol_ptr_is_pooled(const hybsol_system_t *sys, const void *ptr);
+hybsol_result_t hybsol_elimination_check(hybsol_system_t *sys);
+
+/** Where row ``row``'s columns start in :c:func:`hybsol_elimination_row_columns`. */
+static inline uint64_t hybsol_elimination_row_offset(const hybsol_elimination_t *const graph, const uint64_t row)
+{
+    return graph->row_offset[row];
+}
+
+/** FNV-1a over a system's block offsets, so a graph can recognize its system. */
+uint64_t hybsol_elimination_signature(const hybsol_system_t *sys);
+
+/* ------------------------------------------------------------------------- */
+/* The decomposition's kernels                                               */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * The arithmetic, instantiated once per precision in
+ * ``decomposition_numeric.c`` and dispatched here, so the factorization and
+ * the solve share one implementation of each step.
+ */
+
+/** Replace the diagonal block of ``idx`` with its LU factorization. */
+hybsol_result_t hybsol_decomposition_diagonal_lu(hybsol_decomposition_t *dec, uint64_t idx);
+
+/** Scale everything above the diagonal of ``idx`` by the inverse of its factors. */
+void hybsol_decomposition_diagonal_inverse(hybsol_decomposition_t *dec, uint64_t idx);
+
+/**
+ * Subtract the ``k``-th source row of ``row_tgt``'s chain from what is left of
+ * that row, using the caller's per-thread scratch.
+ */
+void hybsol_decomposition_eliminate(hybsol_decomposition_t *dec, uint64_t row_tgt, uint64_t k, void *scratch);
+
+/** ``vec[row_tgt] -= block(row_tgt, source) @ vec[source]`` for the ``k``-th source. */
+void hybsol_decomposition_forward_eliminate(const hybsol_decomposition_t *dec, uint64_t row, uint64_t k, double *vec);
+
+/** ``vec[row] = L[row]^{-1} vec[row]``. */
+void hybsol_decomposition_forward_solve_diagonal(const hybsol_decomposition_t *dec, uint64_t row, double *vec);
+
+/** Replay a recorded operation list, front to back. */
+void hybsol_decomposition_replay(const hybsol_decomposition_t *dec, uint64_t n_ops, const hybsol_operation_t *ops,
+                                 double *vec);
+
+/** Solve ``U x = y`` by block back-substitution. */
+void hybsol_decomposition_back_substitute(const hybsol_decomposition_t *dec, double *y);
+
+/* ------------------------------------------------------------------------- */
+/* The decomposition                                                          */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * A copy of every block the elimination will ever touch, in one allocation
+ * whose layout the graph fixes. The pattern never changes, so no row grows and
+ * no entry moves: the factorization writes into slots that already exist.
+ */
+struct hybsol_decomposition
+{
+    /** Allocator every allocation of the decomposition goes through. */
+    const cutl_allocator_t *allocator;
+    /** Number of blocks per dimension. */
+    uint64_t n;
+    /** Number of passes, copied from the graph. */
+    uint64_t n_levels;
+    /** Number of (row, pass) pairs the passes hold in total. */
+    uint64_t n_occupancy;
+    /** Exact number of operations a factorization records. */
+    uint64_t n_operations;
+    /** The block whose diagonal could not be factorized, or ``UINT64_MAX``. */
+    uint64_t failing_block;
+    /** Type every stored block is held in. */
+    hybsol_precision_t precision;
+    /** Non-zero once :c:func:`hybsol_decomposition_factorize` succeeded. */
+    uint8_t factorized;
+    /** The allocator's pointer; everything below is interior to it. */
+    unsigned char *raw;
+    /** Size of ``raw``. */
+    size_t raw_bytes;
+    /** ``n + 1`` offsets, copied from the system. */
+    const uint64_t *block_offsets;
+    /** ``n_levels + 1`` prefix into ``level_rows``, copied from the graph. */
+    uint64_t *level_offset;
+    /** ``n_occupancy`` block row indices, ascending within each pass. */
+    uint64_t *level_rows;
+    /**
+     * ``n_occupancy`` step indices, paired with ``level_rows``.
+     *
+     * The step is the row's ``k``-th elimination when it is below
+     * ``row_n_elim``, and the diagonal factorization when it equals it. A row's
+     * passes are not consecutive -- it waits for its source -- so the step has
+     * to be carried alongside the row rather than derived from the pass.
+     */
+    uint64_t *level_k;
+    /** ``n``; how many eliminations a row performs. */
+    uint64_t *row_n_elim;
+    /** ``n``; the last pass a row is processed in. */
+    uint64_t *row_level;
+    /** One row per block row, holding the final pattern. */
+    hybsol_row_t *rows;
+    /** ``n_columns`` entry pointers, one flat array behind every row. */
+    hybsol_row_entry_t **entries;
+    /** The block storage itself. */
+    unsigned char *values;
+};
+
+/** Number of rows/columns of block ``idx`` of a decomposition. */
+static inline uint64_t hybsol_decomposition_block_size(const hybsol_decomposition_t *const dec, const uint64_t idx)
+{
+    return dec->block_offsets[idx + 1] - dec->block_offsets[idx];
+}
 
 /* ------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -325,14 +372,6 @@ int hybsol_row_find(const hybsol_row_t *row, uint64_t col, uint64_t *out);
 hybsol_result_t hybsol_row_reserve(hybsol_system_t *sys, hybsol_row_t *row, uint64_t needed);
 
 /**
- * Reject mutations once the system has been decomposed.
- *
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` or
- *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`.
- */
-hybsol_result_t hybsol_require_mutable(const hybsol_system_t *sys);
-
-/**
  * Assert that the caller used the spelling matching how the system stores.
  *
  * Every value-carrying function has an unsuffixed double spelling and an
@@ -360,71 +399,6 @@ static inline void hybsol_require_index(const hybsol_system_t *const sys, const 
 {
     CUTL_ASSERT(idx < sys->n, "Block index %llu is outside [0, %llu).", (unsigned long long)idx,
                 (unsigned long long)sys->n);
-}
-
-/** Mark row ``idx`` as needing a fresh LU factorization. */
-void hybsol_invalidate_diagonal(hybsol_system_t *sys, uint64_t idx);
-
-/**
- * Eliminate one row with another, using scratch the caller already owns.
- *
- * Called from inside a parallel region, where ``scratch`` is the calling
- * thread's workspace block: at least ``max_block_size^2`` elements in the
- * system's precision.
- */
-hybsol_result_t hybsol_system_eliminate_row_scratch(hybsol_system_t *sys, uint64_t row_tgt, uint64_t row_src,
-                                                    void *scratch);
-
-/**
- * The most operations a decomposition of a system with ``n`` blocks can record.
- *
- * One ``INVERT_DIAGONAL`` per row plus at most one ``ELIMINATE`` per
- * ``(target, source)`` pair with ``source < target``. Dense systems reach this
- * exactly.
- */
-static inline uint64_t hybsol_operation_bound(const uint64_t n)
-{
-    return n * (n + 1) / 2;
-}
-
-/**
- * Walk the elimination graph symbolically and size what it will need.
- *
- * Mirrors the pass order and the merge in
- * :c:func:`hybsol_system_decompose_with_workspace`, carrying only column
- * indices, so no block value is touched. `hybsol_fill_plan_t` is declared
- * in the public header, which this one reaches through the umbrella.
- *
- * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`,
- *     :c:enumerator:`HYBSOL_ERROR_SYSTEM_INVALID`,
- *     :c:enumerator:`HYBSOL_ERROR_EMPTY_ROW` or
- *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
- */
-hybsol_result_t hybsol_fill_plan_compute(const hybsol_system_t *sys, hybsol_fill_plan_t *out);
-
-/**
- * Size the fill-in and grow every row to its peak, on one thread.
- *
- * :c:func:`hybsol_fill_plan_compute` plus the row pre-grow that lets the
- * elimination's own reserves always find enough capacity, so nothing inside a
- * parallel region ever has to release an array.
- */
-hybsol_result_t hybsol_fill_plan_prepare(hybsol_system_t *sys, hybsol_fill_plan_t *out);
-
-/** Allocate ``sys``'s fill-in pool and arm it, sized by ``plan``. */
-hybsol_result_t hybsol_pool_open(hybsol_system_t *sys, const hybsol_fill_plan_t *plan);
-
-/** Stop routing allocations through the pool; the memory stays with the system. */
-void hybsol_pool_close(hybsol_system_t *sys);
-
-/** Release the pool. Only for a system being destroyed. */
-void hybsol_pool_free(hybsol_system_t *sys);
-
-/** Round ``value`` up to the pool's carve granularity. */
-static inline size_t hybsol_pool_align(const size_t value)
-{
-    return (value + (HYBSOL_REGION_ALIGN - 1)) & ~(size_t)(HYBSOL_REGION_ALIGN - 1);
 }
 
 /**

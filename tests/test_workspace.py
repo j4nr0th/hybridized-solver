@@ -44,8 +44,7 @@ def operations_are_stable(n_threads: int) -> bool:
     runs = []
     for _ in range(3):
         sys_, _ = well_conditioned_system(10, 3, seed=11)
-        sys_.decompose(n_threads)
-        runs.append(sys_.operations())
+        runs.append(sys_.decompose(n_threads).operations())
     return all(r == runs[0] for r in runs)
 
 
@@ -53,16 +52,16 @@ def operations_are_stable(n_threads: int) -> bool:
 def test_workspace_matches_internal(n_threads: int) -> None:
     """A supplied workspace gives the same answer as the internal one."""
     sys_ref, mat_ref = well_conditioned_system(8, 6, seed=1)
-    sys_ref.decompose(n_threads)
-    x_ref = sys_ref.solve(mat_ref @ np.ones(mat_ref.shape[0]))
+    dec_ref = sys_ref.decompose(n_threads)
+    x_ref = dec_ref.solve(mat_ref @ np.ones(mat_ref.shape[0]))
 
     sys_ws, mat_ws = well_conditioned_system(8, 6, seed=1)
     workspace = np.empty(sys_ws.workspace_bytes(n_threads), dtype=np.uint8)
-    sys_ws.decompose(n_threads, workspace=workspace)
-    x_ws = sys_ws.solve(mat_ws @ np.ones(mat_ws.shape[0]))
+    dec_ws = sys_ws.decompose(n_threads, workspace=workspace)
+    x_ws = dec_ws.solve(mat_ws @ np.ones(mat_ws.shape[0]))
 
     assert np.array_equal(x_ref, x_ws)
-    assert sys_ws.operations() == sys_ref.operations()
+    assert list(dec_ws.operations()) == list(dec_ref.operations())
 
 
 def test_workspace_is_written_to() -> None:
@@ -83,13 +82,13 @@ def test_workspace_is_reusable() -> None:
     first = None
     for _ in range(3):
         sys, mat = well_conditioned_system(6, 4, seed=3)
-        sys.decompose(n_threads, workspace=workspace)
-        x = sys.solve(mat @ np.ones(mat.shape[0]))
+        dec = sys.decompose(n_threads, workspace=workspace)
+        x = dec.solve(mat @ np.ones(mat.shape[0]))
         assert residual(mat, x) < 1e-8
         if first is None:
-            first = sys.operations()
+            first = dec.operations()
         else:
-            assert sys.operations() == first
+            assert dec.operations() == first
 
 
 def test_workspace_scales_with_threads() -> None:
@@ -119,9 +118,9 @@ def test_read_only_workspace_is_rejected() -> None:
 def test_decompose_without_workspace_still_works() -> None:
     """The internal-scratch spelling keeps working."""
     sys, mat = well_conditioned_system(6, 4, seed=4)
-    sys.decompose()
-    assert residual(mat, sys.solve(mat @ np.ones(mat.shape[0]))) < 1e-8
-    assert len(sys.operations()) > 0
+    dec = sys.decompose()
+    assert residual(mat, dec.solve(mat @ np.ones(mat.shape[0]))) < 1e-8
+    assert len(dec.operations()) > 0
 
 
 def test_workspace_bytes_is_positive_and_aligned() -> None:
@@ -137,15 +136,15 @@ def test_workspace_bytes_is_positive_and_aligned() -> None:
 def test_operations_are_deterministic(n_threads: int) -> None:
     """The recorded operations are reproducible, run to run and thread count.
 
-    They are recorded in the serial phase between passes, so a parallel
-    decomposition and a serial one of the same system agree exactly.
+    They are read off the elimination graph's passes, so a parallel
+    factorization and a serial one of the same system agree exactly.
     """
     assert operations_are_stable(n_threads)
 
     baseline = None
     for threads in (1, 2, 4, 8):
         sys_, _ = well_conditioned_system(10, 3, seed=11)
-        sys_.decompose(threads)
+        operations = sys_.decompose(threads).operations()
         if baseline is None:
-            baseline = sys_.operations()
-        assert sys_.operations() == baseline
+            baseline = operations
+        assert operations == baseline

@@ -339,7 +339,8 @@ static void test_block_storage_creates_and_reuses(void)
 }
 
 /** Touching the diagonal through storage drops the cached factorization. */
-static void test_block_storage_invalidates_diagonal(void)
+/** Storage is plain: what a caller writes through a view is what it reads back. */
+static void test_block_storage_round_trips(void)
 {
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[2] = {2, 2};
@@ -347,30 +348,144 @@ static void test_block_storage_invalidates_diagonal(void)
     CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
 
-    CHECK_OK(hybsol_system_decompose_diagonal(sys, 0));
-    CHECK_OK(hybsol_system_apply_diagonal_inverse(sys, 0));
-
     hybsol_matrix_t view;
     CHECK_OK(hybsol_system_block_storage(sys, 0, 0, &view));
-    CHECK_RESULT(hybsol_system_apply_diagonal_inverse(sys, 0), HYBSOL_ERROR_NOT_DECOMPOSED);
+    view.data[0] = 7.0;
+    view.data[3] = 6.0;
+
+    hybsol_matrix_t read_back;
+    CHECK_OK(hybsol_system_get_block(sys, 0, 0, &read_back));
+    CHECK_NEAR(read_back.data[0], 7.0, 0.0);
+    CHECK_NEAR(read_back.data[3], 6.0, 0.0);
+
+    // And re-fetching the view returns the same storage, unchanged.
+    hybsol_matrix_t again;
+    CHECK_OK(hybsol_system_block_storage(sys, 0, 0, &again));
+    CHECK(again.data == view.data);
 
     hybsol_system_destroy(sys);
 }
 
-/** Storage may not be created once the system has been factorized. */
-static void test_block_storage_rejects_decomposed(void)
+/**
+ * A decomposition writes into its own copy, so the system keeps serving storage
+ * afterwards -- and what a caller writes through the view is what it reads back.
+ */
+static void test_block_storage_survives_a_decomposition(void)
 {
     hybsol_system_t *sys = NULL;
     const uint64_t sizes[1] = {2};
     const double diag[4] = {4.0, 0.0, 0.0, 4.0};
     CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag));
-    CHECK_OK(hybsol_system_decompose(sys, 1));
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph));
+    hybsol_decomposition_t *dec = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &dec));
+    hybsol_elimination_destroy(graph);
+    CHECK_OK(hybsol_decomposition_factorize(dec, 1));
+    hybsol_decomposition_destroy(dec);
 
     hybsol_matrix_t view;
-    CHECK_RESULT(hybsol_system_block_storage(sys, 0, 0, &view), HYBSOL_ERROR_ALREADY_DECOMPOSED);
+    CHECK_OK(hybsol_system_block_storage(sys, 0, 0, &view));
+    view.data[0] = 7.0;
+
+    hybsol_matrix_t read_back;
+    CHECK_OK(hybsol_system_get_block(sys, 0, 0, &read_back));
+    CHECK_NEAR(read_back.data[0], 7.0, 0.0);
 
     hybsol_system_destroy(sys);
+}
+
+/**
+ * Applying the system must agree with its dense form, at every thread count and
+ * for both a vector and several right-hand sides.
+ */
+static void test_apply_matches_dense(void)
+{
+    const uint64_t n = 4;
+    double mat[MAX_DIM][MAX_DIM];
+    fill_sequential(n, mat);
+
+    const hybsol_precision_t precisions[2] = {HYBSOL_PRECISION_DOUBLE, HYBSOL_PRECISION_SINGLE};
+    const uint64_t thread_counts[3] = {1, 2, 4};
+    const uint64_t dim = n; /* One scalar per block. */
+    const uint64_t k = 3;
+
+    for (size_t p = 0; p < 2; ++p)
+    {
+        const uint64_t sizes[4] = {1, 1, 1, 1};
+        hybsol_system_t *sys = NULL;
+        CHECK_OK(hybsol_system_create_with_precision(n, sizes, precisions[p], &sys, &CUTL_STD_ALLOCATOR));
+        for (uint64_t i = 0; i < n; ++i)
+        {
+            for (uint64_t j = 0; j < n; ++j)
+            {
+                // Spelled per precision, so the single-precision path is really
+                // the one that reads floats.
+                if (precisions[p] == HYBSOL_PRECISION_SINGLE)
+                    CHECK_OK(hybsol_system_add_block_f32(sys, i, j, 1, 1, (const float[1]){(float)mat[i][j]}));
+                else
+                    CHECK_OK(hybsol_system_add_block(sys, i, j, 1, 1, &mat[i][j]));
+            }
+        }
+
+        double x[MAX_DIM], y[MAX_DIM], xs[MAX_DIM * 3], ys[MAX_DIM * 3];
+        for (uint64_t i = 0; i < dim; ++i)
+        {
+            x[i] = (double)(i + 1);
+            for (uint64_t j = 0; j < k; ++j)
+                xs[i * k + j] = (double)((i + 1) * (j + 2));
+        }
+        // Make the first right-hand side the same vector, so matvec and the
+        // first column of matmat can be compared outright.
+        for (uint64_t i = 0; i < dim; ++i)
+            xs[i * k] = x[i];
+
+        for (size_t t = 0; t < 3; ++t)
+        {
+            const hybsol_matrix_t xv = hybsol_matrix_view(dim, 1, x);
+            const hybsol_matrix_t xm = hybsol_matrix_view(dim, k, xs);
+            hybsol_matrix_t yv = hybsol_matrix_view(dim, 1, y);
+            hybsol_matrix_t ym = hybsol_matrix_view(dim, k, ys);
+
+            CHECK_OK(hybsol_system_matvec(sys, &xv, &yv, thread_counts[t]));
+            for (uint64_t i = 0; i < dim; ++i)
+            {
+                double expect = 0.0;
+                for (uint64_t j = 0; j < dim; ++j)
+                    expect += mat[i][j] * x[j];
+                CHECK_MSG(fabs(y[i] - expect) < 1e-9, "%s matvec at %llu threads, row %llu: got %g, expected %g",
+                          precisions[p] == HYBSOL_PRECISION_DOUBLE ? "double" : "single",
+                          (unsigned long long)thread_counts[t], (unsigned long long)i, y[i], expect);
+            }
+
+            CHECK_OK(hybsol_system_matmat(sys, &xm, &ym, thread_counts[t]));
+            for (uint64_t i = 0; i < dim; ++i)
+            {
+                for (uint64_t j = 0; j < k; ++j)
+                {
+                    double expect = 0.0;
+                    for (uint64_t m = 0; m < dim; ++m)
+                        expect += mat[i][m] * xs[m * k + j];
+                    CHECK_MSG(fabs(ys[i * k + j] - expect) < 1e-9, "%s matmat at %llu threads, (%llu, %llu)",
+                              precisions[p] == HYBSOL_PRECISION_DOUBLE ? "double" : "single",
+                              (unsigned long long)thread_counts[t], (unsigned long long)i, (unsigned long long)j);
+                }
+            }
+
+            // A single column is the same answer either way round, and y is
+            // overwritten rather than accumulated into, so a dirty y is fine.
+            for (uint64_t i = 0; i < dim; ++i)
+                y[i] = -1.0;
+            hybsol_matrix_t one = hybsol_matrix_view(dim, 1, y);
+            CHECK_OK(hybsol_system_matmat(sys, &xv, &one, thread_counts[t]));
+            for (uint64_t i = 0; i < dim; ++i)
+                CHECK_NEAR(y[i], ys[i * k], 0.0);
+        }
+
+        hybsol_system_destroy(sys);
+    }
 }
 
 int main(void)
@@ -383,7 +498,8 @@ int main(void)
     test_is_valid();
     test_row_operations();
     test_block_storage_creates_and_reuses();
-    test_block_storage_invalidates_diagonal();
-    test_block_storage_rejects_decomposed();
+    test_block_storage_round_trips();
+    test_apply_matches_dense();
+    test_block_storage_survives_a_decomposition();
     return test_report("test_block_system");
 }

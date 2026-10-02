@@ -20,6 +20,39 @@
  * at the bottom so a second inclusion is well defined.
  */
 
+/*
+ * ``out += block @ in``, with the block in the system's precision and both
+ * vectors in double.
+ *
+ * The dense layer's kernels either assign or subtract, neither of which is what
+ * a row with several blocks needs, so this is spelled out. The products
+ * accumulate in double, which is also what makes a single-precision system
+ * produce a double-precision result.
+ */
+static void HYBSOL_FN(accumulate_block)(const HYBSOL_VIEW *const a, const hybsol_matrix_t *const in,
+                                        const hybsol_matrix_t *const out)
+{
+    CUTL_ASSERT(a->cols == in->rows, "Matrix multiplication: the block has %llu columns, the input %llu rows.",
+                (unsigned long long)a->cols, (unsigned long long)in->rows);
+    CUTL_ASSERT(out->rows == a->rows && out->cols == in->cols,
+                "The destination is %llu x %llu, but the product is %llu x %llu.", (unsigned long long)out->rows,
+                (unsigned long long)out->cols, (unsigned long long)a->rows, (unsigned long long)in->cols);
+
+    const HYBSOL_SCALAR *const restrict ptr_a = a->data;
+    const double *const restrict ptr_in = in->data;
+    double *const restrict ptr_out = out->data;
+    for (uint64_t i = 0; i < a->rows; ++i)
+    {
+        for (uint64_t k = 0; k < in->cols; ++k)
+        {
+            double sum = 0.0;
+            for (uint64_t j = 0; j < a->cols; ++j)
+                sum += (double)ptr_a[i * a->cols + j] * ptr_in[j * in->cols + k];
+            ptr_out[i * out->cols + k] += sum;
+        }
+    }
+}
+
 static hybsol_result_t HYBSOL_FN(row_insert_block)(const cutl_allocator_t *const alloc, hybsol_system_t *const sys,
                                                    hybsol_row_t *const row, const uint64_t col, const uint64_t n_values,
                                                    const HYBSOL_SCALAR *const vals)
@@ -54,10 +87,6 @@ static hybsol_result_t HYBSOL_FN(add_block)(hybsol_system_t *const sys, const ui
     hybsol_require_index(sys, row);
     hybsol_require_index(sys, col);
 
-    hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
     CUTL_ASSERT(n_rows == hybsol_block_size(sys, row) && n_cols == hybsol_block_size(sys, col),
                 "Block (%llu, %llu) is %llu x %llu in the system, but %llu x %llu was given.", (unsigned long long)row,
                 (unsigned long long)col, (unsigned long long)hybsol_block_size(sys, row),
@@ -65,13 +94,10 @@ static hybsol_result_t HYBSOL_FN(add_block)(hybsol_system_t *const sys, const ui
                 (unsigned long long)n_cols);
     CUTL_ASSERT(vals != NULL, "The block values must not be NULL.");
 
-    res = HYBSOL_FN(row_insert_block)(hybsol_current_alloc(sys), sys, sys->rows + row, col, n_rows * n_cols, vals);
+    const hybsol_result_t res =
+        HYBSOL_FN(row_insert_block)(sys->allocator, sys, sys->rows + row, col, n_rows * n_cols, vals);
     if (res != HYBSOL_SUCCESS)
         return res;
-
-    // Touching the diagonal invalidates the row's cached factorization
-    if (row == col)
-        hybsol_invalidate_diagonal(sys, row);
 
     return HYBSOL_SUCCESS;
 }
@@ -84,9 +110,7 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
         return HYBSOL_SUCCESS;
     CUTL_ASSERT(data != NULL, "The block values must not be NULL.");
 
-    hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
+    hybsol_result_t res;
 
     for (uint64_t k = 0; k < n_entries; ++k)
     {
@@ -120,12 +144,9 @@ static hybsol_result_t HYBSOL_FN(add_blocks)(hybsol_system_t *const sys, const u
     for (uint64_t k = 0; k < n_entries; ++k)
     {
         const uint64_t n_values = hybsol_block_size(sys, rows[k]) * hybsol_block_size(sys, cols[k]);
-        res = HYBSOL_FN(row_insert_block)(hybsol_current_alloc(sys), sys, sys->rows + rows[k], cols[k], n_values,
-                                          data + offset);
+        res = HYBSOL_FN(row_insert_block)(sys->allocator, sys, sys->rows + rows[k], cols[k], n_values, data + offset);
         if (res != HYBSOL_SUCCESS)
             return res;
-        if (rows[k] == cols[k])
-            hybsol_invalidate_diagonal(sys, rows[k]);
         offset += n_values;
     }
 
@@ -138,22 +159,14 @@ static hybsol_result_t HYBSOL_FN(block_storage)(hybsol_system_t *const sys, cons
     hybsol_require_index(sys, row);
     hybsol_require_index(sys, col);
 
-    hybsol_result_t res = hybsol_require_mutable(sys);
-    if (res != HYBSOL_SUCCESS)
-        return res;
-
     const uint64_t n_rows = hybsol_block_size(sys, row);
     const uint64_t n_cols = hybsol_block_size(sys, col);
 
     hybsol_row_entry_t *entry;
-    res = row_find_or_create(hybsol_current_alloc(sys), sys, sys->rows + row, col, n_rows * n_cols,
-                             sizeof(HYBSOL_SCALAR), &entry);
+    hybsol_result_t res =
+        row_find_or_create(sys->allocator, sys, sys->rows + row, col, n_rows * n_cols, sizeof(HYBSOL_SCALAR), &entry);
     if (res != HYBSOL_SUCCESS)
         return res;
-
-    // Writing through this view replaces the diagonal block
-    if (row == col)
-        hybsol_invalidate_diagonal(sys, row);
 
     *out = HYBSOL_KERNEL(view)(n_rows, n_cols, (HYBSOL_SCALAR *)entry->vals);
     return HYBSOL_SUCCESS;
@@ -220,9 +233,9 @@ static hybsol_result_t HYBSOL_FN(multiply_row)(hybsol_system_t *const sys, const
     }
 
     hybsol_free(sys->allocator, buffer);
-    hybsol_invalidate_diagonal(sys, row);
     return HYBSOL_SUCCESS;
 }
+
 static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys, const uint64_t row_tgt,
                                                      const uint64_t row_src, const HYBSOL_VIEW *const mat,
                                                      HYBSOL_SCALAR *const scratch)
@@ -278,7 +291,7 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
 
     const uint64_t needed_size = unique_cols + pos_tgt;
 
-    const cutl_allocator_t *const alloc = hybsol_current_alloc(sys);
+    const cutl_allocator_t *const alloc = sys->allocator;
     hybsol_result_t res = hybsol_row_reserve(sys, row_t, needed_size);
     if (res != HYBSOL_SUCCESS)
         return res;
@@ -337,12 +350,10 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
             if (new_entry == NULL)
             {
                 // The row can not be restored, so drop it entirely rather than
-                // leave a half-updated mess. Pooled entries are released with
-                // the system, not one by one.
+                // leave a half-updated mess.
                 for (uint64_t j = 0; j < row_t->capacity; ++j)
                 {
-                    if (!hybsol_ptr_is_pooled(sys, row_t->entries[j]))
-                        hybsol_free(sys->allocator, row_t->entries[j]);
+                    hybsol_free(sys->allocator, row_t->entries[j]);
                     row_t->entries[j] = NULL;
                 }
                 row_t->count = 0;
@@ -378,7 +389,6 @@ static hybsol_result_t HYBSOL_FN(eliminate_row_with)(hybsol_system_t *const sys,
 #endif
 
     hybsol_free(alloc, owned);
-    hybsol_invalidate_diagonal(sys, row_tgt);
     return HYBSOL_SUCCESS;
 }
 
@@ -394,6 +404,44 @@ static hybsol_result_t HYBSOL_FN(eliminate_row)(hybsol_system_t *const sys, cons
     HYBSOL_FN(lookup_block)(sys, row_tgt, row_src, &mat);
 
     return HYBSOL_FN(eliminate_row_with)(sys, row_tgt, row_src, &mat, scratch);
+}
+
+/*
+ * ``y = A @ x``, accumulating block row by block row.
+ *
+ * Parallel over block rows: each one zeroes and writes only its own slice of
+ * ``y``, and reads only the system's blocks, so no two threads touch the same
+ * element. That is what lets this run while a caller reads the system
+ * elsewhere, and why it needs no lock of its own.
+ */
+static void HYBSOL_FN(matmat)(const hybsol_system_t *const sys, const hybsol_matrix_t *const x,
+                              const hybsol_matrix_t *const y, const int threads)
+{
+    HYBSOL_MARK_USED(threads); // The pragma below is the only user when OpenMP is on.
+
+    const uint64_t cols = x->cols;
+
+#pragma omp parallel for schedule(dynamic) default(none) shared(sys, x, y, cols) if (threads > 1) num_threads(threads)
+    for (uint64_t i = 0; i < sys->n; ++i)
+    {
+        const uint64_t row_at = sys->block_offsets[i];
+        const uint64_t rows_of = hybsol_block_size(sys, i);
+
+        for (uint64_t k = 0; k < rows_of * cols; ++k)
+            y->data[row_at * cols + k] = 0.0;
+
+        const hybsol_row_t *const row = sys->rows + i;
+        for (uint64_t j = 0; j < row->count; ++j)
+        {
+            const hybsol_row_entry_t *const entry = row->entries[j];
+            const uint64_t col_at = sys->block_offsets[entry->col];
+            const uint64_t cols_of = hybsol_block_size(sys, entry->col);
+            const HYBSOL_VIEW block = HYBSOL_KERNEL(view)(rows_of, cols_of, (HYBSOL_SCALAR *)entry->vals);
+            const hybsol_matrix_t in = hybsol_matrix_view(cols_of, cols, x->data + col_at * cols);
+            const hybsol_matrix_t out = hybsol_matrix_view(rows_of, cols, y->data + row_at * cols);
+            HYBSOL_FN(accumulate_block)(&block, &in, &out);
+        }
+    }
 }
 
 static hybsol_result_t HYBSOL_FN(to_dense)(const hybsol_system_t *const sys, HYBSOL_SCALAR *const out)
