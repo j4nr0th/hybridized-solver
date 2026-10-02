@@ -130,6 +130,8 @@ typedef struct
     size_t row_level;
     size_t rows;
     size_t entries;
+    size_t row_entry_offset;
+    size_t cols;
     size_t values;
     /** Bytes the value arena occupies at the decomposition's precision. */
     size_t values_bytes;
@@ -171,7 +173,9 @@ static decomp_layout_t decomp_layout(const hybsol_elimination_t *const graph, co
     layout.row_level = layout.row_n_elim + n * sizeof(uint64_t);
     layout.rows = layout.row_level + n * sizeof(uint64_t);
     layout.entries = layout.rows + n * sizeof(hybsol_row_t);
-    layout.values = hybsol_align_up(layout.entries + (size_t)graph->n_columns * sizeof(hybsol_row_entry_t *));
+    layout.row_entry_offset = layout.entries + (size_t)graph->n_columns * sizeof(hybsol_row_entry_t *);
+    layout.cols = layout.row_entry_offset + (n + 1) * sizeof(uint64_t);
+    layout.values = hybsol_align_up(layout.cols + (size_t)graph->n_columns * sizeof(uint64_t));
 
     layout.values_bytes = 0;
     for (uint64_t row = 0; row < graph->n; ++row)
@@ -267,6 +271,8 @@ static void frame_bind(hybsol_decomposition_t *const dec, unsigned char *const b
     dec->row_level = (uint64_t *)(base + layout->row_level);
     dec->rows = (hybsol_row_t *)(base + layout->rows);
     dec->entries = (hybsol_row_entry_t **)(base + layout->entries);
+    dec->row_entry_offset = (uint64_t *)(base + layout->row_entry_offset);
+    dec->cols = (uint64_t *)(base + layout->cols);
     dec->values = base + layout->values;
 
     memcpy((void *)dec->block_offsets, sys->block_offsets, (size_t)(n + 1) * sizeof(uint64_t));
@@ -275,6 +281,8 @@ static void frame_bind(hybsol_decomposition_t *const dec, unsigned char *const b
     memcpy(dec->level_k, graph->level_k, (size_t)dec->n_occupancy * sizeof(uint64_t));
     memcpy(dec->row_n_elim, graph->row_n_elim, (size_t)n * sizeof(uint64_t));
     memcpy(dec->row_level, graph->row_level, (size_t)n * sizeof(uint64_t));
+    memcpy(dec->row_entry_offset, graph->row_offset, (size_t)(n + 1) * sizeof(uint64_t));
+    memcpy(dec->cols, graph->cols, (size_t)graph->n_columns * sizeof(uint64_t));
 }
 
 hybsol_result_t hybsol_decomposition_init_with_precision(const hybsol_system_t *const sys,
@@ -487,8 +495,11 @@ hybsol_result_t hybsol_decomposition_operations(const hybsol_decomposition_t *co
 
             if (step < dec->row_n_elim[row])
             {
-                out[at++] = (hybsol_operation_t){
-                    .type = HYBSOL_OPERATION_ELIMINATE, .idx_row = row, .idx_col = dec->rows[row].entries[step]->col};
+                // From the frame's own pattern arrays, not from an entry's
+                // header: a decomposition on a device has no headers here.
+                out[at++] = (hybsol_operation_t){.type = HYBSOL_OPERATION_ELIMINATE,
+                                                 .idx_row = row,
+                                                 .idx_col = dec->cols[dec->row_entry_offset[row] + step]};
             }
             if (pass == dec->row_level[row])
                 out[at++] = (hybsol_operation_t){.type = HYBSOL_OPERATION_INVERT_DIAGONAL, .idx_row = row};

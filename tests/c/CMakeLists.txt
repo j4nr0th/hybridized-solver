@@ -20,6 +20,18 @@ foreach (test IN LISTS HYBSOL_TEST_EXECUTABLES)
     add_test(NAME ${test} COMMAND ${test})
 endforeach ()
 
+# The device tests need a device, so the target exists only where the backend
+# does; without it the file is not compiled and nothing is skipped.
+if (TARGET hybsol_opencl)
+    add_executable(test_gpu test_gpu.c)
+    target_link_libraries(test_gpu PRIVATE hybsol_opencl)
+    target_compile_features(test_gpu PRIVATE c_std_17)
+    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(test_gpu PRIVATE -Wall -Wextra -Werror)
+    endif ()
+    add_test(NAME test_gpu COMMAND test_gpu)
+endif ()
+
 # A separate target that builds the core with sanitizers enabled; useful when
 # hunting for memory errors, but far too slow to run on every build.
 add_custom_target(hybsol_sanitize

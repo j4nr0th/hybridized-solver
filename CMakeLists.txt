@@ -52,6 +52,37 @@ if (HYBSOL_ENABLE_OPENMP)
     endif ()
 endif ()
 
+# The OpenCL backend is a plugin: its own library, its own Python module, and
+# nothing in hybsol_core links OpenCL. A consumer that never asks for a device
+# never touches it, so a machine without the loader builds exactly as before --
+# with the warning the missing OpenMP package gets.
+option(HYBSOL_ENABLE_OPENCL "Build the OpenCL backend." ON)
+if (HYBSOL_ENABLE_OPENCL)
+    find_package(OpenCL)
+    if (NOT OpenCL_FOUND)
+        message(WARNING "OpenCL requested but not found; building without the OpenCL backend.")
+        set(HYBSOL_ENABLE_OPENCL OFF)
+    endif ()
+endif ()
+
+if (HYBSOL_ENABLE_OPENCL)
+    add_library(hybsol_opencl STATIC
+            src/opencl/device.c
+            src/opencl/decomposition_opencl.c)
+    add_library(hybsol::opencl ALIAS hybsol_opencl)
+
+    target_compile_features(hybsol_opencl PUBLIC c_std_17)
+
+    # PUBLIC: a consumer of hybsol::opencl links the loader too, and reaches
+    # the core's internal declarations (the frame helpers) through src.
+    target_link_libraries(hybsol_opencl PUBLIC hybsol::hybsol OpenCL::OpenCL)
+    target_include_directories(hybsol_opencl PRIVATE src)
+
+    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(hybsol_opencl PRIVATE -Wall -Wextra -Werror)
+    endif ()
+endif ()
+
 # ---------------------------------------------------------------------------
 # Core: a plain, Python-free static library.
 # ---------------------------------------------------------------------------

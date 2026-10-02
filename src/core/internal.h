@@ -324,6 +324,14 @@ struct hybsol_decomposition
     uint64_t *row_level;
     /** One row per block row, holding the final pattern. */
     hybsol_row_t *rows;
+    /**
+     * ``n + 1`` prefix into ``cols``, copied from the graph: where each row's
+     * blocks start. A decomposition on a backend device has no entry pointers
+     * to point at, so the pattern travels as these two arrays instead.
+     */
+    uint64_t *row_entry_offset;
+    /** ``n_columns`` column indices, ascending within each row. */
+    uint64_t *cols;
     /** ``n_columns`` entry pointers, one flat array behind every row. */
     hybsol_row_entry_t **entries;
     /** The block storage itself. */
