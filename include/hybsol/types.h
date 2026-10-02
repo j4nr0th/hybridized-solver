@@ -38,7 +38,7 @@ typedef enum hybsol_result
     HYBSOL_ERROR_NO_MORE_COLUMNS,
     /** The requested coloring needed more colors than ``max_colors`` allowed. */
     HYBSOL_ERROR_MAX_COLORS,
-    /** A zero pivot was hit by the (unpivoted) LU decomposition. */
+    /** A diagonal block hit an exactly zero pivot and cannot be factorized. */
     HYBSOL_ERROR_SINGULAR,
     /** The system violates the assumptions of the solver (see :c:func:`hybsol_system_is_valid`). */
     HYBSOL_ERROR_SYSTEM_INVALID,
@@ -46,6 +46,8 @@ typedef enum hybsol_result
     HYBSOL_ERROR_NOT_DECOMPOSED,
     /** The system has already been decomposed and can no longer be modified. */
     HYBSOL_ERROR_ALREADY_DECOMPOSED,
+    /** The block order does not admit any factorization of this system. */
+    HYBSOL_ERROR_INVALID_ORDERING,
     /** An invariant inside the library was violated; this is a bug in hybsol. */
     HYBSOL_ERROR_INTERNAL,
 } hybsol_result_t;

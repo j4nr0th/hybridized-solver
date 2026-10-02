@@ -85,7 +85,7 @@ static void build_random_system(rng_t *const r, random_system_t *const s)
         }
     }
 
-    // Strict diagonal dominance keeps the unpivoted factorization stable enough for the tolerances below.
+    // Strict diagonal dominance keeps the factorization stable enough for the tolerances below.
     for (uint64_t i = 0; i < s->dim; ++i)
     {
         double sum = 1.0;
@@ -228,15 +228,26 @@ static void test_rejects_invalid_and_singular(void)
     CHECK_RESULT(hybsol_system_decompose(sys, 1), HYBSOL_ERROR_SYSTEM_INVALID);
     hybsol_system_destroy(sys);
 
-    // Exactly singular diagonal block.
+    // Identically zero diagonal block: no pivot, so an unusable order.
     CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
     double zero[4] = {0};
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, zero));
     CHECK(hybsol_system_is_valid(sys));
-    CHECK_RESULT(hybsol_system_decompose(sys, 1), HYBSOL_ERROR_SINGULAR);
+    CHECK_RESULT(hybsol_system_decompose(sys, 1), HYBSOL_ERROR_INVALID_ORDERING);
+    CHECK(hybsol_system_failing_block(sys) == 0);
     CHECK(!hybsol_system_is_decomposed(sys));
     CHECK(hybsol_system_n_operations(sys) == 0);
     CHECK(hybsol_system_operations(sys) == NULL);
+    hybsol_system_destroy(sys);
+
+    // Nonzero but singular (rank one): a genuine numerical singularity.
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
+    double rank_one[4] = {1.0, 2.0, 2.0, 4.0};
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, rank_one));
+    CHECK(hybsol_system_is_valid(sys));
+    CHECK_RESULT(hybsol_system_decompose(sys, 1), HYBSOL_ERROR_SINGULAR);
+    CHECK(hybsol_system_failing_block(sys) == 0);
+    CHECK(!hybsol_system_is_decomposed(sys));
     hybsol_system_destroy(sys);
 }
 

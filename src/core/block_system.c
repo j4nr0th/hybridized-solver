@@ -265,6 +265,7 @@ static hybsol_result_t system_frame_alloc(hybsol_system_t **const out, const uin
     sys->block_offsets = (uint64_t *)(base + off_offsets);
     sys->rows = (hybsol_row_t *)(base + off_rows);
     sys->diag_decomposed = (uint8_t *)(base + off_diag);
+    sys->failing_block = UINT64_MAX;
 
     *out = sys;
     return HYBSOL_SUCCESS;
@@ -353,6 +354,7 @@ hybsol_result_t hybsol_system_copy(const hybsol_system_t *const sys, hybsol_syst
     dst->decomposed = sys->decomposed;
     dst->n_ops = sys->n_ops;
     dst->ops_capacity = sys->n_ops;
+    dst->failing_block = sys->failing_block;
 
     memcpy(dst->block_offsets, sys->block_offsets, sizeof(*dst->block_offsets) * (size_t)(sys->n + 1));
     memcpy(dst->diag_decomposed, sys->diag_decomposed, sizeof(*dst->diag_decomposed) * (size_t)sys->n);
@@ -473,6 +475,11 @@ int hybsol_system_is_valid(const hybsol_system_t *const sys)
     }
 
     return 1;
+}
+
+uint64_t hybsol_system_failing_block(const hybsol_system_t *const sys)
+{
+    return sys->failing_block;
 }
 
 uint64_t hybsol_system_row_count(const hybsol_system_t *const sys, const uint64_t row)

@@ -8,6 +8,9 @@
 
 #include "block_system_type.h"
 
+// Set during module exec; `hybsol_exception_type` only gets a result code.
+static PyObject *hybsol_singular_error = NULL;
+
 PyObject *hybsol_exception_type(const hybsol_result_t res)
 {
     switch (res)
@@ -23,9 +26,15 @@ PyObject *hybsol_exception_type(const hybsol_result_t res)
     case HYBSOL_ERROR_ALREADY_DECOMPOSED:
         return PyExc_RuntimeError;
 
+    // A singular system is worth distinguishing: a caller that wants to fall
+    // back to a different block granularity can catch it without also swallowing
+    // every other ValueError.
+    case HYBSOL_ERROR_SINGULAR:
+        return hybsol_singular_error != NULL ? hybsol_singular_error : PyExc_ValueError;
+
     // Everything else is a condition detected in the data rather than a
-    // caller mistake (an empty row, a singular block, too many colors), so
-    // it is a ValueError rather than some more exotic type.
+    // caller mistake (an empty row, too many colors), so it is a ValueError
+    // rather than some more exotic type.
     default:
         return PyExc_ValueError;
     }
@@ -37,8 +46,21 @@ PyObject *hybsol_raise(const char *const what, const hybsol_result_t res)
     return NULL;
 }
 
+PyObject *hybsol_raise_block(const char *const what, const hybsol_result_t res, const hybsol_system_t *const sys)
+{
+    const uint64_t block = sys == NULL ? UINT64_MAX : hybsol_system_failing_block(sys);
+    if (block != UINT64_MAX)
+    {
+        PyErr_Format(hybsol_exception_type(res), "%s: %s (block %llu)", what, hybsol_result_str(res),
+                     (unsigned long long)block);
+        return NULL;
+    }
+    return hybsol_raise(what, res);
+}
+
 static void free_module_state(void *const module)
 {
+    Py_CLEAR(hybsol_singular_error);
     module_state_t *const module_state = (module_state_t *)PyModule_GetState(module);
     *module_state = (module_state_t){};
 }
@@ -62,6 +84,20 @@ static int module_exec(PyObject *const mod)
     {
         return -1;
     }
+
+    // On the module so `hybsol.SingularSystemError` resolves; the dict owns it.
+    module_state->exc_singular = PyErr_NewException("hybsol.SingularSystemError", PyExc_ValueError, NULL);
+    if (module_state->exc_singular == NULL)
+    {
+        return -1;
+    }
+    if (PyModule_AddObject(mod, "SingularSystemError", module_state->exc_singular) < 0)
+    {
+        Py_DECREF(module_state->exc_singular);
+        module_state->exc_singular = NULL;
+        return -1;
+    }
+    hybsol_singular_error = module_state->exc_singular;
 
     return 0;
 }

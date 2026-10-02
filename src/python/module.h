@@ -48,6 +48,8 @@
 typedef struct
 {
     PyTypeObject *type_block_system;
+    /** ``hybsol.SingularSystemError``; borrowed by the state, owned by the module. */
+    PyObject *exc_singular;
 } module_state_t;
 
 MODULE_INTERNAL
@@ -93,6 +95,17 @@ PyObject *hybsol_exception_type(hybsol_result_t res);
  */
 MODULE_INTERNAL
 PyObject *hybsol_raise(const char *what, hybsol_result_t res);
+
+/**
+ * Raise the exception for a result code, naming the failing block when known.
+ *
+ * :param what: Short description of the operation that failed.
+ * :param res: The result code.
+ * :param sys: The system the operation ran on.
+ * :returns: Always ``NULL``, so callers can ``return hybsol_raise_block(...)``.
+ */
+MODULE_INTERNAL
+PyObject *hybsol_raise_block(const char *what, const hybsol_result_t res, const hybsol_system_t *sys);
 
 #ifndef MODULE_TYPE_NAME
 #define MODULE_TYPE_NAME(name) ("hybsol._mod." #name)

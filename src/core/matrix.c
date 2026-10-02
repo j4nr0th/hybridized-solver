@@ -1,6 +1,6 @@
 /**
  * @file core/matrix.c
- * Dense matrix kernels: products, differences and unpivoted LU.
+ * Dense matrix kernels: products, differences and LU with repair pivoting.
  *
  * The kernels live in ``matrix.inc``, included once per spelling of the public
  * API; that file's header sets out the contract each inclusion configures.

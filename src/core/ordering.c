@@ -413,18 +413,20 @@ hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *const sys, const u
     }
 #endif
 
-    for (int t = 0; t < threads; ++t)
-        hybsol_free(sys->allocator, scratch[t]);
-    hybsol_free(sys->allocator, scratch);
-    hybsol_free(sys->allocator, new_rows);
-    hybsol_free(sys->allocator, new_flags);
-
     // Turn the shuffled sizes back into offsets
     sys->block_offsets[0] = 0;
     for (uint64_t i = 0; i < n; ++i)
         sys->block_offsets[i + 1] = sys->block_offsets[i] + new_sizes[i];
-
     hybsol_free(sys->allocator, new_sizes);
+
+    // The permutation is already applied and is not rolled back.
+    hybsol_fill_plan_t plan;
+    const hybsol_result_t ordered = hybsol_fill_plan_compute(sys, &plan);
+    if (ordered != HYBSOL_SUCCESS)
+    {
+        return ordered;
+    }
+
     return HYBSOL_SUCCESS;
 }
 

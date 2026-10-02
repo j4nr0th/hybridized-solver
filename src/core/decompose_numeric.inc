@@ -120,7 +120,10 @@ static hybsol_result_t HYBSOL_FN(decompose_diagonal)(hybsol_system_t *const sys,
     const HYBSOL_VIEW mat = HYBSOL_KERNEL(view)(block_size, block_size, (HYBSOL_SCALAR *)diag->vals);
     res = HYBSOL_KERNEL(lu_decompose)(&mat);
     if (res != HYBSOL_SUCCESS)
+    {
+        sys->failing_block = idx;
         return res;
+    }
 
     sys->diag_decomposed[idx] = 1;
     return HYBSOL_SUCCESS;
@@ -184,7 +187,8 @@ static void HYBSOL_FN(apply_operations)(const hybsol_system_t *const sys, const 
 
         switch (op->type)
         {
-        case HYBSOL_OPERATION_ELIMINATE: {
+        case HYBSOL_OPERATION_ELIMINATE:
+        {
             uint64_t i_block;
             (void)hybsol_row_find(sys->rows + op->idx_row, op->idx_col, &i_block);
             const HYBSOL_VIEW block_mat =
@@ -198,7 +202,8 @@ static void HYBSOL_FN(apply_operations)(const hybsol_system_t *const sys, const 
         }
         break;
 
-        case HYBSOL_OPERATION_INVERT_DIAGONAL: {
+        case HYBSOL_OPERATION_INVERT_DIAGONAL:
+        {
             uint64_t i_block;
             (void)hybsol_row_find(sys->rows + op->idx_row, op->idx_row, &i_block);
             const HYBSOL_VIEW block_mat =

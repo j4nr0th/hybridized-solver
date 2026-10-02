@@ -213,6 +213,11 @@ struct hybsol_system
     hybsol_row_t *rows;
     /** Per-row flag: the diagonal block currently holds LU factors. */
     uint8_t *diag_decomposed;
+    /**
+     * The block whose diagonal could not be factorized, or ``UINT64_MAX``, so a
+     * failure can name the offending block.
+     */
+    uint64_t failing_block;
     /** Recorded operations, or ``NULL`` while the system is undecomposed. */
     hybsol_operation_t *ops;
     /** Number of recorded operations. */

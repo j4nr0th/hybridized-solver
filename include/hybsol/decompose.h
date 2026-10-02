@@ -105,8 +105,11 @@ typedef struct hybsol_fill_plan_desc
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
  *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` if ``sys`` has already
  *     been decomposed, :c:enumerator:`HYBSOL_ERROR_SYSTEM_INVALID` if it does
- *     not satisfy the solver's structural assumptions, or
- *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
+ *     not satisfy the solver's structural assumptions,
+ *     :c:enumerator:`HYBSOL_ERROR_INVALID_ORDERING` if its current block order
+ *     would have to factorize an identically zero diagonal, or
+ *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`. For that case
+ *     :c:func:`hybsol_system_failing_block` names the block.
  */
 hybsol_result_t hybsol_fill_plan(const hybsol_system_t *sys, hybsol_fill_plan_t *out);
 

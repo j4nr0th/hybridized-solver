@@ -28,6 +28,8 @@ const char *hybsol_result_str(const hybsol_result_t result)
         return "system has not been decomposed";
     case HYBSOL_ERROR_ALREADY_DECOMPOSED:
         return "system has already been decomposed";
+    case HYBSOL_ERROR_INVALID_ORDERING:
+        return "block ordering admits no factorization of this system";
     case HYBSOL_ERROR_INTERNAL:
         return "internal error";
     }

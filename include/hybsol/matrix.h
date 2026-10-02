@@ -71,10 +71,19 @@ void hybsol_matrix_subtract_inplace(const hybsol_matrix_t *a, const hybsol_matri
 /**
  * Overwrite ``m`` with its LU factorization (Doolittle, unit-lower ``L``).
  *
+ * No pivoting is performed, so the caller must make the matrix safe to factor
+ * without it. The requirement is on the *leading principal minors*, not on the
+ * matrix as a whole: every one of the determinants of ``m[0:k, 0:k]`` for
+ * ``k = 1 .. rows`` must be nonzero. A nonsingular matrix can fail this, and
+ * then a step divides by a pivot that is numerically zero.
+ *
  * .. warning::
- *    No pivoting is performed. A zero pivot aborts the factorization with
- *    :c:enumerator:`HYBSOL_ERROR_SINGULAR`; matrices that are merely
- *    ill-conditioned are *not* detected and will produce inaccurate results.
+ *    An *exactly* zero pivot aborts with
+ *    :c:enumerator:`HYBSOL_ERROR_SINGULAR`. A leading principal minor that
+ *    merely *vanishes numerically* is not detected, and produces an inaccurate
+ *    factorization rather than an error. This is inherent to factorizing
+ *    without pivoting; check the condition yourself if the matrix is not
+ *    well behaved by construction.
  *
  * :param m: Square matrix to factor in place. Asserted square.
  * :returns: :c:enumerator:`HYBSOL_SUCCESS` or

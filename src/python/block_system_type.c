@@ -1044,7 +1044,13 @@ PyDoc_STRVAR(block_system_object_add_blocks_docstring,
              "cols : array_like\n"
              "    Column index of every block being added.\n"
              "data : array_like\n"
-             "    Concatenated, row-major block values.\n");
+
+             "    Concatenated, row-major block values; block ``k`` occupies\n"
+             "    ``block_sizes[rows[k]] * block_sizes[cols[k]]`` entries.\n"
+             "\n"
+             "    A block and its transpose share a row-major ravel *only* when one of\n"
+             "    them has a single column.\n"
+             "");
 
 static PyObject *block_system_object_add_blocks(PyObject *const self, PyTypeObject *const defining_class,
                                                 PyObject *const *const args, const Py_ssize_t nargs,
@@ -1407,7 +1413,7 @@ static PyObject *block_system_object_eliminate_row(PyObject *const self, PyTypeO
 
 PyDoc_STRVAR(block_system_object_decompose_diagonal_docstring,
              "decompose_diagonal(idx: int) -> None\n"
-             "Performs unpivoted LU decomposition on the block ``(idx, idx)``, in\n"
+             "Performs an LU decomposition on the block ``(idx, idx)``, in\n"
              "preparation to a call to :meth:`solve_diagonal`.\n"
              "\n"
              "Parameters\n"
@@ -1448,7 +1454,7 @@ static PyObject *block_system_object_decompose_diagonal(PyObject *const self, Py
     const hybsol_result_t res = hybsol_system_decompose_diagonal(this->system, (uint64_t)i_row);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("decompose_diagonal", res);
+        return hybsol_raise_block("decompose_diagonal", res, this->system);
     }
     Py_RETURN_NONE;
 }
@@ -1548,7 +1554,7 @@ static PyObject *block_system_object_solve_diagonal(PyObject *const self, PyType
     if (res != HYBSOL_SUCCESS)
     {
         Py_DECREF(out);
-        return hybsol_raise("solve_diagonal", res);
+        return hybsol_raise_block("solve_diagonal", res, this->system);
     }
     return (PyObject *)out;
 }
@@ -1722,7 +1728,7 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     Py_XDECREF(workspace);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("decompose", res);
+        return hybsol_raise_block("decompose", res, this->system);
     }
     Py_RETURN_NONE;
 }
@@ -1848,13 +1854,13 @@ static PyObject *block_system_object_solve(PyObject *const self, PyTypeObject *c
         return NULL;
     }
 
+    const npy_intp dim = (npy_intp)hybsol_system_total_size(this->system);
     PyArrayObject *user_out = NULL;
     if (optional_array(py_out, &user_out) < 0)
     {
         return NULL;
     }
 
-    const npy_intp dim = (npy_intp)hybsol_system_total_size(this->system);
     PyArrayObject *arr = NULL;
     if (hybsol_double_array(py_val, 1, &dim, "val", &arr) < 0)
     {
@@ -1885,6 +1891,7 @@ static PyObject *block_system_object_solve(PyObject *const self, PyTypeObject *c
         Py_DECREF(out);
         return hybsol_raise("solve", res);
     }
+
     return (PyObject *)out;
 }
 
@@ -1994,7 +2001,7 @@ static PyObject *block_system_object_reorder_blocks(PyObject *const self, PyType
     Py_DECREF(arr);
     if (res != HYBSOL_SUCCESS)
     {
-        return hybsol_raise("reorder_blocks", res);
+        return hybsol_raise_block("reorder_blocks", res, this->system);
     }
     Py_RETURN_NONE;
 }
@@ -2036,10 +2043,13 @@ static int parse_ordering_strategy(PyObject *const obj, hybsol_ordering_strategy
 PyDoc_STRVAR(block_system_object_compute_reordering_docstring,
              "compute_reordering(strategy: typing.Literal[\"first\", \"greedy\", \"balanced\"] = \"first\", "
              "max_colors: int = 0) -> numpy.typing.NDArray[numpy.uint64]\n"
-             "Find ordering of unknowns in the system based on \"coloring\".\n"
+             "Find a *coloring* of the blocks, grouping them so that no two in a group\n"
+             "share a non-zero off-diagonal block.\n"
              "\n"
-             "Degrees of freedom are sorted into groups such that a degree of freedom shares\n"
-             "no non-zero block with any other in its group, then ordered group by group.\n"
+             "This is **not** a factorization ordering: passing it to\n"
+             ":meth:`reorder_blocks` is not valid input for :meth:`decompose`. Choose\n"
+             "the permutation yourself, with every block ahead of the blocks it couples\n"
+             "to.\n"
              "\n"
              "Parameters\n"
              "----------\n"
@@ -2279,26 +2289,30 @@ static PyObject *block_system_object_unorder_vector(PyObject *const self, PyType
 /* Bulk constructors                                                          */
 /* ------------------------------------------------------------------------- */
 
-PyDoc_STRVAR(block_system_from_blocks_docstring, "from_blocks(block_sizes, rows, cols, data) -> BlockSystem\n"
-                                                 "classmethod\n"
-                                                 "Build a whole system from a flat COO description in one pass.\n"
-                                                 "\n"
-                                                 "Parameters\n"
-                                                 "----------\n"
-                                                 "block_sizes : sequence of int\n"
-                                                 "    Size of every block on the diagonal.\n"
-                                                 "rows : array_like\n"
-                                                 "    Row index of every block.\n"
-                                                 "cols : array_like\n"
-                                                 "    Column index of every block.\n"
-                                                 "data : array_like\n"
-                                                 "    Concatenated, row-major block values; block ``k`` occupies\n"
-                                                 "    ``block_sizes[rows[k]] * block_sizes[cols[k]]`` entries.\n"
-                                                 "\n"
-                                                 "Returns\n"
-                                                 "-------\n"
-                                                 "BlockSystem\n"
-                                                 "    A new system holding exactly the given blocks.\n");
+PyDoc_STRVAR(block_system_from_blocks_docstring,
+             "from_blocks(block_sizes, rows, cols, data) -> BlockSystem\n"
+             "classmethod\n"
+             "Build a whole system from a flat COO description in one pass.\n"
+             "\n"
+             "Parameters\n"
+             "----------\n"
+             "block_sizes : sequence of int\n"
+             "    Size of every block on the diagonal.\n"
+             "rows : array_like\n"
+             "    Row index of every block.\n"
+             "cols : array_like\n"
+             "    Column index of every block.\n"
+             "data : array_like\n"
+             "    Concatenated, row-major block values; block ``k`` occupies\n"
+             "    ``block_sizes[rows[k]] * block_sizes[cols[k]]`` entries.\n"
+             "\n"
+             "    A block and its transpose share a row-major ravel *only* when one of\n"
+             "    them has a single column.\n"
+             "\n"
+             "Returns\n"
+             "-------\n"
+             "BlockSystem\n"
+             "    A new system holding exactly the given blocks.\n");
 
 static PyObject *block_system_from_blocks(PyObject *const cls, PyObject *const *const args, const Py_ssize_t nargs,
                                           const PyObject *kwnames)

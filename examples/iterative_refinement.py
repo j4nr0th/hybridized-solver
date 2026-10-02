@@ -1,8 +1,9 @@
-"""Recover the digits the unpivoted factorization gives away.
+"""Recover the digits the factorization gives away.
 
-The block decomposition never pivots, so a solve comes back a few digits short
-of what a pivoted reference gets. Iterative refinement buys them back without
-touching the factorization: form the residual, solve for a correction, add it.
+The block decomposition only pivots to repair an exactly zero pivot, so a solve
+comes back a few digits short of what a fully pivoted reference gets. Iterative
+refinement buys them back without touching the factorization: form the residual,
+solve for a correction, add it.
 
 Every step reuses the factors :meth:`hybsol.BlockSystem.decompose` produced, so
 a step costs one extra solve and one matrix-vector product on top of work that

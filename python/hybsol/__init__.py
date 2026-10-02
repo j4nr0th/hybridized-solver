@@ -7,8 +7,9 @@ to Python through the :class:`BlockSystem` extension type.
 from enum import StrEnum
 
 from hybsol._mod import BlockSystem as BlockSystem
+from hybsol._mod import SingularSystemError as SingularSystemError
 
-__all__ = ["BlockSystem", "Precision", "__version__"]
+__all__ = ["BlockSystem", "Precision", "SingularSystemError", "__version__"]
 
 __version__ = "0.0.1a"
 

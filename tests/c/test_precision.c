@@ -26,7 +26,7 @@ static hybsol_system_t *build_system(const hybsol_precision_t precision, const u
         offsets[i + 1] = offsets[i] + sizes[i];
     const uint64_t total = offsets[n_block];
 
-    // Symmetric, diagonally dominant, so the unpivoted LU has an easy run.
+    // Symmetric, diagonally dominant, so the LU has an easy run.
     uint64_t k = 0;
     for (uint64_t i = 0; i < total; ++i)
     {

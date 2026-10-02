@@ -10,7 +10,7 @@ def well_conditioned_system(
 ) -> tuple[BlockSystem, np.ndarray]:
     """Build a symmetric, diagonally dominant system and its dense matrix.
 
-    Diagonal dominance keeps the unpivoted LU away from a zero pivot, so a
+    Diagonal dominance keeps the LU away from a zero pivot, so a
     decomposition that went wrong shows up as a wrong answer rather than an
     error.
     """

@@ -116,7 +116,7 @@ def test_reordered_system_solves_consistently(nb: int, bs: int) -> None:
     sys = random_sparse_system(rng, nb, bs, 0.5)
     ordering = rng.permuted(np.arange(sys.n_blocks, dtype=np.uint64))
 
-    # Shift the system away from singularity: the decomposition is unpivoted.
+    # Shift the system away from singularity: only an exact zero pivots.
     mat = sys.as_array()
     dim = mat.shape[0]
     mat += np.eye(dim) * dim

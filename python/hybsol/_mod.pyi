@@ -1,23 +1,24 @@
 """Stub for the C extension module _mod."""
 
 from collections.abc import Sequence
-from enum import StrEnum
 from typing import Literal, Self
 
 import numpy as np
 from numpy import typing as npt
 
+from hybsol import Precision as Precision
+
 OrderingStrategy = Literal["first", "greedy", "balanced"]
 
-class Precision(StrEnum):
-    """The floating-point type a :class:`BlockSystem` stores its blocks in.
+class SingularSystemError(ValueError):
+    """A block could not be factorized, or a solve failed its residual check.
 
-    Re-exported from :mod:`hybsol`; a plain string of the same value is
-    accepted anywhere a member is.
+    Raised where the failure is a property of the system rather than of the
+    call: no pivot could be repaired, the recorded block order admits no
+    factorization, or a verified solve left a relative residual above its
+    tolerance. Subclasses :class:`ValueError`, so existing handlers still
+    catch it.
     """
-
-    DOUBLE = "double"
-    SINGLE = "single"
 
 class BlockSystem:
     """Block system for hybridized solver.
@@ -53,6 +54,9 @@ class BlockSystem:
         data : array_like
             Concatenated, row-major block values; block ``k`` occupies
             ``block_sizes[rows[k]] * block_sizes[cols[k]]`` entries.
+
+            A block and its transpose share a row-major ravel *only* when one of
+            them has a single column.
 
         Returns
         -------
@@ -123,7 +127,11 @@ class BlockSystem:
         cols : array_like
             Column index of every block being added.
         data : array_like
-            Concatenated, row-major block values.
+            Concatenated, row-major block values; block ``k`` occupies
+            ``block_sizes[rows[k]] * block_sizes[cols[k]]`` entries.
+
+            A block and its transpose share a row-major ravel *only* when one of
+            them has a single column.
         """
         ...
 
@@ -248,7 +256,7 @@ class BlockSystem:
         """Array of sizes of blocks."""
         ...
 
-    def no_lower_connections(self) -> npt.NDArray[np.bool]:
+    def no_lower_connections(self) -> npt.NDArray[np.bool_]:
         """Return an array flagging rows with nothing to the left of their diagonal."""
         ...
 
@@ -319,7 +327,7 @@ class BlockSystem:
     def decompose_diagonal(self, idx: int) -> None:
         """Decomposes the diagonal block using LU decomposition.
 
-        Performs unpivoted LU decomposition on the block ``(idx, idx)``. This
+        Performs an LU decomposition on the block ``(idx, idx)``. This
         is done in preparation to a call to ``solve_diagonal``.
 
         Parameters
@@ -456,13 +464,15 @@ class BlockSystem:
         strategy: OrderingStrategy = "first",
         max_colors: int = 0,
     ) -> npt.NDArray[np.uint64]:
-        """Find ordering of unknowns in the system based on "coloring".
+        """Find a *coloring* of the blocks.
 
-        The idea behind computing the reordering of the degrees of freedom is to first
-        sort them by group index, such that a degree of freedom shares no non-zero
-        block with any other degree of freedom in that group. This is often called
-        "coloring". After all the degrees of freedom are sorted into these groups,
-        they are ordered group by group.
+        Grouped so that no two blocks in a group share a non-zero off-diagonal
+        block.
+
+        This is **not** a factorization ordering: passing it to
+        :meth:`reorder_blocks` is not valid input for :meth:`decompose`. Choose
+        the permutation yourself, with every block ahead of the blocks it couples
+        to.
 
         Parameters
         ----------

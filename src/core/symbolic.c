@@ -53,6 +53,52 @@ static void sym_rows_free(hybsol_system_t *const sys, sym_row_t *const rows, con
 }
 
 /**
+ * Whether the diagonal block of block row ``idx`` holds nothing but zeros, which
+ * no ordering could rescue.
+ *
+ * @return ``1`` when the block is present and entirely zero, ``0`` otherwise.
+ */
+static int diag_is_structurally_zero(const hybsol_system_t *const sys, const uint64_t idx)
+{
+    uint64_t i_entry;
+    if (!hybsol_row_find(sys->rows + idx, idx, &i_entry))
+        return 0;
+
+    const unsigned char *const vals = sys->rows[idx].entries[i_entry]->vals;
+    const size_t count = hybsol_block_size(sys, idx) * hybsol_block_size(sys, idx);
+    if (sys->precision == HYBSOL_PRECISION_SINGLE)
+    {
+        for (size_t i = 0; i < count; ++i)
+        {
+            float value;
+            memcpy(&value, vals + i * sizeof(value), sizeof(value));
+            if (value != 0.0f)
+                return 0;
+        }
+        return 1;
+    }
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        double value;
+        memcpy(&value, vals + i * sizeof(value), sizeof(value));
+        if (value != 0.0)
+            return 0;
+    }
+    return 1;
+}
+
+/** Refuse an order that would have to factorize an identically zero diagonal. */
+static hybsol_result_t reject_unfactorizable(hybsol_system_t *const sys, const uint64_t idx)
+{
+    if (!diag_is_structurally_zero(sys, idx))
+        return HYBSOL_SUCCESS;
+
+    sys->failing_block = idx;
+    return HYBSOL_ERROR_INVALID_ORDERING;
+}
+
+/**
  * The walk itself.
  *
  * ``peak`` may be ``NULL``; when given it receives the longest length each row
@@ -96,7 +142,13 @@ static hybsol_result_t fill_walk(hybsol_system_t *const sys, hybsol_fill_plan_t 
         // Same seed the factorization uses: a row already starting at its own
         // diagonal is finished; everything else waits on its first column.
         if (rows[i].len && rows[i].cols[0] == i)
+        {
+            // Sound here because the row is diagonal-first from the outset, before any fill-in.
+            res = reject_unfactorizable(sys, i);
+            if (res != HYBSOL_SUCCESS)
+                goto done;
             status[i].status = TARGET_DONE;
+        }
         else
         {
             status[i].status = TARGET_FREE;

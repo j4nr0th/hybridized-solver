@@ -117,7 +117,7 @@ typedef struct
 /**
  * Fill a COO description of a symmetric, strongly diagonally dominant system.
  *
- * Dominance keeps unpivoted LU off a zero pivot, so corruption shows up as a
+ * Dominance keeps the LU off a zero pivot, so corruption shows up as a
  * wrong answer rather than a clean error that would hide the race.
  */
 static int pattern_build(pattern_t *const p, const uint64_t n_blocks, const uint64_t block_size)

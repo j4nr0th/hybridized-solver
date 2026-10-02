@@ -169,13 +169,14 @@ def test_solve_requires_decomposition() -> None:
         sys.solve(mat @ np.ones(6))
 
 
-def test_decompose_reports_singular() -> None:
-    """An exactly singular block must be reported instead of silently accepted."""
+def test_decompose_reports_zero_diagonal_block() -> None:
+    """A block holding nothing but zeros must be reported, and named."""
     sys = BlockSystem(2)
     sys.add_block(0, 0, np.zeros((2, 2)))
 
     assert sys.is_valid()
-    with pytest.raises(ValueError, match="zero pivot"):
+    # Identically zero admits no pivot, so it is an unusable order, not a singularity.
+    with pytest.raises(ValueError, match=r"no factorization.*\(block 0\)"):
         sys.decompose()
 
 

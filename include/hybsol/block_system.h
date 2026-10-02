@@ -150,6 +150,19 @@ const uint64_t *hybsol_system_block_offsets(const hybsol_system_t *sys);
 int hybsol_system_is_valid(const hybsol_system_t *sys);
 
 /**
+ * Get the block whose diagonal could not be factorized.
+ *
+ * Set by :c:func:`hybsol_system_decompose` and
+ * :c:func:`hybsol_system_decompose_diagonal` when a diagonal block has no
+ * pivot, so that a failure can name the block.
+ *
+ * :param sys: The system.
+ * :returns: The zero-based block index, or ``UINT64_MAX`` when the last
+ *     factorization did not fail on a block.
+ */
+uint64_t hybsol_system_failing_block(const hybsol_system_t *sys);
+
+/**
  * Get the number of stored blocks in a row.
  *
  * :param sys: The system.

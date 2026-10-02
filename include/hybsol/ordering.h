@@ -26,7 +26,12 @@ typedef enum hybsol_ordering_strategy
 } hybsol_ordering_strategy_t;
 
 /**
- * Compute a coloring-based reordering of the blocks.
+ * Compute a **coloring** of the blocks.
+ *
+ * This is **not** a factorization ordering: it is not valid input to
+ * :c:func:`hybsol_system_reorder_blocks` when the goal is
+ * :c:func:`hybsol_system_decompose`. Choose your own permutation there, with
+ * every block that has a lower connection ahead of the blocks it couples to.
  *
  * :param sys: The system to analyze; it is not modified.
  * :param strategy: Which coloring strategy; asserted one of
@@ -37,7 +42,7 @@ typedef enum hybsol_ordering_strategy
  * :param out_ordering: Destination for ``n_blocks`` entries. Entry ``i``
  *     holds the new index of old block ``i``; the result is always a
  *     permutation of ``[0, n_blocks)``. Must not be ``NULL``.
- * :returns: :c:enumerator:`HYBSOL_SUCCESS` if a valid ordering was written,
+ * :returns: :c:enumerator:`HYBSOL_SUCCESS` if a coloring was written,
  *     :c:enumerator:`HYBSOL_ERROR_MAX_COLORS` if ``max_colors`` was too
  *     small (``out_ordering`` is then left unspecified), or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
@@ -52,14 +57,20 @@ hybsol_result_t hybsol_system_compute_reordering(const hybsol_system_t *sys, hyb
  * ``new_order[i]``, and block sizes are permuted to match, so the system
  * stays structurally identical up to the relabelling.
  *
+ * The permutation is applied before it is checked, and is not rolled back.
+ *
  * :param sys: The system to reorder.
  * :param new_order: ``n_blocks`` entries forming a permutation of
  *     ``[0, n_blocks)``; entry ``i`` is the new index of old block ``i``.
  *     Asserted to be a permutation.
  * :param n_threads: Number of OpenMP threads; ``0`` selects the OpenMP
  *     default and ``1`` runs serially.
+ *
  * :returns: :c:enumerator:`HYBSOL_SUCCESS`,
- *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED` or
+ *     :c:enumerator:`HYBSOL_ERROR_ALREADY_DECOMPOSED`,
+ *     :c:enumerator:`HYBSOL_ERROR_INVALID_ORDERING` if the new order would have
+ *     to factorize a block whose diagonal is identically zero (in which case
+ *     :c:func:`hybsol_system_failing_block` names it), or
  *     :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`.
  */
 hybsol_result_t hybsol_system_reorder_blocks(hybsol_system_t *sys, const uint64_t *new_order, uint64_t n_threads);
