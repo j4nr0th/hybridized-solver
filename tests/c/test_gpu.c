@@ -9,8 +9,12 @@
  * With no OpenCL device -- no runtime, no driver, or a build without the
  * backend -- every case is skipped and the test reports success: a machine that
  * cannot run the kernels is not a machine the test can fail on.
+ *
+ * The vendor's OpenCL runtime leaks a few kilobytes of its own at exit, which
+ * LeakSanitizer reports against ``libOpenCL.so``: run this under the
+ * sanitizers with ``ASAN_OPTIONS=detect_leaks=0`` to see ours, or without
+ * them to see everything.
  */
-
 #include "test_util.h"
 
 #include <hybsol/hybsol.h>
