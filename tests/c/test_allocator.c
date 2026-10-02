@@ -398,7 +398,7 @@ static void test_workspace_matches_internal(void)
     double expected = 0.0;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &reference));
     /* Taken before the reference is released. */
-    const size_t bytes = hybsol_workspace_bytes(reference, n_threads);
+    const size_t bytes = hybsol_workspace_bytes(reference, hybsol_system_precision(reference), n_threads);
     CHECK_MSG(bytes > 0, "workspace_bytes returned %zu", bytes);
     CHECK(solve_checksum(reference, n_threads, &expected));
     hybsol_system_destroy(reference);
@@ -471,8 +471,8 @@ static void test_workspace_scales_with_threads(void)
     hybsol_system_t *sys = NULL;
     CHECK(pattern_system(&p, &CUTL_STD_ALLOCATOR, &sys));
 
-    const size_t one = hybsol_workspace_bytes(sys, 1);
-    const size_t four = hybsol_workspace_bytes(sys, 4);
+    const size_t one = hybsol_workspace_bytes(sys, HYBSOL_PRECISION_DOUBLE, 1);
+    const size_t four = hybsol_workspace_bytes(sys, HYBSOL_PRECISION_DOUBLE, 4);
     CHECK_MSG(four > one, "4 threads need %zu bytes but 1 thread needs %zu", four, one);
 
     hybsol_system_destroy(sys);
@@ -754,7 +754,7 @@ static void test_allocation_counts_are_grouped(void)
     hybsol_elimination_destroy(graph);
 
     // And factorizing adds none at all: the destination is already laid out.
-    const size_t workspace_bytes = hybsol_workspace_bytes(sys, 4);
+    const size_t workspace_bytes = hybsol_workspace_bytes(sys, HYBSOL_PRECISION_DOUBLE, 4);
     void *const workspace = malloc(workspace_bytes);
     CHECK(workspace != NULL);
     if (workspace != NULL)

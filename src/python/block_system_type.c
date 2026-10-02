@@ -1350,7 +1350,10 @@ PyDoc_STRVAR(block_system_object_workspace_bytes_docstring,
              "Parameters\n"
              "----------\n"
              "n_threads : int, default: 0\n"
-             "    The thread count that will be passed to :meth:`decompose`.\n");
+             "    The thread count that will be passed to :meth:`decompose`.\n"
+             "precision : hybsol.Precision, optional\n"
+             "    The precision :meth:`decompose` will factor in. Defaults to the\n"
+             "    system's own.\n");
 
 static PyObject *block_system_object_workspace_bytes(PyObject *const self, PyTypeObject *const defining_class,
                                                      PyObject *const *const args, const Py_ssize_t nargs,
@@ -1364,9 +1367,11 @@ static PyObject *block_system_object_workspace_bytes(PyObject *const self, PyTyp
     }
 
     Py_ssize_t n_threads = 0;
+    PyObject *py_precision = Py_None;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
                 {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_precision, .kwname = "precision", .optional = 1},
                 {},
             },
             args, nargs, kwnames) < 0)
@@ -1378,12 +1383,19 @@ static PyObject *block_system_object_workspace_bytes(PyObject *const self, PyTyp
         return NULL;
     }
 
-    const size_t bytes = hybsol_workspace_bytes(this->system, (uint64_t)n_threads);
+    hybsol_precision_t precision;
+    if (py_precision == Py_None)
+        precision = hybsol_system_precision(this->system);
+    else if (parse_precision(py_precision, &precision) < 0)
+        return NULL;
+
+    const size_t bytes = hybsol_workspace_bytes(this->system, precision, (uint64_t)n_threads);
     return PyLong_FromSize_t(bytes);
 }
 
 PyDoc_STRVAR(block_system_object_decompose_docstring,
-             "decompose(n_threads: int = 0, workspace: numpy.typing.ArrayLike | None = None) -> Decomposition\n"
+             "decompose(n_threads: int = 0, workspace: numpy.typing.ArrayLike | None = None,\n"
+             "           precision: hybsol.Precision | None = None) -> Decomposition\n"
              "Factorize the system and return the result.\n"
              "\n"
              "The system is left exactly as it was assembled, so it can be decomposed\n"
@@ -1400,6 +1412,13 @@ PyDoc_STRVAR(block_system_object_decompose_docstring,
              "    ``uint8`` array of at least :meth:`workspace_bytes`\n"
              "    bytes. Its contents are overwritten. Omit it and the\n"
              "    scratch is allocated internally.\n"
+             "precision : hybsol.Precision, optional\n"
+             "    The precision of the factors, which need not match the\n"
+             "    system's: a double system can produce single factors and\n"
+             "    a single system double ones. Defaults to the system's\n"
+             "    own precision. Values convert on the way in, so the\n"
+             "    factorization is exact for the precision it runs in, but\n"
+             "    the values themselves are still the system's.\n"
              "\n"
              "Returns\n"
              "-------\n"
@@ -1429,10 +1448,12 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
 
     Py_ssize_t n_threads = 0;
     PyObject *py_workspace = Py_None;
+    PyObject *py_precision = Py_None;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
                 {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1},
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_workspace, .kwname = "workspace", .optional = 1},
+                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_precision, .kwname = "precision", .optional = 1},
                 {},
             },
             args, nargs, kwnames) < 0)
@@ -1444,9 +1465,16 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
         return NULL;
     }
 
-    /* A supplied workspace must be big enough for this system and this thread
-     * count; the buffer is opaque, so all that can be checked here is its size. */
-    const size_t needed = hybsol_workspace_bytes(this->system, (uint64_t)n_threads);
+    hybsol_precision_t precision;
+    if (py_precision == Py_None)
+        precision = hybsol_system_precision(this->system);
+    else if (parse_precision(py_precision, &precision) < 0)
+        return NULL;
+
+    /* A supplied workspace must be big enough for this system, this precision
+     * and this thread count; the buffer is opaque, so all that can be checked
+     * here is its size. */
+    const size_t needed = hybsol_workspace_bytes(this->system, precision, (uint64_t)n_threads);
 
     // The core asserts validity rather than reporting it, and raising is the only way out.
     if (require_valid_system(this->system, "decompose") < 0)
@@ -1472,7 +1500,7 @@ static PyObject *block_system_object_decompose(PyObject *const self, PyTypeObjec
     res = hybsol_elimination_create(this->system, &graph, &failing_block);
     if (res == HYBSOL_SUCCESS)
     {
-        res = hybsol_decomposition_create(this->system, graph, &dec);
+        res = hybsol_decomposition_create_with_precision(this->system, graph, precision, &dec);
         // The decomposition copied the schedule it needs, so the graph is done.
         hybsol_elimination_destroy(graph);
         graph = NULL;

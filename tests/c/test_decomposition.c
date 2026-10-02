@@ -718,7 +718,7 @@ static void test_caller_owned_decomposition_storage(void)
 
     // The sizing function is a function of the graph alone, so the same buffer
     // can hold the decomposition for any factorization from this graph.
-    const size_t bytes = hybsol_decomposition_bytes(graph);
+    const size_t bytes = hybsol_decomposition_bytes(graph, HYBSOL_PRECISION_DOUBLE);
     CHECK(bytes > 0);
 
     void *const storage = malloc(bytes);

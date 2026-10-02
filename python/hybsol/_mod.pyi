@@ -434,6 +434,7 @@ class BlockSystem:
         self,
         n_threads: int = 0,
         workspace: npt.NDArray[np.uint8] | None = None,
+        precision: Precision | None = None,
     ) -> Decomposition:
         """Factorize the system and return the result.
 
@@ -454,6 +455,14 @@ class BlockSystem:
             buffer can be reused across systems. Its contents are overwritten.
             Omit it and the scratch is allocated internally.
 
+        precision : hybsol.Precision, optional
+            The precision of the factors, which need not match the system's:
+            a double system can produce single factors and a single system
+            double ones. Defaults to the system's own precision. Values
+            convert on the way in, so the factorization is exact for the
+            precision it runs in, but the values themselves are still the
+            system's.
+
         Returns
         -------
         Decomposition
@@ -472,7 +481,9 @@ class BlockSystem:
         """
         ...
 
-    def workspace_bytes(self, n_threads: int = 0) -> int:
+    def workspace_bytes(
+        self, n_threads: int = 0, precision: Precision | None = None
+    ) -> int:
         """Bytes of scratch :meth:`decompose` needs at this thread count.
 
         Sizes the ``workspace`` array :meth:`decompose` accepts, so one buffer
@@ -484,6 +495,9 @@ class BlockSystem:
         ----------
         n_threads : int, default: 0
             The thread count that will be passed to :meth:`decompose`.
+        precision : hybsol.Precision, optional
+            The precision :meth:`decompose` will factor in. Defaults to the
+            system's own.
         """
         ...
 

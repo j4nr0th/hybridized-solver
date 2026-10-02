@@ -56,18 +56,21 @@ typedef struct hybsol_decomposition hybsol_decomposition_t;
  * pointer over and reads the result back out of ``dec``. Reusing one buffer
  * across factorizations is fine.
  *
- * Preconditions: ``sys`` non-``NULL``. Only its block sizes and precision
- * matter, so this may be called before any blocks are added.
+ * Preconditions: ``sys`` non-``NULL``. Only its block sizes matter, so this may
+ * be called before any blocks are added. ``factor_precision`` is the type the
+ * decomposition will factor in -- which need not be the system's own: see
+ * :c:func:`hybsol_decomposition_create_with_precision`.
  */
-size_t hybsol_workspace_bytes(const hybsol_system_t *sys, uint64_t n_threads);
+size_t hybsol_workspace_bytes(const hybsol_system_t *sys, hybsol_precision_t factor_precision, uint64_t n_threads);
 
 /**
- * Get the bytes :c:func:`hybsol_decomposition_init` writes into.
+ * Get the bytes :c:func:`hybsol_decomposition_init` writes into, for a
+ * decomposition whose factors are stored in ``factor_precision``.
  *
  * A function of the graph alone, so a caller can carve one region for a graph,
  * a decomposition and its workspace and release them together.
  */
-size_t hybsol_decomposition_bytes(const hybsol_elimination_t *graph);
+size_t hybsol_decomposition_bytes(const hybsol_elimination_t *graph, hybsol_precision_t factor_precision);
 
 /**
  * Lay a decomposition out in caller-owned storage and copy the system's blocks
@@ -95,6 +98,25 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *sys, const hybs
                                           hybsol_decomposition_t **out);
 
 /**
+ * Lay a decomposition out in caller-owned storage with factors in ``precision``,
+ * copying the system's blocks in: :c:func:`hybsol_decomposition_init` for a
+ * factorization that need not match the system's own precision.
+ *
+ * The blocks convert element by element on the way in -- double factors narrow
+ * to single, single factors widen to double -- and the decomposition factors and
+ * stores everything in ``precision`` from then on. Filling in more accurate
+ * factors than the system holds therefore only makes the factorization itself
+ * exact; the fill-in and cancellation errors remain those of the system's own
+ * values.
+ *
+ * The same preconditions as :c:func:`hybsol_decomposition_init`, with ``storage``
+ * at least :c:func:`hybsol_decomposition_bytes` bytes for ``precision``.
+ */
+hybsol_result_t hybsol_decomposition_init_with_precision(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
+                                                         hybsol_precision_t precision, void *storage,
+                                                         hybsol_decomposition_t **out);
+
+/**
  * Allocate the destination of a decomposition and copy the system's blocks into
  * it: :c:func:`hybsol_decomposition_init` in memory of its own.
  *
@@ -108,6 +130,18 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *sys, const hybs
  */
 hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
                                             hybsol_decomposition_t **out);
+
+/**
+ * Allocate a decomposition with factors in ``precision`` and copy the system's
+ * blocks into it: :c:func:`hybsol_decomposition_init_with_precision` in memory
+ * of its own.
+ *
+ * The same preconditions as :c:func:`hybsol_decomposition_create`; returns
+ * :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` on failure, leaving ``*out`` ``NULL``.
+ */
+hybsol_result_t hybsol_decomposition_create_with_precision(const hybsol_system_t *sys,
+                                                           const hybsol_elimination_t *graph,
+                                                           hybsol_precision_t precision, hybsol_decomposition_t **out);
 
 /**
  * Release a decomposition and whatever memory it owns. A decomposition built by

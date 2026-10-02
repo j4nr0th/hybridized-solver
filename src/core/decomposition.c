@@ -61,12 +61,13 @@ static size_t workspace_size(const uint64_t n, const uint64_t *const block_offse
     return hybsol_align_up(total);
 }
 
-size_t hybsol_workspace_bytes(const hybsol_system_t *const sys, const uint64_t n_threads)
+size_t hybsol_workspace_bytes(const hybsol_system_t *const sys, const hybsol_precision_t factor_precision,
+                              const uint64_t n_threads)
 {
     CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
 
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
-    return workspace_size(sys->n, sys->block_offsets, hybsol_scalar_size(sys->precision), threads);
+    return workspace_size(sys->n, sys->block_offsets, hybsol_scalar_size(factor_precision), threads);
 }
 
 /**
@@ -127,10 +128,32 @@ typedef struct
     size_t rows;
     size_t entries;
     size_t values;
+    /** Bytes the value arena occupies at the decomposition's precision. */
+    size_t values_bytes;
 } decomp_layout_t;
 
-/** Lay out a decomposition's frame -- a function of the graph alone, so a caller can size it up front. */
-static decomp_layout_t decomp_layout(const hybsol_elimination_t *const graph)
+/**
+ * The bytes one carved block of the pattern occupies: its header plus the
+ * block's elements in ``precision``, rounded up to the alignment every entry
+ * starts at.
+ */
+static size_t entry_payload_bytes(const hybsol_elimination_t *const graph, const uint64_t row, const uint64_t slot,
+                                  const hybsol_precision_t precision)
+{
+    const uint64_t col = graph->cols[graph->row_offset[row] + slot];
+    const uint64_t rows_of = graph->block_offsets[row + 1] - graph->block_offsets[row];
+    const uint64_t cols_of = graph->block_offsets[col + 1] - graph->block_offsets[col];
+    return hybsol_align_up(sizeof(hybsol_row_entry_t) +
+                           (size_t)rows_of * (size_t)cols_of * hybsol_scalar_size(precision));
+}
+
+/**
+ * Lay out a decomposition's frame for factors in ``precision`` -- a function of
+ * the graph alone, so a caller can size it up front. The walk sized the arena
+ * for the system's own precision; at that precision this reproduces its byte
+ * count exactly, which is what the round trip is worth checking.
+ */
+static decomp_layout_t decomp_layout(const hybsol_elimination_t *const graph, const hybsol_precision_t precision)
 {
     const size_t n = (size_t)graph->n;
     const size_t n_levels = (size_t)graph->n_levels;
@@ -146,18 +169,76 @@ static decomp_layout_t decomp_layout(const hybsol_elimination_t *const graph)
     layout.rows = layout.row_level + n * sizeof(uint64_t);
     layout.entries = layout.rows + n * sizeof(hybsol_row_t);
     layout.values = hybsol_align_up(layout.entries + (size_t)graph->n_columns * sizeof(hybsol_row_entry_t *));
-    layout.total = layout.values + graph->value_bytes;
+
+    layout.values_bytes = 0;
+    for (uint64_t row = 0; row < graph->n; ++row)
+    {
+        const uint64_t length = graph->row_offset[row + 1] - graph->row_offset[row];
+        for (uint64_t slot = 0; slot < length; ++slot)
+            layout.values_bytes += entry_payload_bytes(graph, row, slot, precision);
+    }
+    CUTL_ASSERT(precision != graph->precision || layout.values_bytes == graph->value_bytes,
+                "Laying out %s factors carved %zu bytes of values, but the walk sized %zu for the graph's precision.",
+                precision == HYBSOL_PRECISION_SINGLE ? "single" : "double", layout.values_bytes, graph->value_bytes);
+
+    layout.total = layout.values + layout.values_bytes;
     return layout;
 }
 
-size_t hybsol_decomposition_bytes(const hybsol_elimination_t *const graph)
+size_t hybsol_decomposition_bytes(const hybsol_elimination_t *const graph, const hybsol_precision_t factor_precision)
 {
     CUTL_ASSERT(graph != NULL, "The graph must not be NULL.");
-    return decomp_layout(graph).total;
+    return decomp_layout(graph, factor_precision).total;
+}
+/**
+ * The system's payload for one slot of the graph's pattern, or ``NULL`` when
+ * the pattern holds a column the system does not -- fill-in, which starts at
+ * zero.
+ */
+const void *hybsol_decomposition_entry_source(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
+                                              const uint64_t row, const uint64_t slot)
+{
+    const uint64_t col = graph->cols[graph->row_offset[row] + slot];
+    const hybsol_row_t *const src_row = sys->rows + row;
+    for (uint64_t j = 0; j < src_row->count; ++j)
+    {
+        if (src_row->entries[j]->col == col)
+            return src_row->entries[j]->vals;
+    }
+    return NULL;
 }
 
-hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
-                                          void *const storage, hybsol_decomposition_t **const out)
+/**
+ * Copy ``count`` elements from the system's storage into the decomposition's,
+ * converting when the two hold different floating-point types.
+ */
+static void values_copy(unsigned char *const dst, const void *const src, const size_t count,
+                        const hybsol_precision_t to, const hybsol_precision_t from)
+{
+    if (from == to)
+    {
+        memcpy(dst, src, count * hybsol_scalar_size(from));
+    }
+    else if (to == HYBSOL_PRECISION_SINGLE)
+    {
+        const double *const from_d = (const double *)src;
+        float *const to_f = (float *)dst;
+        for (size_t i = 0; i < count; ++i)
+            to_f[i] = (float)from_d[i];
+    }
+    else
+    {
+        const float *const from_f = (const float *)src;
+        double *const to_d = (double *)dst;
+        for (size_t i = 0; i < count; ++i)
+            to_d[i] = (double)from_f[i];
+    }
+}
+
+hybsol_result_t hybsol_decomposition_init_with_precision(const hybsol_system_t *const sys,
+                                                         const hybsol_elimination_t *const graph,
+                                                         const hybsol_precision_t precision, void *const storage,
+                                                         hybsol_decomposition_t **const out)
 {
     CUTL_ASSERT(storage != NULL, "The storage buffer must not be NULL.");
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
@@ -175,7 +256,7 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, cons
                 "This graph was computed from a system with different block sizes.");
 
     const uint64_t n = sys->n;
-    const decomp_layout_t layout = decomp_layout(graph);
+    const decomp_layout_t layout = decomp_layout(graph, precision);
 
     unsigned char *const base = (unsigned char *)storage;
     hybsol_decomposition_t *const dec = (hybsol_decomposition_t *)base;
@@ -187,7 +268,7 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, cons
     dec->n_occupancy = graph->n_occupancy;
     dec->n_operations = graph->n_operations;
     dec->failing_block = UINT64_MAX;
-    dec->precision = sys->precision;
+    dec->precision = precision;
     dec->factorized = 0;
     dec->raw = NULL;
     dec->block_offsets = (const uint64_t *)(base + layout.offsets);
@@ -208,7 +289,11 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, cons
     memcpy(dec->row_level, graph->row_level, (size_t)n * sizeof(uint64_t));
 
     // One carved block per column of the graph's pattern: the system's values where it has them, zeros for fill-in.
-    const size_t scalar = hybsol_scalar_size(sys->precision);
+    // The blocks are stored in the decomposition's precision, not the system's:
+    // a double system can produce a decomposition of single factors, and a
+    // single system one of double factors. Values convert on the way in;
+    // everything below reads ``dec->precision``.
+    const size_t scalar = hybsol_scalar_size(precision);
     size_t at_values = 0;
     for (uint64_t i = 0; i < n; ++i)
     {
@@ -236,40 +321,54 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, cons
             while (j_src < sys->rows[i].count && src_entries[j_src]->col < col)
                 ++j_src;
             if (j_src < sys->rows[i].count && src_entries[j_src]->col == col)
-                memcpy(entry->vals, src_entries[j_src]->vals, n_values * scalar);
+                values_copy(entry->vals, src_entries[j_src]->vals, n_values, precision, sys->precision);
             else
                 memset(entry->vals, 0, n_values * scalar);
         }
     }
 
-    CUTL_ASSERT(at_values == graph->value_bytes, "The destination carved %zu bytes but the graph sized %zu.", at_values,
-                graph->value_bytes);
+    CUTL_ASSERT(at_values == layout.values_bytes, "The destination carved %zu bytes but the layout sized %zu.",
+                at_values, layout.values_bytes);
 
     *out = dec;
     return HYBSOL_SUCCESS;
 }
 
-hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
-                                            hybsol_decomposition_t **const out)
+hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
+                                          void *const storage, hybsol_decomposition_t **const out)
+{
+    return hybsol_decomposition_init_with_precision(sys, graph, sys->precision, storage, out);
+}
+
+hybsol_result_t hybsol_decomposition_create_with_precision(const hybsol_system_t *const sys,
+                                                           const hybsol_elimination_t *const graph,
+                                                           const hybsol_precision_t precision,
+                                                           hybsol_decomposition_t **const out)
 {
     CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     CUTL_ASSERT(graph != NULL, "The graph must not be NULL.");
 
-    void *const storage = hybsol_alloc(sys->allocator, hybsol_decomposition_bytes(graph));
+    void *const storage = hybsol_alloc(sys->allocator, hybsol_decomposition_bytes(graph, precision));
     if (storage == NULL)
     {
         *out = NULL;
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     }
 
-    const hybsol_result_t res = hybsol_decomposition_init(sys, graph, storage, out);
+    const hybsol_result_t res = hybsol_decomposition_init_with_precision(sys, graph, precision, storage, out);
     if (res != HYBSOL_SUCCESS)
         hybsol_free(sys->allocator, storage);
     else
         // The decomposition now owns the block it was laid out in.
         (*out)->raw = storage;
     return res;
+}
+
+hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
+                                            hybsol_decomposition_t **const out)
+{
+    return hybsol_decomposition_create_with_precision(sys, graph, sys->precision, out);
 }
 
 uint64_t hybsol_decomposition_n_blocks(const hybsol_decomposition_t *const dec)

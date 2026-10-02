@@ -468,7 +468,8 @@ hybsol_result_t hybsol_elimination_create(const hybsol_system_t *const sys, hybs
     // Once per elimination, plus one more for a row that is diagonal-first and so has none.
     const uint64_t n_occupancy = w.n_occurrences;
 
-    const size_t off_row_offset = hybsol_align_up(sizeof(hybsol_elimination_t));
+    const size_t off_block_offsets = hybsol_align_up(sizeof(hybsol_elimination_t));
+    const size_t off_row_offset = off_block_offsets + (size_t)(n + 1) * sizeof(uint64_t);
     const size_t off_cols = off_row_offset + (size_t)(n + 1) * sizeof(uint64_t);
     const size_t off_level_offset = off_cols + (size_t)w.n_columns * sizeof(uint64_t);
     const size_t off_level_rows = off_level_offset + (size_t)(w.n_levels + 1) * sizeof(uint64_t);
@@ -499,6 +500,8 @@ hybsol_result_t hybsol_elimination_create(const hybsol_system_t *const sys, hybs
     graph->signature = hybsol_elimination_signature(sys);
     graph->precision = sys->precision;
     graph->failing_block = w.failing_block;
+    graph->block_offsets = (uint64_t *)(base + off_block_offsets);
+    memcpy(graph->block_offsets, sys->block_offsets, (size_t)(n + 1) * sizeof(uint64_t));
     graph->row_offset = (uint64_t *)(base + off_row_offset);
     graph->cols = (uint64_t *)(base + off_cols);
     graph->level_offset = (uint64_t *)(base + off_level_offset);

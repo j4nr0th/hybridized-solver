@@ -153,6 +153,13 @@ struct hybsol_elimination
     hybsol_precision_t precision;
     /** The block whose diagonal is identically zero, or ``UINT64_MAX``. */
     uint64_t failing_block;
+    /**
+     * ``n + 1`` block sizes of the analyzed system, copied from it. A
+     * decomposition's layout is a function of the graph alone, at any
+     * precision: without the sizes the per-entry payload could not be
+     * computed without the system in hand.
+     */
+    uint64_t *block_offsets;
     /** ``n + 1`` prefix into ``cols``. */
     uint64_t *row_offset;
     /** ``n_columns`` column indices, ascending within each row. */
@@ -244,6 +251,15 @@ void hybsol_decomposition_back_substitute(const hybsol_decomposition_t *dec, dou
 /* ------------------------------------------------------------------------- */
 /* The decomposition                                                          */
 /* ------------------------------------------------------------------------- */
+
+/**
+ * The system's payload for one slot of the graph's pattern, or ``NULL`` when
+ * the pattern holds a column the system does not -- fill-in, which starts at
+ * zero. Backends staging their own copy of the blocks read through this so
+ * they cannot drift from the copy :c:func:`hybsol_decomposition_init` makes.
+ */
+const void *hybsol_decomposition_entry_source(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
+                                              uint64_t row, uint64_t slot);
 
 /*
  * A copy of every block the elimination will ever touch, in one allocation
