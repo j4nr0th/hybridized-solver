@@ -21,8 +21,12 @@ static hybsol_python_api_t *g_api = NULL;
 static const char *const BACKEND_API_CAPSULE = "hybsol._mod.backend_api";
 
 /**
- * Reject more arguments than the spec names, which cpyutl asserts on instead
- * of diagnosing. Returns 0, or -1 with a :exc:`TypeError` set.
+ * Reject more arguments than the spec names. Returns 0, or -1 with a
+ * :exc:`TypeError` set.
+ *
+ * cpyutl diagnoses this itself as of its ``CPYARG_TOO_MANY``, but only once
+ * hybsol pins a commit that has it; against the pinned one it asserts, which
+ * takes the interpreter down with it. Drop this when that pin moves.
  */
 static int reject_extra_arguments(const char *const what, const Py_ssize_t nargs, PyObject *const kwnames,
                                   const Py_ssize_t accepted)
