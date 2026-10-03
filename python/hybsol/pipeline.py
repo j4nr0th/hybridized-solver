@@ -27,6 +27,7 @@ import numpy as np
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
 
+    from hybsol import Precision
     from hybsol._mod import BlockSystem, Decomposition, Elimination
 
 __all__ = ["factorize", "refined_solve"]
@@ -37,6 +38,7 @@ def factorize(
     *,
     n_threads: int = 0,
     workspace: NDArray[np.uint8] | None = None,
+    precision: Precision | None = None,
 ) -> tuple[Elimination, Decomposition]:
     """Walk the elimination graph and factorize from it.
 
@@ -57,6 +59,11 @@ def factorize(
         :meth:`BlockSystem.workspace_bytes` bytes, written in place so one buffer
         can be reused across systems. A read-only array is refused rather than
         copied, since a copy would defeat the point of handing one in.
+
+    precision : hybsol.Precision, optional
+        The precision of the factors, which need not match the system's: a
+        double system can produce single factors and a single system double
+        ones. Defaults to the system's own precision.
 
     Returns
     -------
@@ -88,9 +95,9 @@ def factorize(
     True
     """
     graph = system.elimination()
-    if workspace is None:
-        return graph, system.decompose(n_threads=n_threads)
-    return graph, system.decompose(n_threads=n_threads, workspace=workspace)
+    return graph, system.decompose(
+        n_threads=n_threads, workspace=workspace, precision=precision
+    )
 
 
 def refined_solve(

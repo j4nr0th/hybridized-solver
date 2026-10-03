@@ -10,6 +10,7 @@ from enum import StrEnum
 
 from hybsol._mod import BlockSystem as BlockSystem
 from hybsol._mod import Decomposition as Decomposition
+from hybsol._mod import DeviceError as DeviceError
 from hybsol._mod import Elimination as Elimination
 from hybsol._mod import SingularSystemError as SingularSystemError
 from hybsol.pipeline import factorize as factorize
@@ -18,6 +19,7 @@ from hybsol.pipeline import refined_solve as refined_solve
 __all__ = [
     "BlockSystem",
     "Decomposition",
+    "DeviceError",
     "Elimination",
     "Precision",
     "SingularSystemError",

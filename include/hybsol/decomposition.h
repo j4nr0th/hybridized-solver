@@ -56,18 +56,21 @@ typedef struct hybsol_decomposition hybsol_decomposition_t;
  * pointer over and reads the result back out of ``dec``. Reusing one buffer
  * across factorizations is fine.
  *
- * Preconditions: ``sys`` non-``NULL``. Only its block sizes and precision
- * matter, so this may be called before any blocks are added.
+ * Preconditions: ``sys`` non-``NULL``. Only its block sizes matter, so this may
+ * be called before any blocks are added. ``factor_precision`` is the type the
+ * decomposition will factor in -- which need not be the system's own: see
+ * :c:func:`hybsol_decomposition_create_with_precision`.
  */
-size_t hybsol_workspace_bytes(const hybsol_system_t *sys, uint64_t n_threads);
+size_t hybsol_workspace_bytes(const hybsol_system_t *sys, hybsol_precision_t factor_precision, uint64_t n_threads);
 
 /**
- * Get the bytes :c:func:`hybsol_decomposition_init` writes into.
+ * Get the bytes :c:func:`hybsol_decomposition_init` writes into, for a
+ * decomposition whose factors are stored in ``factor_precision``.
  *
  * A function of the graph alone, so a caller can carve one region for a graph,
  * a decomposition and its workspace and release them together.
  */
-size_t hybsol_decomposition_bytes(const hybsol_elimination_t *graph);
+size_t hybsol_decomposition_bytes(const hybsol_elimination_t *graph, hybsol_precision_t factor_precision);
 
 /**
  * Lay a decomposition out in caller-owned storage and copy the system's blocks
@@ -95,6 +98,20 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *sys, const hybs
                                           hybsol_decomposition_t **out);
 
 /**
+ * Lay a decomposition out in caller-owned storage with factors in ``precision``,
+ * copying the system's blocks in.
+ *
+ * The blocks convert element by element on the way in, so a decomposition's
+ * precision need not be the system's own.
+ *
+ * Preconditions: as :c:func:`hybsol_decomposition_init`, with ``storage`` at
+ * least :c:func:`hybsol_decomposition_bytes` bytes for ``precision``.
+ */
+hybsol_result_t hybsol_decomposition_init_with_precision(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
+                                                         hybsol_precision_t precision, void *storage,
+                                                         hybsol_decomposition_t **out);
+
+/**
  * Allocate the destination of a decomposition and copy the system's blocks into
  * it: :c:func:`hybsol_decomposition_init` in memory of its own.
  *
@@ -108,6 +125,19 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *sys, const hybs
  */
 hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
                                             hybsol_decomposition_t **out);
+
+/**
+ * Allocate a decomposition with factors in ``precision`` and copy the system's
+ * blocks into it: :c:func:`hybsol_decomposition_init_with_precision` in memory
+ * of its own.
+ *
+ * Preconditions: as :c:func:`hybsol_decomposition_create`.
+ *
+ * Returns :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` on failure, leaving ``*out`` ``NULL``.
+ */
+hybsol_result_t hybsol_decomposition_create_with_precision(const hybsol_system_t *sys,
+                                                           const hybsol_elimination_t *graph,
+                                                           hybsol_precision_t precision, hybsol_decomposition_t **out);
 
 /**
  * Release a decomposition and whatever memory it owns. A decomposition built by
@@ -158,6 +188,10 @@ hybsol_result_t hybsol_decomposition_operations(const hybsol_decomposition_t *de
  * :c:func:`hybsol_workspace_bytes`. No allocation happens inside a parallel
  * region, so the decomposition's allocator need not be thread-safe.
  *
+ * A decomposition whose factors live on a backend device has no host scratch
+ * and asserts here; factorize those with
+ * :c:func:`hybsol_decomposition_factorize`, which hands the work over.
+ *
  * Preconditions: ``dec`` non-``NULL`` and not yet factorized (asserted),
  * ``workspace`` non-``NULL`` and at least
  * :c:func:`hybsol_workspace_bytes` bytes for the same system and thread count.
@@ -176,7 +210,8 @@ hybsol_result_t hybsol_decomposition_factorize_with_workspace(hybsol_decompositi
  * from, should size a buffer once and use that spelling instead.
  *
  * Preconditions: ``dec`` non-``NULL`` and not yet factorized (asserted).
- * ``n_threads`` of ``0`` selects the OpenMP default and ``1`` runs serially.
+ * ``n_threads`` of ``0`` selects the OpenMP default and ``1`` runs serially; a
+ * decomposition on a backend device ignores it, having a scheduler of its own.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` if the scratch cannot be
  * allocated, otherwise as
@@ -230,5 +265,8 @@ void hybsol_decomposition_solve_upper(const hybsol_decomposition_t *dec, double 
  * trips an assertion above.
  */
 hybsol_result_t hybsol_decomposition_solve(const hybsol_decomposition_t *dec, double *vec, uint64_t n_threads);
+
+/** Get the index of the device this decomposition's factors live on, or ``UINT64_MAX`` for a host one. */
+uint64_t hybsol_decomposition_device(const hybsol_decomposition_t *dec);
 
 #endif /* HYBSOL_DECOMPOSITION_H */

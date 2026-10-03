@@ -25,6 +25,17 @@ class SingularSystemError(ValueError):
     :class:`ValueError` for it instead.
     """
 
+class DeviceError(RuntimeError):
+    """A backend device could not be reached, or could not do what was asked.
+
+    Raised for a device index that names nothing, a device that lacks a
+    capability the operation needs (double precision, say), and for failures
+    of the device runtime itself, including a kernel build that did not
+    compile. Subclasses :class:`RuntimeError`: the machine is at fault, not
+    the call, so a caller that only wants to catch bad input still does not
+    see it.
+    """
+
 class BlockSystem:
     """Block system for hybridized solver.
 
@@ -434,6 +445,7 @@ class BlockSystem:
         self,
         n_threads: int = 0,
         workspace: npt.NDArray[np.uint8] | None = None,
+        precision: Precision | None = None,
     ) -> Decomposition:
         """Factorize the system and return the result.
 
@@ -454,6 +466,14 @@ class BlockSystem:
             buffer can be reused across systems. Its contents are overwritten.
             Omit it and the scratch is allocated internally.
 
+        precision : hybsol.Precision, optional
+            The precision of the factors, which need not match the system's:
+            a double system can produce single factors and a single system
+            double ones. Defaults to the system's own precision. Values
+            convert on the way in, so the factorization is exact for the
+            precision it runs in, but the values themselves are still the
+            system's.
+
         Returns
         -------
         Decomposition
@@ -472,7 +492,9 @@ class BlockSystem:
         """
         ...
 
-    def workspace_bytes(self, n_threads: int = 0) -> int:
+    def workspace_bytes(
+        self, n_threads: int = 0, precision: Precision | None = None
+    ) -> int:
         """Bytes of scratch :meth:`decompose` needs at this thread count.
 
         Sizes the ``workspace`` array :meth:`decompose` accepts, so one buffer
@@ -484,6 +506,9 @@ class BlockSystem:
         ----------
         n_threads : int, default: 0
             The thread count that will be passed to :meth:`decompose`.
+        precision : hybsol.Precision, optional
+            The precision :meth:`decompose` will factor in. Defaults to the
+            system's own.
         """
         ...
 
@@ -705,6 +730,17 @@ class Decomposition:
         The list is rebuilt from the decomposition's own copy of the schedule
         rather than stored, so it costs nothing until it is asked for and
         materializing it in Python is ``O(ops)`` in objects.
+        """
+        ...
+
+    @property
+    def device(self) -> int | None:
+        """Index of the backend device the factors live on, or None.
+
+        Decompositions from :meth:`BlockSystem.decompose` keep their factors
+        in host memory and report None. A backend module -- ``hybsol.opencl``,
+        say -- produces decompositions whose factors stay on the device and
+        report the index its own ``devices()`` lists them under.
         """
         ...
 

@@ -22,3 +22,11 @@ typedef struct
 
 MODULE_INTERNAL
 extern PyType_Spec block_system_type_spec;
+
+/** Raise :exc:`ValueError` unless ``system`` is structurally valid. */
+MODULE_INTERNAL
+int require_valid_system(const hybsol_system_t *system, const char *what);
+
+/** Read a ``precision=`` argument; see the definition for the accepted forms. */
+MODULE_INTERNAL
+int parse_precision(PyObject *value, hybsol_precision_t *out);

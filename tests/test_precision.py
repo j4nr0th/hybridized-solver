@@ -200,6 +200,63 @@ def test_single_and_double_agree_to_float_accuracy() -> None:
     )
 
 
+def test_double_system_can_produce_single_factors() -> None:
+    """``precision=`` narrows the factorization without touching the system."""
+    system, matrix = build(Precision.DOUBLE)
+    dec = system.decompose(precision=Precision.SINGLE)
+
+    solution = dec.solve(np.ones(sum(SIZES)))
+    residual = np.abs(matrix @ solution - 1.0).max()
+
+    bound = np.linalg.cond(matrix) * np.finfo(np.float32).eps
+    assert solution.dtype == np.float64
+    assert residual < max(bound, 1e-5)
+
+
+def test_narrowed_and_single_systems_agree() -> None:
+    """Narrowing at copy-in gives the decomposition of a single system."""
+    narrow, _ = build(Precision.DOUBLE)
+    single, _ = build(Precision.SINGLE)
+
+    narrowed = narrow.decompose(precision=Precision.SINGLE).solve(np.ones(sum(SIZES)))
+    native = single.decompose().solve(np.ones(sum(SIZES)))
+
+    assert np.allclose(narrowed, native, rtol=1e-6, atol=1e-12)
+
+
+def test_single_system_can_produce_double_factors() -> None:
+    """Widening the factors leaves the system's own rounding as the limit."""
+    system, matrix = build(Precision.SINGLE)
+    dec = system.decompose(precision=Precision.DOUBLE)
+
+    solution = dec.solve(np.ones(sum(SIZES)))
+    residual = np.abs(matrix.astype(np.float64) @ solution - 1.0).max()
+
+    # The factorization is exact in double; the values it started from are
+    # still the single ones, so the residual cannot go below their bound.
+    bound = np.linalg.cond(matrix.astype(np.float64)) * np.finfo(np.float32).eps
+    assert residual < max(bound, 1e-6)
+
+
+def test_workspace_is_sized_by_the_factor_precision() -> None:
+    """Single factors need half the scratch double factors do."""
+    system, _ = build(Precision.DOUBLE)
+
+    single = system.workspace_bytes(precision=Precision.SINGLE)
+    double = system.workspace_bytes(precision=Precision.DOUBLE)
+
+    assert system.workspace_bytes() == double
+    assert single < double
+
+
+@pytest.mark.parametrize("value", ["quad", 2, None.__class__])
+def test_decompose_rejects_an_unknown_precision(value: object) -> None:
+    """A typo is refused rather than silently factoring in double."""
+    system, _ = build(Precision.DOUBLE)
+    with pytest.raises((TypeError, ValueError), match="precision must be"):
+        system.decompose(precision=value)  # type: ignore[arg-type]
+
+
 def test_copy_keeps_the_precision() -> None:
     """A copy of a single-precision system is single precision too."""
     system, _ = build(Precision.SINGLE)

@@ -26,6 +26,7 @@
 #ifndef HYBSOL_HYBSOL_H
 #define HYBSOL_HYBSOL_H
 
+#include <hybsol/backend.h>
 #include <hybsol/block_system.h>
 #include <hybsol/decomposition.h>
 #include <hybsol/elimination.h>

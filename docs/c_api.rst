@@ -107,3 +107,22 @@ The headers
 .. c:autodoc:: include/hybsol/decomposition.h
 
 .. c:autodoc:: include/hybsol/ordering.h
+
+Backends
+--------
+
+A backend keeps a decomposition's factors somewhere other than the host
+frame -- a device, in the general case -- and does the arithmetic over them
+itself. It fills in a :c:type:`hybsol_backend_t` and hands the decomposition
+over; the core calls through it wherever the CPU kernels would have run and
+never looks inside its state. :c:func:`hybsol_decomposition_device` says which
+device the factors are on, ``UINT64_MAX`` for host memory.
+
+The OpenCL backend is one: ``hybsol::opencl``, guarded by the
+``HYBSOL_ENABLE_OPENCL`` option and reachable through its own Python module.
+A backend for another runtime is one more library against
+``hybsol/backend.h`` with no change to the core.
+
+.. c:autodoc:: include/hybsol/backend.h
+
+.. c:autodoc:: include/hybsol/opencl.h

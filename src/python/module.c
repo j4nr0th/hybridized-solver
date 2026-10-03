@@ -29,6 +29,17 @@ PyObject *hybsol_exception_type(PyTypeObject *const type, const hybsol_result_t 
         return state->exc_singular;
     }
 
+    // A device that could not be reached, lacked a capability or failed at
+    // runtime is not a condition of the caller's data: it is the machine.
+    case HYBSOL_ERROR_NO_DEVICE:
+    case HYBSOL_ERROR_DEVICE_CAPABILITY:
+    case HYBSOL_ERROR_DEVICE: {
+        const module_state_t *const state = module_state_from_type(type);
+        if (state == NULL || state->exc_device == NULL)
+            return PyExc_RuntimeError;
+        return state->exc_device;
+    }
+
     // Everything else is a condition detected in the data, not a caller mistake.
     default:
         return PyExc_ValueError;
@@ -91,16 +102,30 @@ int hybsol_check_n_threads(const Py_ssize_t n_threads)
 }
 
 /*
- * Teardown. ``exc_singular`` is *borrowed* by the state: PyModule_AddObject
- * stole the reference the exception was created with, so the module dict owns
- * it and releases it. Dropping one here would free the type while the dict
- * still points at it, which is a use-after-free at shutdown rather than
- * anything visible during a run. Clearing the borrow is all that is left.
+ * Both exceptions are *borrowed* by the state: PyModule_AddObject stole the
+ * reference they were created with, so the module dict owns them and releases
+ * them. Dropping one here would free the type the dict still points at, which
+ * is a use-after-free at shutdown. Clearing the borrows is all that is left.
  */
 static void free_module_state(void *const module)
 {
     module_state_t *const module_state = (module_state_t *)PyModule_GetState(module);
     *module_state = (module_state_t){};
+}
+
+/**
+ * The capsule a backend's Python module reads to drive this one. The table
+ * points at functions that already exist; this only publishes them.
+ */
+PyObject *hybsol_backend_api_capsule(void)
+{
+    static hybsol_python_api_t api = {
+        .decomposition_alloc = decomposition_alloc,
+        .require_valid_system = require_valid_system,
+        .check_n_threads = hybsol_check_n_threads,
+        .parse_precision = parse_precision,
+    };
+    return PyCapsule_New(&api, "hybsol._mod.backend_api", NULL);
 }
 
 static int module_exec(PyObject *const mod)
@@ -145,6 +170,24 @@ static int module_exec(PyObject *const mod)
     {
         Py_DECREF(module_state->exc_singular);
         module_state->exc_singular = NULL;
+        return -1;
+    }
+
+    // On the module so `hybsol.DeviceError` resolves; the dict owns it.
+    module_state->exc_device = PyErr_NewException("hybsol.DeviceError", PyExc_RuntimeError, NULL);
+    if (module_state->exc_device == NULL)
+    {
+        return -1;
+    }
+    if (PyModule_AddObject(mod, "DeviceError", module_state->exc_device) < 0)
+    {
+        Py_DECREF(module_state->exc_device);
+        module_state->exc_device = NULL;
+        return -1;
+    }
+
+    if (PyModule_AddObject(mod, "backend_api", hybsol_backend_api_capsule()) < 0)
+    {
         return -1;
     }
 

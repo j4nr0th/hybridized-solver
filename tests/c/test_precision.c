@@ -245,6 +245,149 @@ static void test_single_decompose_and_solve(void)
     hybsol_system_destroy(sys);
 }
 
+/** Walk the graph, lay the destination out in ``precision`` and factorize it. */
+static hybsol_decomposition_t *factorize_in(const hybsol_system_t *const sys, const hybsol_precision_t precision,
+                                            const uint64_t n_threads)
+{
+    hybsol_elimination_t *graph = NULL;
+    if (hybsol_elimination_create(sys, &graph, NULL) != HYBSOL_SUCCESS)
+        return NULL;
+
+    hybsol_decomposition_t *dec = NULL;
+    if (hybsol_decomposition_create_with_precision(sys, graph, precision, &dec) != HYBSOL_SUCCESS)
+    {
+        hybsol_elimination_destroy(graph);
+        return NULL;
+    }
+    hybsol_elimination_destroy(graph);
+
+    if (hybsol_decomposition_factorize(dec, n_threads) != HYBSOL_SUCCESS)
+    {
+        hybsol_decomposition_destroy(dec);
+        return NULL;
+    }
+    return dec;
+}
+
+/** The image of ``x_j = j + 1`` under ``full``, which the solves must return. */
+static void rhs_of(const double full[MAX_DIM][MAX_DIM], double out[5])
+{
+    for (uint64_t i = 0; i < 5; ++i)
+    {
+        out[i] = 0.0;
+        for (uint64_t j = 0; j < 5; ++j)
+            out[i] += full[i][j] * (double)(j + 1);
+    }
+}
+
+/**
+ * A double system can produce a decomposition of single factors. The factors
+ * are exact for the values that went in, so the solve is as good as one from a
+ * single system holding the same numbers, and no better.
+ */
+static void test_narrowed_decomposition_of_double_system(void)
+{
+    double full[MAX_DIM][MAX_DIM];
+    hybsol_system_t *const sys = build_system(HYBSOL_PRECISION_DOUBLE, 2, (const uint64_t[2]){2, 3}, full);
+    CHECK(sys != NULL);
+    if (sys == NULL)
+        return;
+
+    hybsol_decomposition_t *const narrow = factorize_in(sys, HYBSOL_PRECISION_SINGLE, 1);
+    CHECK(narrow != NULL);
+    if (narrow == NULL)
+    {
+        hybsol_system_destroy(sys);
+        return;
+    }
+
+    double rhs[5];
+    rhs_of(full, rhs);
+    double vec[5];
+    memcpy(vec, rhs, sizeof(vec));
+    CHECK_OK(hybsol_decomposition_solve(narrow, vec, 1));
+
+    for (uint64_t i = 0; i < 5; ++i)
+    {
+        CHECK_NEAR(vec[i], (double)(i + 1), 1e-3);
+        double residual = 0.0;
+        for (uint64_t j = 0; j < 5; ++j)
+            residual += full[i][j] * vec[j];
+        CHECK_NEAR(residual, rhs[i], 1e-4 + 1e-4 * fabs(rhs[i]));
+    }
+
+    // The same values narrowed to single factors before the decomposition are
+    // the same decomposition: both start from identical float blocks.
+    hybsol_system_t *const single = build_system(HYBSOL_PRECISION_SINGLE, 2, (const uint64_t[2]){2, 3}, full);
+    CHECK(single != NULL);
+    if (single != NULL)
+    {
+        hybsol_decomposition_t *const dec = factorize_in(single, HYBSOL_PRECISION_SINGLE, 1);
+        CHECK(dec != NULL);
+        if (dec != NULL)
+        {
+            double other[5];
+            memcpy(other, rhs, sizeof(other));
+            CHECK_OK(hybsol_decomposition_solve(dec, other, 1));
+            for (uint64_t i = 0; i < 5; ++i)
+                CHECK_NEAR(vec[i], other[i], 1e-12 + 1e-6 * fabs(vec[i]));
+            hybsol_decomposition_destroy(dec);
+        }
+        hybsol_system_destroy(single);
+    }
+
+    // A narrower factorization needs less scratch: the whole point of it.
+    CHECK(hybsol_workspace_bytes(sys, HYBSOL_PRECISION_SINGLE, 1) <
+          hybsol_workspace_bytes(sys, HYBSOL_PRECISION_DOUBLE, 1));
+
+    hybsol_decomposition_destroy(narrow);
+    hybsol_system_destroy(sys);
+}
+
+/**
+ * And a single system can produce a decomposition of double factors: the
+ * factorization is then exact, but the values it started from are still the
+ * single ones the system rounded, so the solution cannot be better than those.
+ */
+static void test_widened_decomposition_of_single_system(void)
+{
+    double full[MAX_DIM][MAX_DIM];
+    hybsol_system_t *const sys = build_system(HYBSOL_PRECISION_SINGLE, 2, (const uint64_t[2]){2, 3}, full);
+    CHECK(sys != NULL);
+    if (sys == NULL)
+    {
+        return;
+    }
+
+    hybsol_decomposition_t *const wide = factorize_in(sys, HYBSOL_PRECISION_DOUBLE, 1);
+    CHECK(wide != NULL);
+    if (wide == NULL)
+    {
+        hybsol_system_destroy(sys);
+        return;
+    }
+
+    double rhs[5];
+    rhs_of(full, rhs);
+    double vec[5];
+    memcpy(vec, rhs, sizeof(vec));
+    CHECK_OK(hybsol_decomposition_solve(wide, vec, 1));
+
+    // Bounded by how the system rounded its own blocks, roughly cond * 1e-7,
+    // not by the factorization, which runs in double.
+    for (uint64_t i = 0; i < 5; ++i)
+    {
+        CHECK_NEAR(vec[i], (double)(i + 1), 1e-6);
+        double residual = 0.0;
+        for (uint64_t j = 0; j < 5; ++j)
+            residual += full[i][j] * vec[j];
+        CHECK_NEAR(residual, rhs[i], 1e-6 + 1e-6 * fabs(rhs[i]));
+    }
+
+    hybsol_decomposition_destroy(wide);
+    hybsol_system_destroy(sys);
+}
+
 /**
  * A single-precision factorization leaves its system untouched and agrees with
  * itself across thread counts, exactly as the double spelling does.
@@ -350,5 +493,7 @@ int main(void)
     test_single_decompose_and_solve();
     test_single_system_survives_its_decomposition();
     test_double_is_unchanged();
+    test_narrowed_decomposition_of_double_system();
+    test_widened_decomposition_of_single_system();
     return test_report("test_precision");
 }

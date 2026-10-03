@@ -44,6 +44,12 @@ typedef enum hybsol_result
     HYBSOL_ERROR_SINGULAR,
     /** The block order does not admit any factorization of this system. */
     HYBSOL_ERROR_INVALID_ORDERING,
+    /** No such device: the runtime offers none, or the given index names none. */
+    HYBSOL_ERROR_NO_DEVICE,
+    /** The device lacks a capability the operation needs. */
+    HYBSOL_ERROR_DEVICE_CAPABILITY,
+    /** A backend runtime call or kernel build failed. */
+    HYBSOL_ERROR_DEVICE,
 } hybsol_result_t;
 
 /**

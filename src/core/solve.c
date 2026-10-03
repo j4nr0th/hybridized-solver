@@ -42,6 +42,10 @@ hybsol_result_t hybsol_decomposition_solve(const hybsol_decomposition_t *const d
     CUTL_ASSERT(vec != NULL, "The solution vector must not be NULL.");
     CUTL_ASSERT(dec->factorized, "This decomposition has not been factorized.");
 
+    // A backend's factors are not in this process's memory; it solves them.
+    if (dec->backend != NULL)
+        return dec->backend->solve(dec->backend_state, vec, n_threads);
+
     forward_substitution(dec, vec, hybsol_resolve_threads(n_threads));
 
     // Serial: row i needs every higher column it holds, a different dependency from the elimination's passes.

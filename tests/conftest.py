@@ -11,8 +11,10 @@ that is mostly C, so it is checked here rather than left to be noticed.
 from __future__ import annotations
 
 import datetime
+import importlib.util
 from pathlib import Path
 
+import hybsol._mod
 import pytest
 
 # Everything compiled into the extension. ``cutl`` and ``cpyutl`` are vendored,
@@ -44,25 +46,35 @@ def _newest_source(repo: Path) -> tuple[float, Path] | None:
 
 @pytest.fixture(scope="session", autouse=True)
 def extension_is_current(repo_root: Path):
-    """Fail the run if the installed extension is older than its sources."""
-    import hybsol._mod
-
-    extension = Path(hybsol._mod.__file__)
+    """Fail the run if an installed extension is older than its sources."""
     newest = _newest_source(repo_root)
     if newest is None:
         pytest.skip("no C sources found to compare against")
-
     newest_mtime, newest_path = newest
-    if extension.stat().st_mtime < newest_mtime:
-        pytest.fail(
-            f"the installed extension is stale.\n"
-            f"  extension:     {extension} ({_stamp(extension)})\n"
-            f"  newest source: {newest_path.relative_to(repo_root)}"
-            f" ({_stamp(newest_path)})\n"
-            f"The tests would run against the previous build. Rebuild with:\n"
-            f"  uv sync --reinstall-package hybsol",
-            pytrace=False,
-        )
+
+    _check_stale(Path(hybsol._mod.__file__), repo_root, newest_mtime, newest_path)
+
+    # A build without the backend has no extension module; check what is there.
+    backend = importlib.util.find_spec("hybsol._mod_opencl")
+    if backend is not None and backend.origin is not None:
+        _check_stale(Path(backend.origin), repo_root, newest_mtime, newest_path)
+
+
+def _check_stale(
+    extension: Path, repo_root: Path, newest_mtime: float, newest_path: Path
+) -> None:
+    """Fail the run when ``extension`` predates the newest source."""
+    if extension.stat().st_mtime >= newest_mtime:
+        return
+    pytest.fail(
+        f"the installed extension is stale.\n"
+        f"  extension:     {extension} ({_stamp(extension)})\n"
+        f"  newest source: {newest_path.relative_to(repo_root)}"
+        f" ({_stamp(newest_path)})\n"
+        f"The tests would run against the previous build. Rebuild with:\n"
+        f"  uv sync --reinstall-package hybsol",
+        pytrace=False,
+    )
 
 
 @pytest.fixture(scope="session")

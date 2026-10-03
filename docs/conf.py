@@ -44,9 +44,15 @@ intersphinx_mapping = {
 }
 
 # -- Options for hawkmoth (the C API) -----------------------------------------
-# The public headers are self-contained and need no external include paths.
+# The public headers include cutl's, which is vendored one directory over, so
+# hawkmoth needs that include path too: without it every header that reaches
+# types.h reports the missing cutl/allocators.h.
 hawkmoth_root = os.path.abspath("..")
-hawkmoth_clang = [f"-I{os.path.abspath('../include')}", "-DHYBSOL_DOCS"]
+hawkmoth_clang = [
+    f"-I{os.path.abspath('../include')}",
+    f"-I{os.path.abspath('../cutl/include')}",
+    "-DHYBSOL_DOCS",
+]
 
 # -- Options for sphinx-gallery (the examples) ---------------------------------
 sphinx_gallery_conf = {
