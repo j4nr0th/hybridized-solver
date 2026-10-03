@@ -649,6 +649,36 @@ size_t hybsol_opencl_work_group_size(const hybsol_opencl_device_t *const device,
     return wanted;
 }
 
+void hybsol_opencl_work_group_size_2d(const hybsol_opencl_device_t *const device, cl_kernel kernel, size_t *const x,
+                                      size_t *const y)
+{
+    size_t maximum = 0;
+    if (clGetKernelWorkGroupInfo(kernel, device->id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(maximum), &maximum, NULL) !=
+            CL_SUCCESS ||
+        maximum == 0)
+    {
+        *x = 0;
+        *y = 0;
+        return;
+    }
+
+    /*
+     * A two-dimensional launch is bounded by the product, not by either
+     * dimension: 64 x 64 is 4096 work items in a group, which is over what many
+     * devices will run at all. Split the budget the same way the one
+     * dimensional case picks a size.
+     */
+    const size_t wanted = 64;
+    size_t first = maximum < wanted ? maximum : wanted;
+    size_t second = maximum / first;
+    if (second > wanted)
+    {
+        second = wanted;
+    }
+    *x = first;
+    *y = second == 0 ? 1 : second;
+}
+
 cl_kernel hybsol_opencl_kernel(hybsol_opencl_device_t *const device, const hybsol_precision_t precision,
                                const char *const name)
 {

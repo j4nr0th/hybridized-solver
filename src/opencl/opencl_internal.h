@@ -66,6 +66,12 @@ struct hybsol_opencl_device
 size_t hybsol_opencl_work_group_size(const hybsol_opencl_device_t *device, cl_kernel kernel);
 
 /**
+ * The same, split over two dimensions for a two-dimensional launch, where the
+ * bound is the *product* of the two. Zero means "let the driver choose".
+ */
+void hybsol_opencl_work_group_size_2d(const hybsol_opencl_device_t *device, cl_kernel kernel, size_t *x, size_t *y);
+
+/**
  * A kernel of the device's program for ``precision``, freshly created.
  *
  * The caller owns it and releases it. Kernel objects are not shared: setting

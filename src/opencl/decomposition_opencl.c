@@ -69,8 +69,25 @@ typedef struct
     cl_mem vals;
     /** The solution vector, double whatever the factors are. */
     cl_mem vec;
-    /** One scratch block per block row, holding an elimination's products. */
+    /**
+     * Scratch for one pass's elimination products: one block per work item,
+     * that is one per (block row, source block) of the pass.
+     */
     cl_mem scratch;
+    /** The per-pass work lists, on the device and on the host that sizes launches. */
+    cl_mem dev_diag_offset;
+    cl_mem dev_scale_offset;
+    cl_mem dev_diag_row;
+    cl_mem dev_scale_row;
+    cl_mem dev_scale_tail;
+    uint64_t *diag_offset;  /**< ``n_levels + 1``, into ``diag_row``. */
+    uint64_t *scale_offset; /**< ``n_levels + 1``, into ``scale_row``. */
+    uint64_t *diag_row;     /**< The rows whose diagonal a pass factors, in pass order. */
+    uint64_t *scale_row;    /**< The same rows again, for the scaling that follows. */
+    uint64_t *scale_tail;   /**< Blocks above each of those diagonals. */
+    /** Widest source list and widest tail in a pass, so a grid can be sized. */
+    uint64_t *max_sources;
+    uint64_t *max_tail;
     /** Which work item hit a zero pivot this pass, or ``INT_MAX``. */
     cl_mem fail_j;
     /** Host scratch for the transfers, so a solve does not allocate. */
@@ -167,6 +184,24 @@ static hybsol_result_t transfer_reserve(opencl_state_t *const state, const size_
     return HYBSOL_SUCCESS;
 }
 
+static hybsol_result_t backend_factorize(void *state_ptr, uint64_t n_threads);
+static hybsol_result_t backend_solve(void *state_ptr, double *vec, uint64_t n_threads);
+static void backend_apply_operations(void *state_ptr, uint64_t n_ops, const hybsol_operation_t *ops, double *vec);
+static void backend_solve_upper(void *state_ptr, double *vec);
+static uint64_t backend_device(const void *state_ptr);
+static void backend_destroy(void *state_ptr);
+
+/** The one vtable every OpenCL decomposition shares; its state is per-device. */
+static const hybsol_backend_t OPENCL_BACKEND = {
+    .name = "opencl",
+    .factorize = backend_factorize,
+    .solve = backend_solve,
+    .apply_operations = backend_apply_operations,
+    .solve_upper = backend_solve_upper,
+    .device = backend_device,
+    .destroy = backend_destroy,
+};
+
 /**
  * Copy ``count`` elements of the system's storage into ``dst`` at the factors'
  * precision, converting when the two differ.
@@ -198,6 +233,20 @@ static void convert_into(unsigned char *const dst, const void *const src, const 
     }
 }
 
+/**
+ * Round a grid dimension up to a whole number of work groups, so a device that
+ * does not support non-uniform groups accepts the launch. Zero stays zero: that
+ * is the driver choosing.
+ */
+static size_t round_up_to(const size_t count, const size_t local)
+{
+    if (local == 0 || count == 0)
+    {
+        return count;
+    }
+    return (count + local - 1) / local * local;
+}
+
 /** Set one kernel argument, noting the failure for a later report. */
 static void kernel_set(cl_kernel const kernel, const cl_uint index, const size_t size, const void *const value)
 {
@@ -208,25 +257,6 @@ static void kernel_set(cl_kernel const kernel, const cl_uint index, const size_t
 /* ------------------------------------------------------------------------- */
 /* The vtable's operations                                                     */
 /* ------------------------------------------------------------------------- */
-
-static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n_threads);
-static hybsol_result_t backend_solve(void *const state_ptr, double *vec, const uint64_t n_threads);
-static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops, const hybsol_operation_t *const ops,
-                                     double *const vec);
-static void backend_solve_upper(void *const state_ptr, double *const vec);
-static uint64_t backend_device(const void *const state_ptr);
-static void backend_destroy(void *const state_ptr);
-
-/** The one vtable every OpenCL decomposition shares; its state is per-device. */
-static const hybsol_backend_t OPENCL_BACKEND = {
-    .name = "opencl",
-    .factorize = backend_factorize,
-    .solve = backend_solve,
-    .apply_operations = backend_apply_operations,
-    .solve_upper = backend_solve_upper,
-    .device = backend_device,
-    .destroy = backend_destroy,
-};
 
 hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system_t *const sys,
                                                              const hybsol_elimination_t *const graph,
@@ -277,6 +307,8 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     }
     state->device = device;
     state->dec = dec;
+    dec->backend = &OPENCL_BACKEND;
+    dec->backend_state = state;
 
     const size_t bytes_n = (size_t)(n + 1) * sizeof(uint64_t);
     const size_t bytes_levels = (size_t)(n_levels + 1) * sizeof(uint64_t);
@@ -301,8 +333,6 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     const uint64_t total_size = dec->block_offsets[n];
     state->vec = buffer_create(device, (size_t)total_size * sizeof(double), rw);
 
-    // One scratch block per block row, each as large as the largest block
-    // squared: the products of the elimination fit in it.
     state->max_block = 1;
     for (uint64_t i = 0; i < n; ++i)
     {
@@ -312,12 +342,114 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
             state->max_block = size;
         }
     }
-    state->scratch =
-        buffer_create(device, (size_t)n * (size_t)state->max_block * (size_t)state->max_block * scalar, rw);
 
-    // The schedule goes up unchanged: the host walks the same numbers the
-    // kernels do.
-    hybsol_result_t res = buffer_write(device, state->block_offsets, dec->block_offsets, bytes_n);
+    hybsol_result_t res = HYBSOL_SUCCESS;
+
+    /*
+     * The schedule, read once, tells the launch loop everything it needs: the
+     * block rows whose diagonal each pass factors, how many blocks stand above
+     * each of those diagonals, and how wide the widest source list of a pass is.
+     * Every row's diagonal is factored exactly once, so the two row lists hold
+     * one entry per block row between them.
+     */
+    state->diag_offset = (uint64_t *)calloc((size_t)n_levels + 1, sizeof(uint64_t));
+    state->scale_offset = (uint64_t *)calloc((size_t)n_levels + 1, sizeof(uint64_t));
+    state->diag_row = (uint64_t *)calloc(n, sizeof(uint64_t));
+    state->scale_row = (uint64_t *)calloc(n, sizeof(uint64_t));
+    state->scale_tail = (uint64_t *)calloc(n, sizeof(uint64_t));
+    state->max_sources = (uint64_t *)calloc((size_t)n_levels, sizeof(uint64_t));
+    state->max_tail = (uint64_t *)calloc((size_t)n_levels, sizeof(uint64_t));
+    if (state->diag_offset == NULL || state->scale_offset == NULL || state->diag_row == NULL ||
+        state->scale_row == NULL || state->scale_tail == NULL || state->max_sources == NULL || state->max_tail == NULL)
+    {
+        res = HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+
+    size_t scratch_elements = 0;
+    uint64_t diag_count = 0;
+    uint64_t scale_count = 0;
+    for (uint64_t pass = 0; pass < n_levels && res == HYBSOL_SUCCESS; ++pass)
+    {
+        state->diag_offset[pass] = diag_count;
+        state->scale_offset[pass] = scale_count;
+
+        uint64_t sources = 0;
+        for (uint64_t j = dec->level_offset[pass]; j < dec->level_offset[pass + 1]; ++j)
+        {
+            const uint64_t row = dec->level_rows[j];
+            const uint64_t step = dec->level_k[j];
+            const uint64_t count = graph->row_offset[row + 1] - graph->row_offset[row];
+
+            // An elimination: how many source blocks this step walks. Note
+            // that a row's *last* pass can carry an elimination too -- the CPU
+            // factors that diagonal right after, and so do we, in launch order
+            // -- so this is counted whatever the pass.
+            if (step < dec->row_n_elim[row])
+            {
+                const uint64_t source_row = graph->cols[dec->row_entry_offset[row] + step];
+                const uint64_t source_count = graph->row_offset[source_row + 1] - graph->row_offset[source_row];
+                const uint64_t available = source_count - dec->row_n_elim[source_row] - 1;
+                if (available > sources)
+                {
+                    sources = available;
+                }
+            }
+
+            // The row's last pass: its diagonal, and the blocks standing above it.
+            if (pass != dec->row_level[row])
+            {
+                continue;
+            }
+            state->diag_row[diag_count++] = row;
+            state->scale_row[scale_count] = row;
+            const uint64_t tail = count - dec->row_n_elim[row] - 1;
+            state->scale_tail[scale_count++] = tail;
+            if (tail > state->max_tail[pass])
+            {
+                state->max_tail[pass] = tail;
+            }
+        }
+        if (sources > state->max_sources[pass])
+        {
+            state->max_sources[pass] = sources;
+        }
+
+        // One scratch block per work item of this pass's elimination.
+        const size_t items = (size_t)(dec->level_offset[pass + 1] - dec->level_offset[pass]) * sources;
+        const size_t need = items * (size_t)state->max_block * (size_t)state->max_block;
+        if (need > scratch_elements)
+        {
+            scratch_elements = need;
+        }
+    }
+    state->diag_offset[n_levels] = diag_count;
+    state->scale_offset[n_levels] = scale_count;
+
+    if (res == HYBSOL_SUCCESS)
+    {
+        state->dev_diag_offset = buffer_create(device, (size_t)(n_levels + 1) * sizeof(uint64_t), ro);
+        state->dev_scale_offset = buffer_create(device, (size_t)(n_levels + 1) * sizeof(uint64_t), ro);
+        state->dev_diag_row = buffer_create(device, diag_count * sizeof(uint64_t), ro);
+        state->dev_scale_row = buffer_create(device, scale_count * sizeof(uint64_t), ro);
+        state->dev_scale_tail = buffer_create(device, scale_count * sizeof(uint64_t), ro);
+        state->scratch = buffer_create(device, scratch_elements * scalar, rw);
+
+        res = buffer_write(device, state->dev_diag_offset, state->diag_offset, bytes_levels);
+        if (res == HYBSOL_SUCCESS)
+            res = buffer_write(device, state->dev_scale_offset, state->scale_offset, bytes_levels);
+        if (res == HYBSOL_SUCCESS && diag_count > 0)
+        {
+            res = buffer_write(device, state->dev_diag_row, state->diag_row, diag_count * sizeof(uint64_t));
+            if (res == HYBSOL_SUCCESS)
+                res = buffer_write(device, state->dev_scale_row, state->scale_row, scale_count * sizeof(uint64_t));
+            if (res == HYBSOL_SUCCESS)
+                res = buffer_write(device, state->dev_scale_tail, state->scale_tail, scale_count * sizeof(uint64_t));
+        }
+    }
+
+    // The schedule itself goes up unchanged: the host walks the same numbers.
+    if (res == HYBSOL_SUCCESS)
+        res = buffer_write(device, state->block_offsets, dec->block_offsets, bytes_n);
     if (res == HYBSOL_SUCCESS)
         res = buffer_write(device, state->level_offset, dec->level_offset, bytes_levels);
     if (res == HYBSOL_SUCCESS)
@@ -329,9 +461,7 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     if (res == HYBSOL_SUCCESS)
         res = buffer_write(device, state->row_level, dec->row_level, bytes_row);
     if (res == HYBSOL_SUCCESS)
-        // The entry prefix is the graph's own row offsets: its entries were
-        // written in that order, so row i's entries start exactly there.
-        res = buffer_write(device, state->row_entry_offset, graph->row_offset, bytes_n);
+        res = buffer_write(device, state->row_entry_offset, dec->row_entry_offset, bytes_n);
     if (res == HYBSOL_SUCCESS)
         res = buffer_write(device, state->entry_col, graph->cols, bytes_cols);
 
@@ -413,28 +543,10 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     // Keep a reference for as long as the payload lives: the caller's own
     // release may come first.
     device->refs++;
-    dec->backend = &OPENCL_BACKEND;
-    dec->backend_state = state;
-
     *out = dec;
     return HYBSOL_SUCCESS;
 }
 
-/**
- * Factorize: one kernel per pass, all of them queued back to back.
- *
- * The host walks the passes exactly as the CPU factorization does; what differs
- * is that a pass is a single launch over its rows, and that the host does not
- * wait between passes. The failure slot is cleared once and read once, at the
- * end: a round trip per pass costs more than these kernels do, and nothing
- * needs the answer before the last pass has run anyway. The slot keeps the
- * smallest work item that hit a zero pivot, which -- passes being queued in
- * order -- is the row the CPU settle loop would have found first.
- *
- * A pass after a failure still runs, exactly as the CPU's parallel region does:
- * the rows that failed skip their inversion, the rest are unaffected, and the
- * decomposition is reported as unfactorized either way.
- */
 static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n_threads)
 {
     HYBSOL_MARK_USED(n_threads);
@@ -443,84 +555,141 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     hybsol_opencl_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
 
-    cl_kernel const kernel = hybsol_opencl_kernel(device, precision, KERNEL_NAME(precision, hybsol_factorize_pass));
-    if (kernel == NULL)
+    cl_kernel eliminate = hybsol_opencl_kernel(device, precision, KERNEL_NAME(precision, hybsol_eliminate_pass));
+    cl_kernel diagonal = hybsol_opencl_kernel(device, precision, KERNEL_NAME(precision, hybsol_diagonal_pass));
+    cl_kernel scale = hybsol_opencl_kernel(device, precision, KERNEL_NAME(precision, hybsol_scale_pass));
+    if (eliminate == NULL || diagonal == NULL || scale == NULL)
     {
+        clReleaseKernel(eliminate);
+        clReleaseKernel(diagonal);
+        clReleaseKernel(scale);
         return HYBSOL_ERROR_DEVICE;
     }
 
+    /*
+     * Every launch is over a bounded work group rather than the driver's own
+     * choice, which is the kernel's maximum -- 8192 on a consumer card, which
+     * would put a whole pass on one compute unit. Global sizes are rounded up
+     * to whole groups (a device without non-uniform group support refuses the
+     * launch otherwise) and the kernels drop the padding themselves.
+     */
+    size_t local_x = 0;
+    size_t local_y = 0;
+    hybsol_opencl_work_group_size_2d(device, eliminate, &local_x, &local_y);
+    const size_t local_rows = hybsol_opencl_work_group_size(device, diagonal);
+    const size_t scale_local_x = local_x;
+    const size_t scale_local_y = local_y;
+
     const cl_int none = INT_MAX;
-    // A pass is launched over a bounded work group so it spreads across the
-    // device: the driver's own choice is the kernel's maximum (8192 here),
-    // which puts a few hundred rows on one compute unit.
-    const size_t local_size = hybsol_opencl_work_group_size(device, kernel);
     const cl_int fill_status =
         clEnqueueFillBuffer(device->queue, state->fail_j, &none, sizeof(none), 0, sizeof(none), 0, NULL, NULL);
+    hybsol_result_t res = HYBSOL_SUCCESS;
     if (fill_status != CL_SUCCESS)
     {
         hybsol_opencl_note_cl_error(fill_status, "Clearing the failure slot");
-        clReleaseKernel(kernel);
-        return HYBSOL_ERROR_DEVICE;
+        res = HYBSOL_ERROR_DEVICE;
     }
 
-    hybsol_result_t res = HYBSOL_SUCCESS;
+    const cl_ulong scratch_stride = (cl_ulong)(state->max_block * state->max_block);
     for (uint64_t pass = 0; pass < dec->n_levels && res == HYBSOL_SUCCESS; ++pass)
     {
         const uint64_t from = dec->level_offset[pass];
-        const uint64_t to = dec->level_offset[pass + 1];
-        if (to <= from)
+        const uint64_t rows = dec->level_offset[pass + 1] - from;
+        const uint64_t sources = state->max_sources[pass];
+        const uint64_t diagonals = state->diag_offset[pass + 1] - state->diag_offset[pass];
+        const uint64_t tail = state->max_tail[pass];
+
+        // The eliminations: one work item per (block row, source block).
+        if (rows > 0 && sources > 0)
         {
-            continue;
+            kernel_set(eliminate, 0, sizeof(state->level_rows), &state->level_rows);
+            kernel_set(eliminate, 1, sizeof(state->level_k), &state->level_k);
+            kernel_set(eliminate, 2, sizeof(state->row_n_elim), &state->row_n_elim);
+            kernel_set(eliminate, 3, sizeof(state->row_entry_offset), &state->row_entry_offset);
+            kernel_set(eliminate, 4, sizeof(state->entry_col), &state->entry_col);
+            kernel_set(eliminate, 5, sizeof(state->entry_val_offset), &state->entry_val_offset);
+            kernel_set(eliminate, 6, sizeof(state->block_offsets), &state->block_offsets);
+            kernel_set(eliminate, 7, sizeof(state->vals), &state->vals);
+            kernel_set(eliminate, 8, sizeof(state->scratch), &state->scratch);
+            const cl_ulong from_arg = (cl_ulong)from;
+            const cl_ulong rows_arg = (cl_ulong)rows;
+            const cl_ulong sources_arg = (cl_ulong)sources;
+            kernel_set(eliminate, 9, sizeof(from_arg), &from_arg);
+            kernel_set(eliminate, 10, sizeof(rows_arg), &rows_arg);
+            kernel_set(eliminate, 11, sizeof(sources_arg), &sources_arg);
+            kernel_set(eliminate, 12, sizeof(scratch_stride), &scratch_stride);
+
+            const size_t global[2] = {round_up_to(rows, local_x), round_up_to(sources, local_y)};
+            const size_t local[2] = {local_x, local_y};
+            const cl_int status =
+                clEnqueueNDRangeKernel(device->queue, eliminate, 2, NULL, global, local, 0, NULL, NULL);
+            if (status != CL_SUCCESS)
+            {
+                hybsol_opencl_note_cl_error(status, "Launching a pass's eliminations");
+                res = HYBSOL_ERROR_DEVICE;
+            }
         }
 
-        const cl_ulong pass_arg = (cl_ulong)pass;
-        const cl_ulong from_arg = (cl_ulong)from;
-        const cl_ulong pass_rows_arg = (cl_ulong)(to - from);
-        const cl_ulong max_block_arg = (cl_ulong)state->max_block;
+        // The diagonals of the rows whose last pass this is.
+        if (res == HYBSOL_SUCCESS && diagonals > 0)
+        {
+            kernel_set(diagonal, 0, sizeof(state->dev_diag_row), &state->dev_diag_row);
+            kernel_set(diagonal, 1, sizeof(state->row_n_elim), &state->row_n_elim);
+            kernel_set(diagonal, 2, sizeof(state->row_entry_offset), &state->row_entry_offset);
+            kernel_set(diagonal, 3, sizeof(state->entry_val_offset), &state->entry_val_offset);
+            kernel_set(diagonal, 4, sizeof(state->block_offsets), &state->block_offsets);
+            kernel_set(diagonal, 5, sizeof(state->vals), &state->vals);
+            kernel_set(diagonal, 6, sizeof(state->fail_j), &state->fail_j);
+            const cl_ulong first_row = (cl_ulong)state->diag_offset[pass];
+            const cl_ulong count_rows = (cl_ulong)diagonals;
+            kernel_set(diagonal, 7, sizeof(first_row), &first_row);
+            kernel_set(diagonal, 8, sizeof(count_rows), &count_rows);
 
-        kernel_set(kernel, 0, sizeof(state->level_rows), &state->level_rows);
-        kernel_set(kernel, 1, sizeof(state->level_k), &state->level_k);
-        kernel_set(kernel, 2, sizeof(state->row_n_elim), &state->row_n_elim);
-        kernel_set(kernel, 3, sizeof(state->row_level), &state->row_level);
-        kernel_set(kernel, 4, sizeof(state->row_entry_offset), &state->row_entry_offset);
-        kernel_set(kernel, 5, sizeof(state->entry_col), &state->entry_col);
-        kernel_set(kernel, 6, sizeof(state->entry_val_offset), &state->entry_val_offset);
-        kernel_set(kernel, 7, sizeof(state->block_offsets), &state->block_offsets);
-        kernel_set(kernel, 8, sizeof(state->vals), &state->vals);
-        kernel_set(kernel, 9, sizeof(state->scratch), &state->scratch);
-        kernel_set(kernel, 10, sizeof(state->fail_j), &state->fail_j);
-        kernel_set(kernel, 11, sizeof(pass_arg), &pass_arg);
-        kernel_set(kernel, 12, sizeof(from_arg), &from_arg);
-        kernel_set(kernel, 13, sizeof(pass_rows_arg), &pass_rows_arg);
-        kernel_set(kernel, 14, sizeof(max_block_arg), &max_block_arg);
+            const size_t global = round_up_to(diagonals, local_rows);
+            const size_t local = local_rows != 0 ? local_rows : 1;
+            const cl_int status =
+                clEnqueueNDRangeKernel(device->queue, diagonal, 1, NULL, &global, &local, 0, NULL, NULL);
+            if (status != CL_SUCCESS)
+            {
+                hybsol_opencl_note_cl_error(status, "Launching a pass's diagonals");
+                res = HYBSOL_ERROR_DEVICE;
+            }
+        }
 
-        // Rounded up to a whole number of work groups: a device without
-        // non-uniform group support refuses the launch otherwise, and the
-        // kernel drops the padding itself.
-        size_t local = local_size;
-        size_t global = (size_t)(to - from);
-        if (local != 0 && local <= global)
+        // And the blocks above them, one work item each. It reads the diagonal
+        // the launch before it just factorized: the queue is in order.
+        if (res == HYBSOL_SUCCESS && diagonals > 0 && tail > 0)
         {
-            global = (global + local - 1) / local * local;
-        }
-        else
-        {
-            local = 0;
-        }
-        const cl_int status =
-            clEnqueueNDRangeKernel(device->queue, kernel, 1, NULL, &global, local != 0 ? &local : NULL, 0, NULL, NULL);
-        if (status != CL_SUCCESS)
-        {
-            hybsol_opencl_note_cl_error(status, "Launching a factorization pass");
-            res = HYBSOL_ERROR_DEVICE;
-            break;
+            kernel_set(scale, 0, sizeof(state->dev_scale_row), &state->dev_scale_row);
+            kernel_set(scale, 1, sizeof(state->dev_scale_tail), &state->dev_scale_tail);
+            kernel_set(scale, 2, sizeof(state->row_n_elim), &state->row_n_elim);
+            kernel_set(scale, 3, sizeof(state->row_entry_offset), &state->row_entry_offset);
+            kernel_set(scale, 4, sizeof(state->entry_col), &state->entry_col);
+            kernel_set(scale, 5, sizeof(state->entry_val_offset), &state->entry_val_offset);
+            kernel_set(scale, 6, sizeof(state->block_offsets), &state->block_offsets);
+            kernel_set(scale, 7, sizeof(state->vals), &state->vals);
+            const cl_ulong first_row = (cl_ulong)state->scale_offset[pass];
+            const cl_ulong count_rows = (cl_ulong)diagonals;
+            kernel_set(scale, 8, sizeof(first_row), &first_row);
+            kernel_set(scale, 9, sizeof(count_rows), &count_rows);
+
+            const size_t global[2] = {round_up_to(diagonals, scale_local_x), round_up_to(tail, scale_local_y)};
+            const size_t local[2] = {scale_local_x, scale_local_y};
+            const cl_int status = clEnqueueNDRangeKernel(device->queue, scale, 2, NULL, global, local, 0, NULL, NULL);
+            if (status != CL_SUCCESS)
+            {
+                hybsol_opencl_note_cl_error(status, "Launching a pass's row scaling");
+                res = HYBSOL_ERROR_DEVICE;
+            }
         }
     }
 
     cl_int failed = none;
     const cl_int read_status =
         clEnqueueReadBuffer(device->queue, state->fail_j, CL_TRUE, 0, sizeof(failed), &failed, 0, NULL, NULL);
-    clReleaseKernel(kernel);
+    clReleaseKernel(eliminate);
+    clReleaseKernel(diagonal);
+    clReleaseKernel(scale);
     if (read_status != CL_SUCCESS)
     {
         hybsol_opencl_note_cl_error(read_status, "Reading the failure slot");
@@ -528,7 +697,9 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     }
     if (res == HYBSOL_SUCCESS && failed != none)
     {
-        dec->failing_block = dec->level_rows[(uint64_t)failed];
+        // The slot holds the smallest work item of the scaling-independent
+        // diagonal list that failed, which is the earliest such row.
+        dec->failing_block = state->diag_row[(uint64_t)failed];
         res = HYBSOL_ERROR_SINGULAR;
     }
 
@@ -836,7 +1007,19 @@ static void backend_destroy(void *const state_ptr)
     buffer_release(state->vec);
     buffer_release(state->scratch);
     buffer_release(state->fail_j);
+    buffer_release(state->dev_diag_offset);
+    buffer_release(state->dev_scale_offset);
+    buffer_release(state->dev_diag_row);
+    buffer_release(state->dev_scale_row);
+    buffer_release(state->dev_scale_tail);
 
+    free(state->diag_offset);
+    free(state->scale_offset);
+    free(state->diag_row);
+    free(state->scale_row);
+    free(state->scale_tail);
+    free(state->max_sources);
+    free(state->max_tail);
     free(state->transfer);
     hybsol_opencl_device_release(state->device);
     free(state);
