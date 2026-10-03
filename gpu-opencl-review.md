@@ -12,6 +12,8 @@ below is for you to read later; nothing here needs an answer to be usable.
 | `5959393` | the OpenCL backend: `hybsol::opencl`, kernels, device-resident payload, `test_gpu` |
 | `f0bd897` | `hybsol.opencl`: the Python plugin module and 17 tests |
 | `4578e56`, `59cace5` | docs; sanitizer note |
+| `af0575c`, `9eebafe` | passes queued instead of waited on; device order and uuid |
+| `3a21971` | the kernel redesign: work inside a block row |
 
 Use it as:
 
@@ -41,47 +43,49 @@ no `hybsol.opencl` at all — the import fails, nothing else changes.
 
 ## Findings you may want to act on
 
-1. **Performance at the target size: still a loss, and now I know why.**
-   Measured at your target -- single precision, ~100k dof, this machine's 12
-   CPU threads against the Quadro P2000 -- on a layered block system (the
-   shape a hybridized discretization has: weak couplings, a schedule with real
-   parallelism):
+1. **Performance: measured, diagnosed, redesigned.** The honest sequence:
 
-   | system | dof | CPU factorize | OpenCL factorize | CPU solve | OpenCL solve |
-   | --- | --- | --- | --- | --- | --- |
-   | 4x4 blocks, 24389 of them | 97,556 | 0.82 s | 2.5 s | 66 ms | 43 ms |
-   | 16x16 blocks, 6859 | 109,744 | -- | 22.9 s | -- | 111 ms |
-   | 32x32 blocks, 3375 | 108,000 | -- | 78.7 s | -- | 232 ms |
+   *Where the time goes* (97k dof, 4x4 blocks, single precision, compiled one
+   phase at a time): 1.2 s total, of which **0.74 s elimination steps, 0.32 s
+   diagonal row scaling**, and the rest diagonal LU plus launch overhead. Your
+   guess about the inversion was half right -- it is a quarter, and the
+   elimination is the bigger half.
 
-   Two things came out of this round, one fix and one diagnosis.
+   *Why larger blocks made it worse*: cost per operation grew about 900x from
+   4x4 to 32x32 blocks. A work item was a whole block row, so a bigger block
+   meant one work item grinding more dense work serially while the rest of the
+   device idled. The row was the wrong unit of work.
 
-   **The fix**: a pass is no longer waited on. The failure slot is cleared once
-   and read once, at the end, instead of a blocking round trip after every
-   pass, and passes are launched over a bounded work group instead of the
-   driver's choice (its maximum, 8192 here, which put a few hundred rows of a
-   pass on one compute unit). Factorization at 97k dof went from **7.9 s to
-   2.5 s** -- a third of what it was, and the read-back semantics are
-   unchanged: the same block is named.
+   *What changed*: a pass is now three launches over a two-dimensional grid
+   whose second dimension is a row's entries -- one work item per (block row,
+   source block) for the eliminations, one per row for the diagonal LU, one per
+   (block row, block above the diagonal) for the scaling. No atomics: each
+   source entry owns its destination. The arithmetic is untouched; the
+   accumulation types are the same transcription as before.
 
-   **The diagnosis**: larger blocks make it *worse*, which is the opposite of
-   "more arithmetic, more GPU". The reason is one work item per block row:
-   a bigger block means one work item grinds more of the dense work serially,
-   while the rest of the device has nothing else to do. At 4x4 blocks the GPU
-   is latency-bound but the CPU is not far behind (0.95 ms per pass on twelve
-   threads, against 3 ms per pass on the device) -- there simply is not enough
-   arithmetic in a 4x4 factorization to move.
+   | system | dof | before | after | gain |
+   | --- | --- | --- | --- | --- |
+   | 4x4 blocks, 24389 | 97,556 | 1.20 s | 1.05 s | 1.15x |
+   | 16x16 blocks, 6859 | 109,744 | 22.9 s | 9.2 s | 2.5x |
+   | 32x32 blocks, 3375 | 108,000 | 78.7 s | 11.3 s | **7.0x** |
 
-   So the next step, if there is one, is not more scheduling tricks: it is
-   giving the device parallelism *inside* a row -- one work item per
-   (row, block) pair instead of per row, with the subtractions combined
-   through a reduction or atomics, or a two-stage product-then-subtract. That
-   is a kernel redesign, not a tuning pass, and I have not done it.
+   The gain grows with the block size, which is the point: the small-block case
+   has little to split (one or two sources per row, 64 flops each), and there
+   the per-operation latency still dominates at about 1.5 us.
 
-   Back substitution, which you asked about, is on the device already and costs
-   **18-33 ms of the ~2.5 s** (measured separately: the solve is 43-79 ms of
-   which the back substitution is under half). There is nothing to gain by
-   moving it, and moving it to the CPU would mean copying the factors back.
-   Left as it is.
+   *What did not work*: interleaving the two pattern-metadata arrays
+   (`entry_col` and `entry_val_offset`) into one 16-byte record, to halve the
+   dependent loads on the critical path. Measured 1.066 s and 9.235 s against
+   1.048 s and 9.211 s -- nothing, inside the noise. Reverted: the arrays were
+   already cache-friendly, and two plain arrays are the simpler code.
+
+   *Where this leaves the target*: beating twelve CPU threads at 100k+ dof is
+   still not there for 4x4 blocks (CPU 0.82 s, device 1.05 s). For 32x32
+   blocks the device is in the same league as before the redesign, which is a
+   much better place to be than 7x behind. The remaining lever for small
+   blocks is not more parallelism inside a row -- there is none left to take --
+   but a different decomposition of the dense work (a proper blocked GEMM per
+   block rather than a per-entry product), which is a larger piece again.
 
 2. **Pre-existing UBSan findings**, unrelated to this work and present on `dev`
    too (verified in a clean worktree): `src/core/ordering.c:318-378` stores
