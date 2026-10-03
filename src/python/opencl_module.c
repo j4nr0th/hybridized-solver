@@ -2,13 +2,9 @@
  * @file src/python/opencl_module.c
  * The ``hybsol._mod_opencl`` extension: the Python face of the OpenCL backend.
  *
- * The module links its own copy of the core -- that is what makes a backend a
- * backend -- so the bindings' helpers reach it through the capsule
- * ``hybsol._mod`` publishes rather than by linking them. Everything this
- * module does with a :class:`hybsol.BlockSystem` therefore goes through that
- * table: validate, parse, and wrap the decomposition the core made. What is
- * left to do here is the raising, which the core module's copies cannot do for
- * us.
+ * It links its own copy of the core, so the bindings' helpers reach it through
+ * the capsule ``hybsol._mod`` publishes rather than by linking them. Raising,
+ * which that capsule does not cover, is what is left to do here.
  */
 
 #define PY_ARRAY_UNIQUE_SYMBOL _mod_opencl
@@ -18,23 +14,32 @@
 
 #include <hybsol/opencl.h>
 
-/**
- * What this module drives hybsol through.
- *
- * Read once from ``hybsol._mod`` at import time; the table itself is static
- * and outlives the module object that carries the capsule.
- */
+/** The table ``hybsol._mod`` publishes, read once on the first call that needs it. */
 static hybsol_python_api_t *g_api = NULL;
 
 /** The capsule ``hybsol._mod`` publishes the table in. */
 static const char *const BACKEND_API_CAPSULE = "hybsol._mod.backend_api";
 
 /**
+ * Reject more arguments than the spec names, which cpyutl asserts on instead
+ * of diagnosing. Returns 0, or -1 with a :exc:`TypeError` set.
+ */
+static int reject_extra_arguments(const char *const what, const Py_ssize_t nargs, PyObject *const kwnames,
+                                  const Py_ssize_t accepted)
+{
+    const Py_ssize_t given = nargs + (kwnames != NULL ? PyTuple_GET_SIZE(kwnames) : 0);
+    if (given <= accepted)
+    {
+        return 0;
+    }
+    PyErr_Format(PyExc_TypeError, "%s() takes at most %zd argument%s, but %zd were given.", what, accepted,
+                 accepted == 1 ? "" : "s", given);
+    return -1;
+}
+
+/**
  * Read the core module's backend API table, or leave an :exc:`ImportError`
- * saying why not.
- *
- * Returns 0 when the table is there -- already read, or read now -- and -1
- * with an exception set otherwise.
+ * saying why not. Returns 0 once the table is there.
  */
 static int backend_api(const char *const what)
 {
@@ -103,11 +108,7 @@ static PyTypeObject *core_type(const char *const name)
 /** Raise the ``hybsol`` exception named ``name`` with ``message``. */
 static PyObject *raise_hybsol(const char *const name, PyObject *const message);
 
-/**
- * Raise ``hybsol.DeviceError`` with the detail the runtime last gave, when it
- * gave any: a kernel build log is the difference between a usable message and
- * a bare code.
- */
+/** Raise ``hybsol.DeviceError``, with whatever detail the runtime last gave. */
 static PyObject *raise_device_error(const char *const what, const hybsol_result_t res)
 {
     const char *const detail = hybsol_opencl_last_error();
@@ -158,13 +159,9 @@ static PyObject *raise_hybsol(const char *const name, PyObject *const message)
 }
 
 /**
- * Raise whatever a result code means, the way the core bindings do.
- *
- * The plugin does not share the bindings' raising code -- it links its own
- * copy of the core, not of ``hybsol._mod`` -- so the codes that have an
- * exception of their own are mapped here instead of through the capsule. The
- * device codes say what the runtime last complained about, which is where a
- * kernel build failure becomes legible.
+ * Raise whatever a result code means; the device codes carry the runtime's own
+ * detail, which is where a kernel build failure becomes legible. Always
+ * returns ``NULL``.
  */
 static PyObject *raise_for_result(const hybsol_result_t res, const uint64_t failing_block)
 {
@@ -180,6 +177,9 @@ static PyObject *raise_for_result(const hybsol_result_t res, const uint64_t fail
     case HYBSOL_ERROR_DEVICE_CAPABILITY:
     case HYBSOL_ERROR_DEVICE:
         return raise_device_error("decompose", res);
+    // The one code that is about the machine's memory rather than the data.
+    case HYBSOL_ERROR_OUT_OF_MEMORY:
+        return PyErr_NoMemory();
     default:
         PyErr_Format(PyExc_ValueError, "decompose: %s", hybsol_result_str(res));
         return NULL;
@@ -221,26 +221,34 @@ PyDoc_STRVAR(opencl_device_info_docstring, "device_info(index: int) -> dict\n"
                                            "Returns\n"
                                            "-------\n"
                                            "dict\n"
-                                           "    Keys ``index``, ``name``, ``vendor``, ``kind`` (``\"gpu\"``,\n"
-                                           "    ``\"cpu\"``, ``\"accelerator\"`` or ``\"unknown\"``), ``double``\n"
-                                           "    (whether it can do double arithmetic, which every decomposition\n"
-                                           "    needs), ``memory`` and ``compute_units``.\n"
+                                           "    Keys ``index``, ``name``, ``vendor``, ``uuid``, ``kind``\n"
+                                           "    (``\"gpu\"``, ``\"cpu\"``, ``\"accelerator\"`` or ``\"unknown\"``),\n"
+                                           "    ``double`` (whether it can do double arithmetic, which every\n"
+                                           "    decomposition needs), ``memory`` and ``compute_units``.\n"
                                            "\n"
                                            "Raises\n"
                                            "------\n"
                                            "hybsol.DeviceError\n"
-                                           "    No device has that index.\n");
+                                           "    No device has that index.\n"
+                                           "TypeError\n"
+                                           "    ``index`` is not an integer, or was left out.\n"
+                                           "ValueError\n"
+                                           "    ``index`` is negative.\n");
 
 static PyObject *opencl_device_info(PyObject *const Py_UNUSED(self), PyObject *const *const args,
-                                    const Py_ssize_t nargs)
+                                    const Py_ssize_t nargs, PyObject *const kwnames)
 {
+    if (reject_extra_arguments("device_info", nargs, kwnames, 1) < 0)
+    {
+        return NULL;
+    }
     Py_ssize_t index = 0;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
-                {.type = CPYARG_TYPE_SSIZE, .p_val = &index},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &index, .kwname = "index"},
                 {},
             },
-            args, nargs, NULL) < 0)
+            args, nargs, kwnames) < 0)
     {
         return NULL;
     }
@@ -277,14 +285,13 @@ static PyObject *opencl_device_info(PyObject *const Py_UNUSED(self), PyObject *c
 PyDoc_STRVAR(opencl_decompose_docstring, "decompose(system: hybsol.BlockSystem, *, device: int = 0,\n"
                                          "           precision: hybsol.Precision | None = None,\n"
                                          "           n_threads: int = 0) -> hybsol.Decomposition\n"
+                                         "\n"
                                          "Factorize a system with its factors on an OpenCL device.\n"
                                          "\n"
-                                         "The symbolic walk and the assembly stay on the CPU; everything\n"
-                                         "that touches values -- the factorization, the solve, the replay --\n"
-                                         "runs as device kernels, and the factors never come back to the\n"
-                                         "host. The returned :class:`~hybsol.Decomposition` is used exactly\n"
-                                         "as any other, including :meth:`~hybsol.Decomposition.solve` and\n"
-                                         ":func:`hybsol.refined_solve`; only its ``device`` differs.\n"
+                                         "The symbolic walk and the assembly stay on the CPU; the\n"
+                                         "factorization, the solve and the replay run as device kernels,\n"
+                                         "and the factors never come back to the host. The result is used\n"
+                                         "exactly as any other decomposition; only its ``device`` differs.\n"
                                          "\n"
                                          "Parameters\n"
                                          "----------\n"
@@ -313,8 +320,17 @@ PyDoc_STRVAR(opencl_decompose_docstring, "decompose(system: hybsol.BlockSystem, 
                                          "    the device runtime failed.\n"
                                          "ValueError\n"
                                          "    The system does not satisfy the solver's structural\n"
-                                         "    assumptions; ``n_threads`` is negative; or ``precision`` is\n"
-                                         "    not a :class:`hybsol.Precision` member.\n"
+                                         "    assumptions; ``device`` or ``n_threads`` is negative; or\n"
+                                         "    ``precision`` is not a :class:`hybsol.Precision` member.\n"
+                                         "TypeError\n"
+                                         "    ``system`` is not a :class:`hybsol.BlockSystem`, or an\n"
+                                         "    argument is of the wrong type or shape.\n"
+                                         "RuntimeError\n"
+                                         "    ``system`` is a :class:`hybsol.BlockSystem` that was never\n"
+                                         "    initialized.\n"
+                                         "MemoryError\n"
+                                         "    The device could not hold the factors, or the host could not\n"
+                                         "    allocate the frame.\n"
                                          "hybsol.SingularSystemError\n"
                                          "    A diagonal block is singular, so the LU factorization hit a\n"
                                          "    zero pivot. The message names the block.\n");
@@ -322,6 +338,10 @@ PyDoc_STRVAR(opencl_decompose_docstring, "decompose(system: hybsol.BlockSystem, 
 static PyObject *opencl_decompose(PyObject *const Py_UNUSED(self), PyObject *const *const args, const Py_ssize_t nargs,
                                   PyObject *kwnames)
 {
+    if (reject_extra_arguments("decompose", nargs, kwnames, 4) < 0)
+    {
+        return NULL;
+    }
     if (backend_api("hybsol.opencl") < 0)
     {
         return NULL;
@@ -334,9 +354,13 @@ static PyObject *opencl_decompose(PyObject *const Py_UNUSED(self), PyObject *con
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
                 {.type = CPYARG_TYPE_PYTHON, .p_val = &py_system},
-                {.type = CPYARG_TYPE_SSIZE, .p_val = &device_index, .kwname = "device", .optional = 1},
-                {.type = CPYARG_TYPE_PYTHON, .p_val = &py_precision, .kwname = "precision", .optional = 1},
-                {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &device_index, .kwname = "device", .optional = 1, .kw_only = 1},
+                {.type = CPYARG_TYPE_PYTHON,
+                 .p_val = &py_precision,
+                 .kwname = "precision",
+                 .optional = 1,
+                 .kw_only = 1},
+                {.type = CPYARG_TYPE_SSIZE, .p_val = &n_threads, .kwname = "n_threads", .optional = 1, .kw_only = 1},
                 {},
             },
             args, nargs, kwnames) < 0)
@@ -365,9 +389,13 @@ static PyObject *opencl_decompose(PyObject *const Py_UNUSED(self), PyObject *con
         return NULL;
     }
 
-    // The object was just checked to be one: this module and the core share
-    // the header, and the header holds the one pointer both need.
+    // The object was just checked to be one, and both modules read the same header.
     block_system_object *const system = (block_system_object *)py_system;
+    if (system->system == NULL)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "decompose(): the BlockSystem was never initialized.");
+        return NULL;
+    }
 
     hybsol_precision_t precision;
     if (py_precision == Py_None)
@@ -441,7 +469,7 @@ static PyObject *opencl_decompose(PyObject *const Py_UNUSED(self), PyObject *con
 
 static PyMethodDef opencl_methods[] = {
     {"device_count", (void *)opencl_device_count, METH_NOARGS, opencl_device_count_docstring},
-    {"device_info", (void *)opencl_device_info, METH_FASTCALL, opencl_device_info_docstring},
+    {"device_info", (void *)opencl_device_info, METH_FASTCALL | METH_KEYWORDS, opencl_device_info_docstring},
     {"decompose", (void *)opencl_decompose, METH_FASTCALL | METH_KEYWORDS, opencl_decompose_docstring},
     {NULL, NULL, 0, NULL},
 };

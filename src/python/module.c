@@ -102,11 +102,10 @@ int hybsol_check_n_threads(const Py_ssize_t n_threads)
 }
 
 /*
- * Teardown. ``exc_singular`` is *borrowed* by the state: PyModule_AddObject
- * stole the reference the exception was created with, so the module dict owns
- * it and releases it. Dropping one here would free the type while the dict
- * still points at it, which is a use-after-free at shutdown rather than
- * anything visible during a run. Clearing the borrow is all that is left.
+ * Both exceptions are *borrowed* by the state: PyModule_AddObject stole the
+ * reference they were created with, so the module dict owns them and releases
+ * them. Dropping one here would free the type the dict still points at, which
+ * is a use-after-free at shutdown. Clearing the borrows is all that is left.
  */
 static void free_module_state(void *const module)
 {

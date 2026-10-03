@@ -1,37 +1,15 @@
 /**
  * @file hybsol/opencl.h
- * The OpenCL backend: enumerate devices, and factorize on one.
+ * Enumerate the OpenCL runtime's devices and factorize on one. The backend is
+ * its own library and its own Python module, so a program that never asks for
+ * a device never touches OpenCL.
  *
- * This is a *backend*, not part of the core. It ships as its own library
- * (``hybsol::opencl``) and its own Python module (``import hybsol.opencl``),
- * so a program that never asks for a device never touches OpenCL -- neither at
- * build time nor at run time. Building without it simply leaves this header
- * out of the picture.
- *
- * A decomposition made here behaves like any other: it is queried, solved and
- * destroyed through ``hybsol/decomposition.h``. What differs is where the
- * factors live -- on the device, and never on the host -- and that
- * :c:func:`hybsol_decomposition_factorize_with_workspace`, whose scratch is a
- * host buffer, has nothing to offer it.
- *
- * The symbolic walk still runs on the CPU: a caller has one
- * :c:type:`hybsol_elimination_t` from :c:func:`hybsol_elimination_create`, and
- * :c:func:`hybsol_opencl_decomposition_create_on_device` turns it into a
- * decomposition on the device with its values uploaded. From there the
- * factorization, the solve and the replay are ordinary
- * :c:func:`hybsol_decomposition_factorize`,
- * :c:func:`hybsol_decomposition_solve` and the rest: a device decomposition
- * answers the same queries as any other, and
- * :c:func:`hybsol_decomposition_destroy` releases it.
- *
- * The sequence is therefore: acquire a device, walk the graph, create the
- * decomposition on the device, factorize it, and release the device -- the
- * decomposition keeps its own reference until it is destroyed.
- *
- * Every device the OpenCL runtime offers is listed, GPUs first so that a
- * caller reaching for ``0`` gets a GPU wherever there is one. Vectors stay
- * double throughout, as in the CPU path; a device that cannot do double
- * arithmetic cannot take a decomposition at all.
+ * The symbolic walk still runs on the CPU: a caller builds a
+ * :c:type:`hybsol_elimination_t` and hands it to
+ * :c:func:`hybsol_opencl_decomposition_create_on_device`, after which the
+ * decomposition is queried, factorized and destroyed as any other. Vectors
+ * stay double throughout, so a device that cannot do double arithmetic cannot
+ * take a decomposition at all.
  */
 
 #ifndef HYBSOL_OPENCL_H
@@ -57,30 +35,16 @@ typedef enum hybsol_opencl_device_kind
 /**
  * What the OpenCL runtime reports about one device.
  *
- * Read it with :c:func:`hybsol_opencl_device_info`; the two strings are
- * NUL-terminated and always filled.
+ * Read it with :c:func:`hybsol_opencl_device_info`; the strings are NUL-terminated.
  */
-/*
- * Tagged apart from the function of the same name on purpose: a C domain that
- * registers a struct under its tag would see two ``hybsol_opencl_device_info``
- * declarations, the type and the accessor, and complain about the second.
- */
+/* Tagged apart from the accessor of the same name, which a C domain would otherwise register twice. */
 typedef struct hybsol_opencl_device_details
 {
     /** The device's own name, such as the GPU's model. */
     char name[128];
     /** Who made it. */
     char vendor[128];
-    /**
-     * The runtime's own identifier for the device, as a string: the same bytes
-     * ``cl_device_uuid`` where the runtime has one, empty where it does not.
-     *
-     * A caller who wants a device to survive a reinstall -- or a runtime that
-     * enumerates in a different order -- matches on this rather than on the
-     * index. The index is sorted to be stable (GPUs first, then by name), but
-     * only an identifier the driver assigns to the hardware is stable
-     * everywhere.
-     */
+    /** The runtime's identifier for the device, or empty; match on this, not on the index. */
     char uuid[40];
     /** Which kind of device it is. */
     hybsol_opencl_device_kind_t kind;
@@ -93,20 +57,19 @@ typedef struct hybsol_opencl_device_details
 } hybsol_opencl_device_info_t;
 
 /**
- * How many devices the OpenCL runtime offers.
+ * How many devices the OpenCL runtime offers, GPUs first, so index ``0`` is a
+ * GPU wherever the machine has one.
  *
- * Enumerated once per process and cached. Returns ``0`` when the OpenCL
- * loader is missing, no platform offers a device, or the backend was built
- * without OpenCL -- which makes this the cheap way to ask whether a device
- * path is available at all.
+ * Returns ``0`` when no platform offers a device, which is the cheap way to ask
+ * whether a device path is available at all.
  */
 uint64_t hybsol_opencl_device_count(void);
 
 /**
  * Get what the runtime reports about one device.
  *
- * The enumeration is GPUs first, so device ``0`` is a GPU whenever the machine
- * has one; :c:func:`hybsol_opencl_device_count` is its upper bound.
+ * Preconditions: ``out`` non-``NULL``; ``index`` below
+ * :c:func:`hybsol_opencl_device_count`.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_NO_DEVICE` for an index no device has.
  */
@@ -114,25 +77,21 @@ hybsol_result_t hybsol_opencl_device_info(uint64_t index, hybsol_opencl_device_i
 
 /**
  * An acquired device: a context, a command queue and the compiled kernels,
- * shared by every decomposition on it.
- *
- * Opaque on purpose -- it holds OpenCL handles, which no caller should see.
- * Handles are reference counted: acquiring the same index twice gives the
- * same device, and it goes away with the last release.
+ * shared by every decomposition on it and reference counted.
  */
 typedef struct hybsol_opencl_device hybsol_opencl_device_t;
 
 /**
- * Acquire the device at ``index``, ready to take decompositions.
+ * Acquire the device at ``index``. The first acquisition of an index builds its
+ * context and queue, later ones hand out the same device.
  *
- * The first acquisition of an index builds the context, the in-order queue
- * and the kernels; later ones hand out the same device with its reference
- * count raised.
+ * Preconditions: ``out`` non-``NULL``.
  *
- * Returns :c:enumerator:`HYBSOL_ERROR_NO_DEVICE` for an index no device has or
- * a context the runtime refused, and :c:enumerator:`HYBSOL_ERROR_DEVICE` when
- * the kernels did not build -- :c:func:`hybsol_opencl_last_error` then says
- * what the compiler complained about. ``NULL`` does nothing.
+ * Returns :c:enumerator:`HYBSOL_ERROR_NO_DEVICE` for an index no device has,
+ * :c:enumerator:`HYBSOL_ERROR_DEVICE` when the runtime refuses the context or
+ * the queue, or :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY`. The kernels are
+ * built on first use, so a build failure surfaces from the factorization that
+ * wanted them, not from here.
  */
 hybsol_result_t hybsol_opencl_device_acquire(uint64_t index, hybsol_opencl_device_t **out);
 
@@ -143,35 +102,26 @@ hybsol_result_t hybsol_opencl_device_acquire(uint64_t index, hybsol_opencl_devic
 void hybsol_opencl_device_release(hybsol_opencl_device_t *device);
 
 /**
- * The last backend failure worth more than its result code -- a kernel build
- * log, typically.
- *
- * Returns a NUL-terminated string owned by the backend, or ``""`` when the
- * last call failed for a reason that has nothing to say. Useful right after a
- * :c:enumerator:`HYBSOL_ERROR_DEVICE`.
+ * The last backend failure that said more than its result code — a kernel build
+ * log, typically — or ``""`` when there has been none. Owned by the backend.
  */
 const char *hybsol_opencl_last_error(void);
 
 /**
- * Copy the system's blocks into a decomposition whose factors live on a
- * device, for factors in ``precision``.
+ * Copy the system's blocks into a decomposition whose factors live on ``device``,
+ * stored in ``precision``.
  *
- * The block sizes, the pattern and the schedule stay in host memory -- they
- * are what the queries, the operation list and the host-side pass walk read --
- * but the factors themselves are uploaded and never come back. The
- * decomposition is not factorized yet; run
- * :c:func:`hybsol_decomposition_factorize` on it as usual, which hands the work
- * to the device. ``n_threads`` is then meaningless, and ``precision`` need not
- * be the system's own.
+ * The schedule stays in host memory and the factors never come back. The
+ * decomposition holds its own reference to ``device``, so the caller's may be
+ * released once this returns.
  *
  * Preconditions: ``sys``, ``graph``, ``device`` and ``out`` non-``NULL``;
  * ``graph`` asserted to have been built from ``sys``.
  *
- * Returns :c:enumerator:`HYBSOL_ERROR_NO_DEVICE` for a null or foreign device,
- * :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY` when the device cannot do
- * double arithmetic, :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` when the
- * device could not hold the factors, and otherwise whatever the upload or the
- * walk reported. ``*out`` is ``NULL`` on failure.
+ * Returns :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY` when the device cannot
+ * do double arithmetic, :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` or
+ * :c:enumerator:`HYBSOL_ERROR_DEVICE` when a buffer cannot be allocated or
+ * uploaded, leaving ``*out`` ``NULL`` either way.
  */
 hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system_t *sys,
                                                              const hybsol_elimination_t *graph,

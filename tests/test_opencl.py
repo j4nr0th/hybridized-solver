@@ -1,11 +1,4 @@
-"""Tests of the OpenCL backend: :mod:`hybsol.opencl`.
-
-Every case here needs a device, and is skipped where there is none -- the
-backend missing from the installation, no OpenCL runtime, or no device that can
-do double arithmetic. What is *not* skipped is the behaviour around a missing
-device: asking for one that is not there must be an error, not a silent
-fallback to the CPU.
-"""
+"""Tests of the OpenCL backend: :mod:`hybsol.opencl`."""
 
 from __future__ import annotations
 
@@ -26,11 +19,7 @@ requires_device = pytest.mark.skipif(
 
 
 def reference_matrix(sizes: tuple[int, ...], seed: int = 11) -> np.ndarray:
-    """Build a symmetric, diagonally dominant dense matrix of the given blocks.
-
-    The same numbers every test here factorizes, so a failure is comparable
-    across them.
-    """
+    """Build a symmetric, diagonally dominant dense matrix of the given blocks."""
     rng = np.random.default_rng(seed)
     n = sum(sizes)
     matrix = rng.standard_normal((n, n))
@@ -187,7 +176,7 @@ def test_refined_solve_works_on_a_device_decomposition() -> None:
 
 @requires_device
 def test_a_singular_diagonal_is_reported_the_same_way() -> None:
-    """A device factorization names the block the CPU names."""
+    """A device factorization names the singular block it failed on."""
     system = BlockSystem(2)
     system.add_block(0, 0, [[1.0, 2.0], [2.0, 4.0]])  # Rank one: no second pivot.
 

@@ -3,27 +3,12 @@
  * A decomposition whose factors live in device memory.
  *
  * The schedule -- block sizes, the passes, the pattern -- stays in the host
- * frame the core laid out, because the host walks it pass by pass and the
- * queries read it. What does not stay is the factors: they are uploaded once,
- * in a flat layout the kernels index directly, and never come back.
- *
- * That flat layout replaces the host frame's pointer-chasing rows and entries:
- *
- *   row_entry_offset[n + 1]      prefix into the two entry arrays
- *   entry_col[n_columns]         column of each entry, ascending within a row
- *   entry_val_offset[n_columns]  element offset of its block in ``vals``
- *   vals[elements]               the blocks themselves, tightly packed
- *
- * plus the schedule itself (``block_offsets``, ``level_offset``,
- * ``level_rows``, ``level_k``, ``row_n_elim``, ``row_level``), a double
- * ``vec``, one scratch block per block row, and the four-byte slot a pass
- * reports a failed diagonal in.
- *
- * A pass is one kernel launch over its rows; the host reads the failure slot
- * back after each pass, exactly where the CPU settles its per-row results. The
- * factorization is therefore as sequential as the CPU one -- ``n_levels``
- * launches -- and as parallel within one: every row of a pass writes only its
- * own blocks.
+ * frame the core laid out, because the host walks it and the queries read it.
+ * The factors do not: they are uploaded once, in a flat layout that turns the
+ * frame's rows and entries into the prefix arrays ``row_entry_offset``,
+ * ``entry_col`` and ``entry_val_offset``, plus a tightly packed ``vals``, and
+ * they never come back. A pass is one launch, with its four-byte failure slot
+ * read back afterwards, so the factorization is as sequential as the CPU one.
  */
 
 #include "opencl_internal.h"
@@ -41,12 +26,7 @@
 #define HYBSOL_K64(name) HYBSOL_STRINGIFY(name) "_f64"
 #define KERNEL_NAME(precision, base) ((precision) == HYBSOL_PRECISION_SINGLE ? HYBSOL_K32(base) : HYBSOL_K64(base))
 
-/**
- * Everything one device decomposition owns beyond the core's frame.
- *
- * All the buffers are released together by the backend's ``destroy``; the
- * device handle is one reference, released with them.
- */
+/** Everything one device decomposition owns beyond the core's frame; ``destroy`` releases all of it. */
 typedef struct
 {
     /** The device this lives on; one reference held for the payload's life. */
@@ -69,10 +49,7 @@ typedef struct
     cl_mem vals;
     /** The solution vector, double whatever the factors are. */
     cl_mem vec;
-    /**
-     * Scratch for one pass's elimination products: one block per work item,
-     * that is one per (block row, source block) of the pass.
-     */
+    /** One block per elimination work item of a pass, indexed by ``(row, source)``. */
     cl_mem scratch;
     /** The per-pass work lists, on the device and on the host that sizes launches. */
     cl_mem dev_diag_offset;
@@ -102,12 +79,7 @@ static size_t scalar_bytes(const hybsol_precision_t precision)
     return precision == HYBSOL_PRECISION_SINGLE ? sizeof(float) : sizeof(double);
 }
 
-/**
- * A device buffer, or ``NULL`` when there is nothing to put in it.
- *
- * An empty pattern has zero-length arrays all over; OpenCL has no zero-sized
- * buffer, and a kernel that would index them is never launched.
- */
+/** A device buffer, or ``NULL`` for an empty array: OpenCL has no zero-sized buffer. */
 static cl_mem buffer_create(hybsol_opencl_device_t *const device, const size_t bytes, const cl_mem_flags flags)
 {
     if (bytes == 0)
@@ -202,10 +174,7 @@ static const hybsol_backend_t OPENCL_BACKEND = {
     .destroy = backend_destroy,
 };
 
-/**
- * Copy ``count`` elements of the system's storage into ``dst`` at the factors'
- * precision, converting when the two differ.
- */
+/** Copy ``count`` elements of ``src`` into ``dst`` at precision ``to``, converting when the two differ. */
 static void convert_into(unsigned char *const dst, const void *const src, const size_t count,
                          const hybsol_precision_t to, const hybsol_precision_t from)
 {
@@ -233,11 +202,7 @@ static void convert_into(unsigned char *const dst, const void *const src, const 
     }
 }
 
-/**
- * Round a grid dimension up to a whole number of work groups, so a device that
- * does not support non-uniform groups accepts the launch. Zero stays zero: that
- * is the driver choosing.
- */
+/** Round a grid dimension up to whole work groups, which a device without non-uniform groups demands. */
 static size_t round_up_to(const size_t count, const size_t local)
 {
     if (local == 0 || count == 0)
@@ -270,8 +235,7 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
 
-    // Vectors are double in every decomposition, so a device that cannot do
-    // double arithmetic cannot take one at all.
+    // Vectors are double everywhere, so a device that cannot do double takes no decomposition at all.
     if (!device->supports_double)
     {
         hybsol_opencl_set_error("Device %llu cannot do double arithmetic, which every decomposition needs.",
@@ -330,6 +294,18 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     state->entry_val_offset = buffer_create(device, bytes_cols, ro);
     state->fail_j = buffer_create(device, sizeof(cl_int), rw);
 
+    // Every one of these has to be there: a kernel reading a buffer that never
+    // got one reads whatever the driver hands back.
+    if ((n > 0 && (state->block_offsets == NULL || state->row_entry_offset == NULL || state->row_n_elim == NULL ||
+                   state->row_level == NULL)) ||
+        (n_levels > 0 && (state->level_offset == NULL || state->level_rows == NULL || state->level_k == NULL)) ||
+        (n_columns > 0 && (state->entry_col == NULL || state->entry_val_offset == NULL)) || state->fail_j == NULL)
+    {
+        hybsol_opencl_set_error("Out of device memory for the decomposition's buffers.");
+        hybsol_decomposition_destroy(dec);
+        return HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+
     const uint64_t total_size = dec->block_offsets[n];
     state->vec = buffer_create(device, (size_t)total_size * sizeof(double), rw);
 
@@ -345,13 +321,7 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
 
     hybsol_result_t res = HYBSOL_SUCCESS;
 
-    /*
-     * The schedule, read once, tells the launch loop everything it needs: the
-     * block rows whose diagonal each pass factors, how many blocks stand above
-     * each of those diagonals, and how wide the widest source list of a pass is.
-     * Every row's diagonal is factored exactly once, so the two row lists hold
-     * one entry per block row between them.
-     */
+    // One read of the schedule sizes every launch: per pass, the rows it factors, their tails, its widest source list.
     state->diag_offset = (uint64_t *)calloc((size_t)n_levels + 1, sizeof(uint64_t));
     state->scale_offset = (uint64_t *)calloc((size_t)n_levels + 1, sizeof(uint64_t));
     state->diag_row = (uint64_t *)calloc(n, sizeof(uint64_t));
@@ -380,10 +350,7 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
             const uint64_t step = dec->level_k[j];
             const uint64_t count = graph->row_offset[row + 1] - graph->row_offset[row];
 
-            // An elimination: how many source blocks this step walks. Note
-            // that a row's *last* pass can carry an elimination too -- the CPU
-            // factors that diagonal right after, and so do we, in launch order
-            // -- so this is counted whatever the pass.
+            // An elimination's source blocks, counted on a row's last pass too, which can carry one as well.
             if (step < dec->row_n_elim[row])
             {
                 const uint64_t source_row = graph->cols[dec->row_entry_offset[row] + step];
@@ -465,8 +432,7 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     if (res == HYBSOL_SUCCESS)
         res = buffer_write(device, state->entry_col, graph->cols, bytes_cols);
 
-    // The blocks: the system's values, converted to the factors' precision and
-    // packed in the graph's order, zeros where the pattern has fill-in.
+    // The blocks, in the graph's order, converted to the factors' precision and zero where it has fill-in.
     size_t total_elements = 0;
     for (uint64_t row = 0; row < n; ++row)
     {
@@ -540,13 +506,13 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
         return res;
     }
 
-    // Keep a reference for as long as the payload lives: the caller's own
-    // release may come first.
+    // A reference for the payload's life: the caller's own release may come first.
     device->refs++;
     *out = dec;
     return HYBSOL_SUCCESS;
 }
 
+/** One launch per pass: the eliminations, the diagonals, then the blocks above them. */
 static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n_threads)
 {
     HYBSOL_MARK_USED(n_threads);
@@ -566,13 +532,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
         return HYBSOL_ERROR_DEVICE;
     }
 
-    /*
-     * Every launch is over a bounded work group rather than the driver's own
-     * choice, which is the kernel's maximum -- 8192 on a consumer card, which
-     * would put a whole pass on one compute unit. Global sizes are rounded up
-     * to whole groups (a device without non-uniform group support refuses the
-     * launch otherwise) and the kernels drop the padding themselves.
-     */
+    // Bounded work groups rather than the kernel's maximum; the grids round up to whole ones.
     size_t local_x = 0;
     size_t local_y = 0;
     hybsol_opencl_work_group_size_2d(device, eliminate, &local_x, &local_y);
@@ -656,8 +616,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
             }
         }
 
-        // And the blocks above them, one work item each. It reads the diagonal
-        // the launch before it just factorized: the queue is in order.
+        // The blocks above them, reading the diagonals the launch before it wrote: the queue is in order.
         if (res == HYBSOL_SUCCESS && diagonals > 0 && tail > 0)
         {
             kernel_set(scale, 0, sizeof(state->dev_scale_row), &state->dev_scale_row);
@@ -697,8 +656,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     }
     if (res == HYBSOL_SUCCESS && failed != none)
     {
-        // The slot holds the smallest work item of the scaling-independent
-        // diagonal list that failed, which is the earliest such row.
+        // The slot holds the smallest failing work item, hence the earliest such row.
         dec->failing_block = state->diag_row[(uint64_t)failed];
         res = HYBSOL_ERROR_SINGULAR;
     }
@@ -710,10 +668,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     return res;
 }
 
-/**
- * Solve: the vector up, one kernel per pass of forward substitution, the
- * back substitution in one work item, and the vector back down.
- */
+/** One forward-substitution launch per pass, then the back substitution in one work item. */
 static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, const uint64_t n_threads)
 {
     HYBSOL_MARK_USED(n_threads);
@@ -828,10 +783,7 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
     return res;
 }
 
-/**
- * Replay a recorded operation list on the device: one work item walking the
- * list, which is uploaded along with the vector.
- */
+/** Replay a recorded operation list in one work item, uploaded alongside the vector. */
 static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops, const hybsol_operation_t *const ops,
                                      double *const vec)
 {
@@ -845,9 +797,7 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
         return;
     }
 
-    // The operations are staged into their own buffers for the replay: a
-    // replay is a host-driven list, not a hot path, so they are made and
-    // released per call rather than kept with the payload.
+    // Staged per call: a replay is a host-driven list, not a hot path.
     uint32_t *const types = (uint32_t *)malloc((size_t)n_ops * sizeof(uint32_t));
     uint64_t *const rows = (uint64_t *)malloc((size_t)n_ops * sizeof(uint64_t));
     uint64_t *const cols = (uint64_t *)malloc((size_t)n_ops * sizeof(uint64_t));
@@ -989,10 +939,7 @@ static uint64_t backend_device(const void *const state_ptr)
 static void backend_destroy(void *const state_ptr)
 {
     opencl_state_t *const state = (opencl_state_t *)state_ptr;
-    if (state == NULL)
-    {
-        return;
-    }
+    CUTL_ASSERT(state != NULL, "The backend state must not be NULL; the core only destroys a created decomposition.");
 
     buffer_release(state->block_offsets);
     buffer_release(state->level_offset);

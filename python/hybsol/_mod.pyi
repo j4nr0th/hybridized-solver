@@ -740,7 +740,7 @@ class Decomposition:
         Decompositions from :meth:`BlockSystem.decompose` keep their factors
         in host memory and report None. A backend module -- ``hybsol.opencl``,
         say -- produces decompositions whose factors stay on the device and
-        report its index, out of the range its own ``devices()`` lists.
+        report the index its own ``devices()`` lists them under.
         """
         ...
 

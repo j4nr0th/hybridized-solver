@@ -582,12 +582,12 @@ hybsol_result_t hybsol_decomposition_factorize_with_workspace(hybsol_decompositi
 
 hybsol_result_t hybsol_decomposition_factorize(hybsol_decomposition_t *const dec, const uint64_t n_threads)
 {
-    // A backend has its own scratch and its own scheduler; the caller's thread
-    // count and workspace are the CPU's business.
+    CUTL_ASSERT(dec != NULL, "The decomposition must not be NULL.");
+
+    // A backend has its own scratch and its own scheduler; the thread count
+    // and the caller's workspace are the CPU's business.
     if (dec->backend != NULL)
         return dec->backend->factorize(dec->backend_state, n_threads);
-
-    CUTL_ASSERT(dec != NULL, "The decomposition must not be NULL.");
 
     const uint64_t threads = (uint64_t)hybsol_resolve_threads(n_threads);
     const size_t bytes = workspace_size(dec->n, dec->block_offsets, hybsol_scalar_size(dec->precision), threads);

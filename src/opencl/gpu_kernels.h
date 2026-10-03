@@ -3,18 +3,12 @@
  * The OpenCL C source of the decomposition's kernels, as a string the device
  * module compiles twice: once per factor precision.
  *
- * This is a transcription of ``src/core/matrix.inc`` and
- * ``src/core/decomposition_numeric.inc`` onto flat arrays. The arithmetic is
- * deliberately identical -- same loop order, same accumulation types, no
- * pivoting, vectors always double -- so a device factorization agrees with the
- * CPU one to rounding rather than to a different algorithm's rounding. What
- * changes is the addressing: no pointers on a device, so the row and entry
- * structures of a host frame become the prefix arrays every kernel indexes.
- *
- * The two variants differ only in ``scalar``, the type factors are stored in:
- * the single variant accumulates its products in ``float`` exactly as the
- * ``HYBSOL_ACC`` of the CPU's single instantiation does, while the vectors stay
- * double because that is what the solve protocol hands around.
+ * A transcription of ``src/core/matrix.inc`` and
+ * ``src/core/decomposition_numeric.inc`` onto flat arrays: the same loop order,
+ * the same accumulation types, no pivoting, vectors always double. Only
+ * ``scalar`` differs between the two variants, the type the factors are stored
+ * in -- the single one accumulates its products in ``float`` exactly as the
+ * ``HYBSOL_ACC`` of the CPU's single instantiation does.
  */
 
 #ifndef HYBSOL_OPENCL_GPU_KERNELS_H
@@ -95,12 +89,11 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "    return 0;\n"
     "}\n"
     "\n"
-    "/* Solve m @ x = b in place on b, one column at a time: the unit\n"
-    "   diagonal of L, then both halves of U. Row scaling solves a whole\n"
-    "   block, so the number of columns is part of the contract. */\n"
+    "/* Solve m @ x = b in place on b, a column at a time: the unit diagonal of L, then both halves of U. */\n"
     "static void lu_solve(__global const scalar *m, __global scalar *b, const ulong n,\n"
     "                  const ulong cols)\n"
     "{\n"
+    "        /* Row scaling solves whole blocks, so the column count is part of the contract. */\n"
     "    for (ulong c = 0; c < cols; ++c)\n"
     "    {\n"
     "        /* Row-major: column c is every cols-th element. */\n"
@@ -140,8 +133,7 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "    }\n"
     "}\n"
     "\n"
-    "/* Solve m @ x = b with m in factor storage and b, out double: the\n"
-    "   narrowed path's accumulation, which is double for both variants. */\n"
+    "/* Solve m @ x = b with m in factor storage, b and out double: accumulates double even for single factors. */\n"
     "static void vec_lu_solve(__global const scalar *m, __global double *b, const ulong n)\n"
     "{\n"
     "    for (ulong i = 0; i < n; ++i)\n"
@@ -186,8 +178,7 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "    const ulong size_src = block_size(block_offsets, col_src);\n"
     "    __global scalar *const mat = vals + entry_val_offset[entry_k];\n"
     "\n"
-    "    /* Past the multiplier in the target, past the diagonal in the source: both\n"
-    "       are exactly the columns greater than the source's. */\n"
+    "    /* Past the multiplier in the target and the diagonal in the source alike. */\n"
     "    const ulong at_src = row_entry_offset[col_src];\n"
     "    const ulong count_src = row_entry_offset[col_src + 1] - at_src;\n"
     "    ulong a = k + 1;\n"
@@ -201,8 +192,7 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "        const ulong n_cols = block_size(block_offsets, col);\n"
     "        mat_multiply(mat, vals + entry_val_offset[entry_src], scratch, size_tgt, size_src, n_cols);\n"
     "\n"
-    "        /* Always a subtraction, never an assignment: a column the target gained\n"
-    "           only at this step sits at zero. */\n"
+    "        /* A subtraction, never an assignment: a column gained only at this step sits at zero. */\n"
     "        mat_subtract(vals + entry_val_offset[at_tgt + a], scratch, size_tgt, n_cols);\n"
     "        ++a;\n"
     "    }\n"
@@ -230,23 +220,9 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "    }\n"
     "}\n"
     "\n"
-    "/* One pass of the schedule: each work item is one block row of the pass. */\n"
-    "/* One pass of the elimination: a work item per (block row, source block).\n"
-    "\n"
-    "   The row, not the entry, is the unit of work in the CPU factorization:\n"
-    "   a work item there walks a row's sources serially, one small dense\n"
-    "   product each. On a device that is exactly the wrong shape -- with\n"
-    "   blocks of any size the row runs to tens of microseconds of dependent\n"
-    "   loads while every other lane waits. Here the second dimension of the\n"
-    "   grid is the row's sources, so a row of n sources is n work items, and a\n"
-    "   block row of any size is split across them.\n"
-    "\n"
-    "   Each source entry has its own destination entry -- the walk that fixed\n"
-    "   the pattern paired them one to one -- so no two work items write the\n"
-    "   same block and nothing needs an atomic.\n"
-    "\n"
-    "   Occurrences that factor a diagonal rather than eliminate are skipped\n"
-    "   here; hybsol_diagonal_pass does those. */\n"
+    "/* One pass's eliminations: a work item per (block row, source block) of the grid's second dimension. */\n"
+    "/* Occurrences that factor a diagonal instead are left to hybsol_diagonal_pass. */\n"
+    "/* Each source entry has its own destination, so no two work items write the same block. */\n"
     "__kernel void HYBSOL_NAME(eliminate_pass)(\n"
     "__global const ulong *level_rows, __global const ulong *level_k,\n"
     "__global const ulong *row_n_elim, __global const ulong *row_entry_offset,\n"
@@ -277,8 +253,7 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "    const ulong entry_src = at_src + b;\n"
     "    const ulong col = entry_col[entry_src];\n"
     "\n"
-    "    /* This source entry's destination: the walk the row kernel used to do\n"
-    "       in one go, now once per work item. Destinations ascend with m. */\n"
+    "    /* This source entry's destination: the CPU row kernel's walk, whose results ascend with m. */\n"
     "    ulong dest = step + 1;\n"
     "    for (ulong done = 0; done < m; ++done)\n"
     "    {\n"
@@ -295,15 +270,13 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "    const ulong n_cols = block_size(block_offsets, col);\n"
     "    __global scalar *const out = scratch + (which * sources_stride + m) * scratch_stride;\n"
     "\n"
-    "    /* Always a subtraction, never an assignment: a column the target gained\n"
-    "       only at this step sits at zero. */\n"
+    "    /* A subtraction, never an assignment: a column gained only at this step sits at zero. */\n"
     "    mat_multiply(vals + entry_val_offset[at_step], vals + entry_val_offset[entry_src], out,\n"
     "                size_tgt, size_src, n_cols);\n"
     "    mat_subtract(vals + entry_val_offset[at_tgt + dest], out, size_tgt, n_cols);\n"
     "}\n"
     "\n"
-    "/* One work item per block row whose diagonal this pass factors. The LU\n"
-    "   itself is too small to split and stays one item. */\n"
+    "/* One work item per block row whose diagonal this pass factors; the LU stays whole. */\n"
     "__kernel void HYBSOL_NAME(diagonal_pass)(__global const ulong *diag_rows,\n"
     "__global const ulong *row_n_elim,\n"
     "__global const ulong *row_entry_offset,\n"
@@ -323,9 +296,7 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "        atomic_min(fail_j, (int)(get_global_id(0)));\n"
     "}\n"
     "\n"
-    "/* Scale every block above a diagonal by the inverse of that diagonal's\n"
-    "   factors: one work item per (block row, block), where before a row's\n"
-    "   whole tail was one item's serial work. */\n"
+    "/* Scale every block above a diagonal by that diagonal's inverse: one work item per (block row, block). */\n"
     "__kernel void HYBSOL_NAME(scale_pass)(__global const ulong *scale_rows,\n"
     "__global const ulong *scale_tail,\n"
     "__global const ulong *row_n_elim,\n"
@@ -365,8 +336,7 @@ static const char HYBSOL_GPU_KERNEL_SOURCE[] =
     "                                            const ulong pass_rows)\n"
     "{\n"
     "    const ulong j = from + get_global_id(0);\n"
-    "    /* Padded to whole work groups; the padding does nothing. The indices\n"
-    "       are absolute and pass_rows a count, hence the offset. */\n"
+    "    /* The grid is padded to whole work groups; from is absolute and pass_rows a count. */\n"
     "    if (j >= from + pass_rows)\n"
     "        return;\n"
     "    const ulong row = level_rows[j];\n"

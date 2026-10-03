@@ -1,14 +1,13 @@
 """The OpenCL backend: factorize a system with its factors on a device.
 
-Importing this is the whole opt-in. Nothing here runs until :func:`devices`
-or :func:`decompose` is called, and ``import hybsol`` alone never touches
-OpenCL -- not the runtime, not the kernels.
+Importing this is the whole opt-in. Nothing here runs until :func:`devices` or
+:func:`decompose` is called, and ``import hybsol`` alone never touches OpenCL --
+not the runtime, not the kernels.
 
 The backend is a build-time thing too: an installation compiled without it has
-no ``hybsol.opencl`` at all, and this import raises :exc:`ImportError`. An
-installation with it but no device imports fine and says so -- :func:`devices`
-returns an empty list and :func:`decompose` raises
-:exc:`~hybsol.DeviceError`.
+no ``hybsol.opencl`` at all, and this import raises :exc:`ImportError`. One with
+it but no device imports fine and says so -- :func:`devices` returns an empty
+list and :func:`decompose` raises :exc:`~hybsol.DeviceError`.
 """
 
 from __future__ import annotations
@@ -18,39 +17,51 @@ from typing import TYPE_CHECKING
 from hybsol import DeviceError
 from hybsol._mod_opencl import decompose as _decompose
 from hybsol._mod_opencl import device_count as _device_count
-from hybsol._mod_opencl import device_info as device_info
-
-__all__ = ["DeviceError", "decompose", "device_info", "devices"]
+from hybsol._mod_opencl import device_info as _device_info
 
 if TYPE_CHECKING:
     from hybsol import BlockSystem, Decomposition, Precision
 
-__all__ = ["DeviceError", "decompose", "devices"]
+__all__ = ["DeviceError", "decompose", "device_info", "devices"]
 
 
 def devices() -> list[dict[str, object]]:
     """List the OpenCL devices available, GPUs first.
 
     Enumerated once per process, so this is cheap to ask before deciding where
-    to factorize. Each entry is a dict with the keys ``index``, ``name``,
-    ``vendor``, ``kind`` (``"gpu"``, ``"cpu"``, ``"accelerator"`` or
-    ``"unknown"``), ``double`` (whether the device can do double arithmetic,
-    which every decomposition needs), ``memory`` and ``compute_units``.
+    to factorize. Empty when there is no OpenCL runtime, no device, or no
+    backend in this installation.
+    """
+    return [device_info(i) for i in range(_device_count())]
+
+
+def device_info(index: int) -> dict[str, object]:
+    """Report what the OpenCL runtime says about one device.
+
+    Parameters
+    ----------
+    index : int
+        A device index, below ``device_count()``. GPUs come first, so ``0`` is
+        a GPU wherever the machine has one.
 
     Returns
     -------
-    list of dict
-        One dict per device, ordered so that a GPU comes first wherever the
-        machine has one. Empty when there is no OpenCL runtime, no device, or
-        no backend in this installation.
+    dict
+        Keys ``index``, ``name``, ``vendor``, ``uuid``, ``kind`` (``"gpu"``,
+        ``"cpu"``, ``"accelerator"`` or ``"unknown"``), ``double`` (whether it
+        can do double arithmetic, which every decomposition needs), ``memory``
+        and ``compute_units``.
 
-    Examples
-    --------
-    >>> import hybsol.opencl
-    >>> all(info["double"] for info in hybsol.opencl.devices()) or True
-    True
+    Raises
+    ------
+    hybsol.DeviceError
+        No device has that index.
+    ValueError
+        ``index`` is negative.
+    TypeError
+        ``index`` is not an integer.
     """
-    return [device_info(i) for i in range(_device_count())]
+    return _device_info(index)
 
 
 def decompose(
@@ -62,12 +73,10 @@ def decompose(
 ) -> Decomposition:
     """Factorize a system with its factors on an OpenCL device.
 
-    The symbolic walk and the assembly stay on the CPU; everything that
-    touches values -- the factorization, the solve, the replay -- runs as
-    device kernels, and the factors never come back to the host. The returned
-    :class:`~hybsol.Decomposition` is used exactly as any other, including
-    :meth:`~hybsol.Decomposition.solve` and :func:`hybsol.refined_solve`;
-    only its ``device`` differs.
+    The symbolic walk and the assembly stay on the CPU; the factorization, the
+    solve and the replay run as device kernels, and the factors never come back
+    to the host. The result is used exactly as any other decomposition; only its
+    ``device`` differs.
 
     Parameters
     ----------
@@ -95,8 +104,16 @@ def decompose(
         device runtime failed.
     ValueError
         The system does not satisfy the solver's structural assumptions,
-        ``n_threads`` is negative, or ``precision`` is not a
+        ``device`` or ``n_threads`` is negative, or ``precision`` is not a
         :class:`hybsol.Precision` member.
+    TypeError
+        ``system`` is not a :class:`hybsol.BlockSystem`, or an argument is of
+        the wrong type or shape.
+    RuntimeError
+        ``system`` is a :class:`hybsol.BlockSystem` that was never initialized.
+    MemoryError
+        The device could not hold the factors, or the host could not allocate
+        the frame.
     hybsol.SingularSystemError
         A diagonal block is singular, so the LU factorization hit a zero
         pivot. The message names the block.
@@ -104,15 +121,10 @@ def decompose(
     Examples
     --------
     >>> import numpy as np
-    >>> import hybsol
-    >>> from hybsol import BlockSystem
-    >>> from hybsol.opencl import decompose, devices
-    >>> if devices():                                   # doctest: +SKIP
-    ...     m = np.array([[4.0, 1.0], [1.0, 3.0]])
-    ...     system = BlockSystem(2)
-    ...     system.add_block(0, 0, m)
-    ...     decomposition = decompose(system)
-    ...     np.allclose(decomposition.solve(np.ones(2)), np.ones(2))
-    True
+    >>> from hybsol import BlockSystem, opencl
+    >>> system = BlockSystem(2)
+    >>> system.add_block(0, 0, np.array([[4.0, 1.0], [1.0, 3.0]]))
+    >>> for index in [d["index"] for d in opencl.devices() if d["double"]]:
+    ...     _ = opencl.decompose(system, device=index).solve(np.ones(2))
     """
     return _decompose(system, device=device, precision=precision, n_threads=n_threads)

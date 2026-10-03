@@ -1,19 +1,12 @@
 /** @file test_gpu.c
  * The OpenCL backend: a device decomposition must agree with the CPU one.
  *
- * Every case is a comparison rather than an absolute number -- a device
- * factorization is the same arithmetic with a different summation order, so
- * the checks are the tolerances that order deserves, and the reference is the
- * CPU path the rest of the suite already trusts.
+ * Every case is a comparison rather than an absolute number -- the same
+ * arithmetic in a different summation order -- against the CPU path the rest
+ * of the suite already trusts. With no runtime or driver, every case is skipped.
  *
- * With no OpenCL device -- no runtime, no driver, or a build without the
- * backend -- every case is skipped and the test reports success: a machine that
- * cannot run the kernels is not a machine the test can fail on.
- *
- * The vendor's OpenCL runtime leaks a few kilobytes of its own at exit, which
- * LeakSanitizer reports against ``libOpenCL.so``: run this under the
- * sanitizers with ``ASAN_OPTIONS=detect_leaks=0`` to see ours, or without
- * them to see everything.
+ * LeakSanitizer blames the vendor runtime's own exit-time leaks on
+ * ``libOpenCL.so``: run with ``ASAN_OPTIONS=detect_leaks=0`` to see only ours.
  */
 #include "test_util.h"
 
@@ -75,12 +68,9 @@ static void compare_solves(const hybsol_decomposition_t *const gpu, const hybsol
     free(reference);
 }
 
-/**
- * A system with a random pattern in ``precision``, diagonally dominant so the
- * factorization is stable enough for the tolerances here.
- */
+/** A seeded random system in ``precision``, with a diagonal the tolerances can live with. */
 static hybsol_system_t *build_system(uint64_t *const state, const hybsol_precision_t precision, const uint64_t n_blocks,
-                                     uint64_t *const sizes, double dense[MAX_DIM][MAX_DIM])
+                                     uint64_t *const sizes)
 {
     uint64_t offsets[MAX_BLOCKS + 1] = {0};
     for (uint64_t i = 0; i < n_blocks; ++i)
@@ -90,6 +80,7 @@ static hybsol_system_t *build_system(uint64_t *const state, const hybsol_precisi
     }
     const uint64_t dim = offsets[n_blocks];
 
+    double dense[MAX_DIM][MAX_DIM] = {{0.0}};
     bool present[MAX_BLOCKS][MAX_BLOCKS] = {{false}};
     for (uint64_t i = 0; i < n_blocks; ++i)
     {
@@ -174,7 +165,7 @@ static hybsol_opencl_device_t *acquire_device(void)
     return NULL;
 }
 
-/** What the runtime reports must be filled in: a name, a vendor, a kind. */
+/** Every device reports a name, a vendor, a kind and a whole uuid, in an order a caller can write down. */
 static void test_device_enumeration(void)
 {
     const uint64_t count = hybsol_opencl_device_count();
@@ -193,8 +184,7 @@ static void test_device_enumeration(void)
     hybsol_opencl_device_info_t info;
     CHECK_RESULT(hybsol_opencl_device_info(count, &info), HYBSOL_ERROR_NO_DEVICE);
 
-    // The order a caller can write down: GPUs first, then by name. Two devices
-    // may share a name, so only the pair has to be non-decreasing.
+    // The order a caller can write down: GPUs first, then by name, which may tie.
     for (uint64_t i = 1; i < count; ++i)
     {
         hybsol_opencl_device_info_t earlier;
@@ -213,8 +203,7 @@ static void test_device_enumeration(void)
         }
     }
 
-    // The runtime's own identifier is either the 16 bytes it is, in hex, or
-    // empty where the runtime has none -- never a partial string.
+    // The runtime's own identifier is its 16 bytes in hex, or empty -- never partial.
     hybsol_opencl_device_info_t first;
     CHECK_OK(hybsol_opencl_device_info(0, &first));
     const size_t uuid_length = strlen(first.uuid);
@@ -222,7 +211,7 @@ static void test_device_enumeration(void)
               first.uuid);
 }
 
-/** The order a caller can write down is the order they get back. */
+/** Two calls agree on which device an index names. */
 static void test_enumeration_is_stable_across_calls(void)
 {
     const uint64_t count = hybsol_opencl_device_count();
@@ -244,10 +233,9 @@ static void test_parity_in_both_precisions(hybsol_opencl_device_t *const device)
     for (int single = 0; single < 2; ++single)
     {
         const hybsol_precision_t precision = single ? HYBSOL_PRECISION_SINGLE : HYBSOL_PRECISION_DOUBLE;
-        double dense[MAX_DIM][MAX_DIM];
         uint64_t sizes[MAX_BLOCKS];
         uint64_t state = 0x9e3779b97f4a7c15ULL + (uint64_t)single;
-        hybsol_system_t *const sys = build_system(&state, precision, 5, sizes, dense);
+        hybsol_system_t *const sys = build_system(&state, precision, 5, sizes);
         CHECK(sys != NULL);
         if (sys == NULL)
         {
@@ -294,10 +282,9 @@ static void test_mixed_precision_on_device(hybsol_opencl_device_t *const device)
 
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c)
     {
-        double dense[MAX_DIM][MAX_DIM];
         uint64_t sizes[MAX_BLOCKS];
         uint64_t state = 12345 + (uint64_t)c;
-        hybsol_system_t *const sys = build_system(&state, cases[c].system_precision, 4, sizes, dense);
+        hybsol_system_t *const sys = build_system(&state, cases[c].system_precision, 4, sizes);
         CHECK(sys != NULL);
         if (sys == NULL)
         {
@@ -330,8 +317,7 @@ static void test_singular_block_agrees(hybsol_opencl_device_t *const device)
     const uint64_t sizes[1] = {2};
     hybsol_system_t *sys = NULL;
 
-    // A rank-one diagonal block: nonzero, so the walk accepts the order, but
-    // its second pivot comes out exactly zero. Only the factorization finds it.
+    // Rank one: nonzero, so the walk accepts the order; its second pivot is exactly zero.
     const double rank_one[4] = {1.0, 2.0, 2.0, 4.0};
     CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
     CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, rank_one));
@@ -362,10 +348,9 @@ static void test_singular_block_agrees(hybsol_opencl_device_t *const device)
 /** Replaying the operations and back-substituting is the same solve. */
 static void test_replay_matches_solve(hybsol_opencl_device_t *const device)
 {
-    double dense[MAX_DIM][MAX_DIM];
     uint64_t sizes[MAX_BLOCKS];
     uint64_t state = 777;
-    hybsol_system_t *const sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 4, sizes, dense);
+    hybsol_system_t *const sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 4, sizes);
     CHECK(sys != NULL);
     if (sys == NULL)
     {
@@ -424,10 +409,9 @@ static void test_device_lifetime(hybsol_opencl_device_t *const device)
     CHECK_MSG(second == device, "acquiring the same device twice gave two handles");
     hybsol_opencl_device_release(second);
 
-    double dense[MAX_DIM][MAX_DIM];
     uint64_t sizes[MAX_BLOCKS];
     uint64_t state = 31;
-    hybsol_system_t *sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes, dense);
+    hybsol_system_t *sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes);
     CHECK(sys != NULL);
     if (sys == NULL)
     {
@@ -444,7 +428,7 @@ static void test_device_lifetime(hybsol_opencl_device_t *const device)
     hybsol_system_destroy(sys);
 
     // Still usable after that decomposition went away.
-    sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes, dense);
+    sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes);
     CHECK(sys != NULL);
     if (sys == NULL)
     {

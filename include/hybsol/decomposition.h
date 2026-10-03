@@ -99,18 +99,13 @@ hybsol_result_t hybsol_decomposition_init(const hybsol_system_t *sys, const hybs
 
 /**
  * Lay a decomposition out in caller-owned storage with factors in ``precision``,
- * copying the system's blocks in: :c:func:`hybsol_decomposition_init` for a
- * factorization that need not match the system's own precision.
+ * copying the system's blocks in.
  *
- * The blocks convert element by element on the way in -- double factors narrow
- * to single, single factors widen to double -- and the decomposition factors and
- * stores everything in ``precision`` from then on. Filling in more accurate
- * factors than the system holds therefore only makes the factorization itself
- * exact; the fill-in and cancellation errors remain those of the system's own
- * values.
+ * The blocks convert element by element on the way in, so a decomposition's
+ * precision need not be the system's own.
  *
- * The same preconditions as :c:func:`hybsol_decomposition_init`, with ``storage``
- * at least :c:func:`hybsol_decomposition_bytes` bytes for ``precision``.
+ * Preconditions: as :c:func:`hybsol_decomposition_init`, with ``storage`` at
+ * least :c:func:`hybsol_decomposition_bytes` bytes for ``precision``.
  */
 hybsol_result_t hybsol_decomposition_init_with_precision(const hybsol_system_t *sys, const hybsol_elimination_t *graph,
                                                          hybsol_precision_t precision, void *storage,
@@ -136,8 +131,9 @@ hybsol_result_t hybsol_decomposition_create(const hybsol_system_t *sys, const hy
  * blocks into it: :c:func:`hybsol_decomposition_init_with_precision` in memory
  * of its own.
  *
- * The same preconditions as :c:func:`hybsol_decomposition_create`; returns
- * :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` on failure, leaving ``*out`` ``NULL``.
+ * Preconditions: as :c:func:`hybsol_decomposition_create`.
+ *
+ * Returns :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` on failure, leaving ``*out`` ``NULL``.
  */
 hybsol_result_t hybsol_decomposition_create_with_precision(const hybsol_system_t *sys,
                                                            const hybsol_elimination_t *graph,
@@ -270,11 +266,7 @@ void hybsol_decomposition_solve_upper(const hybsol_decomposition_t *dec, double 
  */
 hybsol_result_t hybsol_decomposition_solve(const hybsol_decomposition_t *dec, double *vec, uint64_t n_threads);
 
-/**
- * Get the index of the backend device this decomposition's factors live on, or
- * ``UINT64_MAX`` when they are in host memory, which is what the CPU
- * decompositions report.
- */
+/** Get the index of the device this decomposition's factors live on, or ``UINT64_MAX`` for a host one. */
 uint64_t hybsol_decomposition_device(const hybsol_decomposition_t *dec);
 
 #endif /* HYBSOL_DECOMPOSITION_H */

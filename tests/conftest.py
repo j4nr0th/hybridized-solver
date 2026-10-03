@@ -54,8 +54,7 @@ def extension_is_current(repo_root: Path):
 
     _check_stale(Path(hybsol._mod.__file__), repo_root, newest_mtime, newest_path)
 
-    # The backend's extension is a separate build of separate sources, and an
-    # installation without the backend has none: only check what is there.
+    # A build without the backend has no extension module; check what is there.
     backend = importlib.util.find_spec("hybsol._mod_opencl")
     if backend is not None and backend.origin is not None:
         _check_stale(Path(backend.origin), repo_root, newest_mtime, newest_path)
