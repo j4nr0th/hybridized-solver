@@ -41,26 +41,47 @@ no `hybsol.opencl` at all — the import fails, nothing else changes.
 
 ## Findings you may want to act on
 
-1. **Performance today is a loss, not a win.** Measured on this machine
-   (Quadro P2000, one thread on the CPU for a fair-ish comparison), factorize +
-   solve on random sparse block systems:
+1. **Performance at the target size: still a loss, and now I know why.**
+   Measured at your target -- single precision, ~100k dof, this machine's 12
+   CPU threads against the Quadro P2000 -- on a layered block system (the
+   shape a hybridized discretization has: weak couplings, a schedule with real
+   parallelism):
 
-   | blocks | dim | precision | CPU (1 thread) | OpenCL | |
+   | system | dof | CPU factorize | OpenCL factorize | CPU solve | OpenCL solve |
    | --- | --- | --- | --- | --- | --- |
-   | 64 | 269 | double | 38 ms | 170 ms | 0.22x |
-   | 128 | 506 | double | 54 ms | 498 ms | 0.11x |
-   | 256 | 1025 | double | 423 ms | 2267 ms | 0.19x |
+   | 4x4 blocks, 24389 of them | 97,556 | 0.82 s | 2.5 s | 66 ms | 43 ms |
+   | 16x16 blocks, 6859 | 109,744 | -- | 22.9 s | -- | 111 ms |
+   | 32x32 blocks, 3375 | 108,000 | -- | 78.7 s | -- | 232 ms |
 
-   The arithmetic is not the problem — the *schedule* is. One kernel launch per
-   pass plus a blocking 4-byte read-back per pass, and these systems have
-   hundreds of passes of very little work each, so it is all latency. On a
-   large enough system (thousands of DOF with real blocks) the balance flips,
-   but I have not demonstrated that here. If you want speed on today's sizes,
-   the levers are, in order of value: (a) make the failure-slot read-back
-   asynchronous (only the last pass really needs it before returning), (b) fuse
-   consecutive passes that have no dependency between them, (c) persistent
-   kernels with a device-side barrier. None of that changes the arithmetic, so
-   none of it was in this change — say the word if you want it.
+   Two things came out of this round, one fix and one diagnosis.
+
+   **The fix**: a pass is no longer waited on. The failure slot is cleared once
+   and read once, at the end, instead of a blocking round trip after every
+   pass, and passes are launched over a bounded work group instead of the
+   driver's choice (its maximum, 8192 here, which put a few hundred rows of a
+   pass on one compute unit). Factorization at 97k dof went from **7.9 s to
+   2.5 s** -- a third of what it was, and the read-back semantics are
+   unchanged: the same block is named.
+
+   **The diagnosis**: larger blocks make it *worse*, which is the opposite of
+   "more arithmetic, more GPU". The reason is one work item per block row:
+   a bigger block means one work item grinds more of the dense work serially,
+   while the rest of the device has nothing else to do. At 4x4 blocks the GPU
+   is latency-bound but the CPU is not far behind (0.95 ms per pass on twelve
+   threads, against 3 ms per pass on the device) -- there simply is not enough
+   arithmetic in a 4x4 factorization to move.
+
+   So the next step, if there is one, is not more scheduling tricks: it is
+   giving the device parallelism *inside* a row -- one work item per
+   (row, block) pair instead of per row, with the subtractions combined
+   through a reduction or atomics, or a two-stage product-then-subtract. That
+   is a kernel redesign, not a tuning pass, and I have not done it.
+
+   Back substitution, which you asked about, is on the device already and costs
+   **18-33 ms of the ~2.5 s** (measured separately: the solve is 43-79 ms of
+   which the back substitution is under half). There is nothing to gain by
+   moving it, and moving it to the CPU would mean copying the factors back.
+   Left as it is.
 
 2. **Pre-existing UBSan findings**, unrelated to this work and present on `dev`
    too (verified in a clean worktree): `src/core/ordering.c:318-378` stores
@@ -89,23 +110,21 @@ no `hybsol.opencl` at all — the import fails, nothing else changes.
   `n_columns` extra uint64s) so that `operations()` and every other host-side
   query works on a decomposition whose factors are not in host memory.
 
-## Open questions for you (none blocking)
+## Your four answers, and what came of them
 
-1. **Performance target.** Is this backend meant to win on *large* systems
-   (where I expect it to) or on laptop-sized ones? The answer decides whether
-   the async-readback/persistent-kernel work is worth doing now.
-2. **Back substitution on the device** is a single work item walking the rows
-   in reverse — the same serial loop the CPU runs, on a GPU core. It is
-   correct and it is slow. Fusing it into the forward kernel's last pass, or
-   accepting it, is your call.
-3. **Device index stability.** Enumeration is cached per process and GPUs sort
-   first, so index 0 is stable for a given installation but not guaranteed by
-   the runtime. Should `hybsol.opencl.devices()` expose something more stable
-   (a UUID, a name-based selector) for multi-GPU machines?
-4. **`--doctest-modules`** runs over `python/hybsol`, and the OpenCL example in
-   `hybsol.opencl.decompose` is guarded by `if devices()`. If you prefer the
-   docs to fail loudly on a machine with no device instead, say so and I will
-   make it a plain comment.
+1. **Target: beat the CPU on large sparse systems, 100k+ dof, FP32.** Taken as
+   the bar. The latency work is done (above); the bar is not met yet, and the
+   diagnosis above says what it would take. If the answer is "keep going", the
+   per-entry work items are the next piece, not more scheduling.
+2. **Back substitution: put it on the device if it is faster there.** It is on
+   the device, and at 18-33 ms of a ~2.5 s factorization there is no faster
+   option to move to -- the alternative is copying every factor back to the
+   host, which is exactly what the design avoids. Left as it is.
+3. **Stable device index.** Done: the enumeration is sorted (GPUs first, then
+   by name) and `device_info` carries `uuid`, the runtime's own identifier, for
+   pinning a device across reinstalls. `test_gpu` checks both, and that an
+   index means the same device across calls.
+4. **The guarded doctest is fine as it is.** Unchanged.
 
 ## Things worth knowing about the code
 
