@@ -8,6 +8,9 @@ The backend is a build-time thing too: an installation compiled without it has
 no ``hybsol.opencl`` at all, and this import raises :exc:`ImportError`. One with
 it but no device imports fine and says so -- :func:`devices` returns an empty
 list and :func:`decompose` raises :exc:`~hybsol.DeviceError`.
+
+Everything a decomposition can do is in :func:`decompose`, and the device
+backend of a whole run is shown in the ``opencl_gpu`` example in the gallery.
 """
 
 from __future__ import annotations
@@ -29,8 +32,21 @@ def devices() -> list[dict[str, object]]:
     """List the OpenCL devices available, GPUs first.
 
     Enumerated once per process, so this is cheap to ask before deciding where
-    to factorize. Empty when there is no OpenCL runtime, no device, or no
-    backend in this installation.
+    to factorize. Empty when no platform offers a device; this module is
+    absent altogether from a build without the backend.
+
+    Returns
+    -------
+    list of dict
+        One dict per device, ordered so a GPU comes first wherever the machine
+        has one, with the keys :func:`device_info` documents.
+
+    Examples
+    --------
+    >>> import hybsol.opencl
+    >>> found = hybsol.opencl.devices()
+    >>> all(info["double"] for info in found) or not found
+    True
     """
     return [device_info(i) for i in range(_device_count())]
 
