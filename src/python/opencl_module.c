@@ -21,27 +21,6 @@ static hybsol_python_api_t *g_api = NULL;
 static const char *const BACKEND_API_CAPSULE = "hybsol._mod.backend_api";
 
 /**
- * Reject more arguments than the spec names. Returns 0, or -1 with a
- * :exc:`TypeError` set.
- *
- * cpyutl diagnoses this itself as of its ``CPYARG_TOO_MANY``, but only once
- * hybsol pins a commit that has it; against the pinned one it asserts, which
- * takes the interpreter down with it. Drop this when that pin moves.
- */
-static int reject_extra_arguments(const char *const what, const Py_ssize_t nargs, PyObject *const kwnames,
-                                  const Py_ssize_t accepted)
-{
-    const Py_ssize_t given = nargs + (kwnames != NULL ? PyTuple_GET_SIZE(kwnames) : 0);
-    if (given <= accepted)
-    {
-        return 0;
-    }
-    PyErr_Format(PyExc_TypeError, "%s() takes at most %zd argument%s, but %zd were given.", what, accepted,
-                 accepted == 1 ? "" : "s", given);
-    return -1;
-}
-
-/**
  * Read the core module's backend API table, or leave an :exc:`ImportError`
  * saying why not. Returns 0 once the table is there.
  */
@@ -242,10 +221,6 @@ PyDoc_STRVAR(opencl_device_info_docstring, "device_info(index: int) -> dict\n"
 static PyObject *opencl_device_info(PyObject *const Py_UNUSED(self), PyObject *const *const args,
                                     const Py_ssize_t nargs, PyObject *const kwnames)
 {
-    if (reject_extra_arguments("device_info", nargs, kwnames, 1) < 0)
-    {
-        return NULL;
-    }
     Py_ssize_t index = 0;
     if (parse_arguments_check(
             (cpyutl_argument_t[]){
@@ -342,10 +317,6 @@ PyDoc_STRVAR(opencl_decompose_docstring, "decompose(system: hybsol.BlockSystem, 
 static PyObject *opencl_decompose(PyObject *const Py_UNUSED(self), PyObject *const *const args, const Py_ssize_t nargs,
                                   PyObject *kwnames)
 {
-    if (reject_extra_arguments("decompose", nargs, kwnames, 4) < 0)
-    {
-        return NULL;
-    }
     if (backend_api("hybsol.opencl") < 0)
     {
         return NULL;
