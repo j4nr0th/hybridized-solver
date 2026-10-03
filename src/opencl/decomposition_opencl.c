@@ -421,12 +421,19 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
 }
 
 /**
- * Factorize: one kernel per pass, the failure slot read back after each.
+ * Factorize: one kernel per pass, all of them queued back to back.
  *
- * The host walks the passes exactly as the CPU factorization does. What differs
- * is that a pass is a single launch over its rows, and the diagonal that failed
- * is named by the smallest work item that hit a zero pivot -- the same row the
- * CPU settle loop would find first in the pass.
+ * The host walks the passes exactly as the CPU factorization does; what differs
+ * is that a pass is a single launch over its rows, and that the host does not
+ * wait between passes. The failure slot is cleared once and read once, at the
+ * end: a round trip per pass costs more than these kernels do, and nothing
+ * needs the answer before the last pass has run anyway. The slot keeps the
+ * smallest work item that hit a zero pivot, which -- passes being queued in
+ * order -- is the row the CPU settle loop would have found first.
+ *
+ * A pass after a failure still runs, exactly as the CPU's parallel region does:
+ * the rows that failed skip their inversion, the rest are unaffected, and the
+ * decomposition is reported as unfactorized either way.
  */
 static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n_threads)
 {
@@ -443,6 +450,19 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     }
 
     const cl_int none = INT_MAX;
+    // A pass is launched over a bounded work group so it spreads across the
+    // device: the driver's own choice is the kernel's maximum (8192 here),
+    // which puts a few hundred rows on one compute unit.
+    const size_t local_size = hybsol_opencl_work_group_size(device, kernel);
+    const cl_int fill_status =
+        clEnqueueFillBuffer(device->queue, state->fail_j, &none, sizeof(none), 0, sizeof(none), 0, NULL, NULL);
+    if (fill_status != CL_SUCCESS)
+    {
+        hybsol_opencl_note_cl_error(fill_status, "Clearing the failure slot");
+        clReleaseKernel(kernel);
+        return HYBSOL_ERROR_DEVICE;
+    }
+
     hybsol_result_t res = HYBSOL_SUCCESS;
     for (uint64_t pass = 0; pass < dec->n_levels && res == HYBSOL_SUCCESS; ++pass)
     {
@@ -453,14 +473,10 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
             continue;
         }
 
-        const cl_int fill_status =
-            clEnqueueFillBuffer(device->queue, state->fail_j, &none, sizeof(none), 0, sizeof(none), 0, NULL, NULL);
-        if (fill_status != CL_SUCCESS)
-        {
-            hybsol_opencl_note_cl_error(fill_status, "Clearing the pass's failure slot");
-            res = HYBSOL_ERROR_DEVICE;
-            break;
-        }
+        const cl_ulong pass_arg = (cl_ulong)pass;
+        const cl_ulong from_arg = (cl_ulong)from;
+        const cl_ulong pass_rows_arg = (cl_ulong)(to - from);
+        const cl_ulong max_block_arg = (cl_ulong)state->max_block;
 
         kernel_set(kernel, 0, sizeof(state->level_rows), &state->level_rows);
         kernel_set(kernel, 1, sizeof(state->level_k), &state->level_k);
@@ -473,39 +489,49 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
         kernel_set(kernel, 8, sizeof(state->vals), &state->vals);
         kernel_set(kernel, 9, sizeof(state->scratch), &state->scratch);
         kernel_set(kernel, 10, sizeof(state->fail_j), &state->fail_j);
-        const cl_ulong pass_arg = (cl_ulong)pass;
-        const cl_ulong from_arg = (cl_ulong)from;
-        const cl_ulong max_block_arg = (cl_ulong)state->max_block;
         kernel_set(kernel, 11, sizeof(pass_arg), &pass_arg);
         kernel_set(kernel, 12, sizeof(from_arg), &from_arg);
-        kernel_set(kernel, 13, sizeof(max_block_arg), &max_block_arg);
+        kernel_set(kernel, 13, sizeof(pass_rows_arg), &pass_rows_arg);
+        kernel_set(kernel, 14, sizeof(max_block_arg), &max_block_arg);
 
-        const size_t global = (size_t)(to - from);
-        const cl_int status = clEnqueueNDRangeKernel(device->queue, kernel, 1, NULL, &global, NULL, 0, NULL, NULL);
+        // Rounded up to a whole number of work groups: a device without
+        // non-uniform group support refuses the launch otherwise, and the
+        // kernel drops the padding itself.
+        size_t local = local_size;
+        size_t global = (size_t)(to - from);
+        if (local != 0 && local <= global)
+        {
+            global = (global + local - 1) / local * local;
+        }
+        else
+        {
+            local = 0;
+        }
+        const cl_int status =
+            clEnqueueNDRangeKernel(device->queue, kernel, 1, NULL, &global, local != 0 ? &local : NULL, 0, NULL, NULL);
         if (status != CL_SUCCESS)
         {
             hybsol_opencl_note_cl_error(status, "Launching a factorization pass");
             res = HYBSOL_ERROR_DEVICE;
             break;
         }
-
-        cl_int failed = none;
-        const cl_int read_status =
-            clEnqueueReadBuffer(device->queue, state->fail_j, CL_TRUE, 0, sizeof(failed), &failed, 0, NULL, NULL);
-        if (read_status != CL_SUCCESS)
-        {
-            hybsol_opencl_note_cl_error(read_status, "Reading the pass's failure slot");
-            res = HYBSOL_ERROR_DEVICE;
-            break;
-        }
-        if (failed != none)
-        {
-            dec->failing_block = dec->level_rows[(uint64_t)failed];
-            res = HYBSOL_ERROR_SINGULAR;
-        }
     }
 
+    cl_int failed = none;
+    const cl_int read_status =
+        clEnqueueReadBuffer(device->queue, state->fail_j, CL_TRUE, 0, sizeof(failed), &failed, 0, NULL, NULL);
     clReleaseKernel(kernel);
+    if (read_status != CL_SUCCESS)
+    {
+        hybsol_opencl_note_cl_error(read_status, "Reading the failure slot");
+        return HYBSOL_ERROR_DEVICE;
+    }
+    if (res == HYBSOL_SUCCESS && failed != none)
+    {
+        dec->failing_block = dec->level_rows[(uint64_t)failed];
+        res = HYBSOL_ERROR_SINGULAR;
+    }
+
     if (res == HYBSOL_SUCCESS)
     {
         dec->factorized = 1;
@@ -543,6 +569,7 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
     {
         return HYBSOL_ERROR_DEVICE;
     }
+    const size_t local_size = hybsol_opencl_work_group_size(device, kernel);
     kernel_set(kernel, 0, sizeof(state->level_rows), &state->level_rows);
     kernel_set(kernel, 1, sizeof(state->level_k), &state->level_k);
     kernel_set(kernel, 2, sizeof(state->row_n_elim), &state->row_n_elim);
@@ -556,6 +583,7 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
     const cl_ulong zero = 0;
     kernel_set(kernel, 10, sizeof(zero), &zero);
     kernel_set(kernel, 11, sizeof(zero), &zero);
+    kernel_set(kernel, 12, sizeof(zero), &zero);
 
     for (uint64_t pass = 0; pass < dec->n_levels && res == HYBSOL_SUCCESS; ++pass)
     {
@@ -567,11 +595,24 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
         }
         const cl_ulong pass_value = (cl_ulong)pass;
         const cl_ulong from_value = (cl_ulong)from;
+        const cl_ulong rows_value = (cl_ulong)(to - from);
         kernel_set(kernel, 10, sizeof(pass_value), &pass_value);
         kernel_set(kernel, 11, sizeof(from_value), &from_value);
+        kernel_set(kernel, 12, sizeof(rows_value), &rows_value);
 
-        const size_t global = (size_t)(to - from);
-        const cl_int status = clEnqueueNDRangeKernel(device->queue, kernel, 1, NULL, &global, NULL, 0, NULL, NULL);
+        // Same bounded work group as the factorization, and the same padding.
+        size_t local = local_size;
+        size_t global = (size_t)(to - from);
+        if (local != 0 && local <= global)
+        {
+            global = (global + local - 1) / local * local;
+        }
+        else
+        {
+            local = 0;
+        }
+        const cl_int status =
+            clEnqueueNDRangeKernel(device->queue, kernel, 1, NULL, &global, local != 0 ? &local : NULL, 0, NULL, NULL);
         if (status != CL_SUCCESS)
         {
             hybsol_opencl_note_cl_error(status, "Launching a forward-substitution pass");

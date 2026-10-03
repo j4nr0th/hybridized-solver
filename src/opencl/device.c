@@ -124,6 +124,8 @@ typedef struct
     cl_device_id id;
     hybsol_opencl_device_kind_t kind;
     int supports_double;
+    /** The device's name, kept for the order the enumeration is sorted into. */
+    char name[128];
 } listed_device_t;
 
 /** The cached enumeration; empty until :c:func:`hybsol_opencl_device_count` asks. */
@@ -145,6 +147,36 @@ static void device_string(cl_device_id device, cl_device_info what, char *const 
         out[0] = '\0';
     }
     out[capacity - 1] = '\0';
+}
+
+/* ``CL_DEVICE_UUID`` is OpenCL 2.0 proper and the cl_khr_device_uuid extension
+ * before it, with the same value; the CL 1.2 headers this file targets declare
+ * neither, so both are spelled here. */
+#define HYBSOL_CL_DEVICE_UUID 0x106A
+typedef cl_uchar hybsol_cl_uuid_t[16];
+
+/**
+ * The runtime's device UUID as a string, or an empty one where there is none.
+ *
+ * A runtime that does not know the query answers with an error and leaves the
+ * string empty -- which is exactly what a caller matching on this needs to be
+ * able to see.
+ */
+static void device_uuid_string(cl_device_id device, char *const out, const size_t capacity)
+{
+    hybsol_cl_uuid_t uuid = {0};
+    out[0] = '\0';
+    if (clGetDeviceInfo(device, HYBSOL_CL_DEVICE_UUID, sizeof(uuid), uuid, NULL) != CL_SUCCESS)
+    {
+        return;
+    }
+
+    size_t at = 0;
+    for (size_t i = 0; i < sizeof(uuid) && at + 3 < capacity; ++i)
+    {
+        at += (size_t)snprintf(out + at, capacity - at, "%02x", uuid[i]);
+    }
+    out[at] = '\0';
 }
 
 /** One device's kind, mapping the runtime's bit on GPUs. */
@@ -188,9 +220,29 @@ static hybsol_result_t device_append(listed_device_t **const list, uint64_t *con
     grown[*count].id = id;
     grown[*count].kind = device_kind(id);
     grown[*count].supports_double = device_has_double(id);
+    device_string(id, CL_DEVICE_NAME, grown[*count].name, sizeof(grown[*count].name));
     *list = grown;
     ++*count;
     return HYBSOL_SUCCESS;
+}
+
+/** GPUs before everything else, then by name: an index that does not move. */
+static int device_before(const void *const a_ptr, const void *const b_ptr)
+{
+    const listed_device_t *const a = (const listed_device_t *)a_ptr;
+    const listed_device_t *const b = (const listed_device_t *)b_ptr;
+    const int a_gpu = a->kind == HYBSOL_OPENCL_DEVICE_GPU;
+    const int b_gpu = b->kind == HYBSOL_OPENCL_DEVICE_GPU;
+    if (a_gpu != b_gpu)
+    {
+        return a_gpu ? -1 : 1; // A GPU sorts ahead of anything else.
+    }
+    const int by_name = strcmp(a->name, b->name);
+    if (by_name != 0)
+    {
+        return by_name < 0;
+    }
+    return 0;
 }
 
 /**
@@ -270,6 +322,14 @@ static hybsol_result_t enumerate_devices(void)
         return res;
     }
 
+    // Sort once, here, rather than trusting what order the platforms answered
+    // in: an index a caller can write down should still mean the same device
+    // tomorrow.
+    if (count > 1)
+    {
+        qsort(list, (size_t)count, sizeof(*list), device_before);
+    }
+
     g_devices = list;
     g_device_count = count;
     return HYBSOL_SUCCESS;
@@ -320,6 +380,7 @@ hybsol_result_t hybsol_opencl_device_info(const uint64_t index, hybsol_opencl_de
     device_string(id, CL_DEVICE_VENDOR, out->vendor, sizeof(out->vendor));
     out->kind = kind;
     out->supports_double = supports_double;
+    device_uuid_string(id, out->uuid, sizeof(out->uuid));
 
     out->global_memory_bytes = 0;
     (void)clGetDeviceInfo(id, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(out->global_memory_bytes), &out->global_memory_bytes,
@@ -563,6 +624,29 @@ static cl_program device_program(hybsol_opencl_device_t *const device, const hyb
         device->program_f64 = program;
     }
     return program;
+}
+
+size_t hybsol_opencl_work_group_size(const hybsol_opencl_device_t *const device, cl_kernel kernel)
+{
+    CUTL_ASSERT(device != NULL, "The device must not be NULL.");
+
+    size_t maximum = 0;
+    if (clGetKernelWorkGroupInfo(kernel, device->id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(maximum), &maximum, NULL) !=
+            CL_SUCCESS ||
+        maximum == 0)
+    {
+        return 0; // The kernel will not say: let the driver choose.
+    }
+
+    // One pass of the schedule is a few hundred block rows of small dense work,
+    // so the interesting range is small: big enough to spread over every
+    // compute unit, small enough that the last partial wave is not most of it.
+    size_t wanted = 64;
+    if (maximum < wanted)
+    {
+        wanted = maximum;
+    }
+    return wanted;
 }
 
 cl_kernel hybsol_opencl_kernel(hybsol_opencl_device_t *const device, const hybsol_precision_t precision,

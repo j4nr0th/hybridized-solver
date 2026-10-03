@@ -71,6 +71,17 @@ typedef struct hybsol_opencl_device_details
     char name[128];
     /** Who made it. */
     char vendor[128];
+    /**
+     * The runtime's own identifier for the device, as a string: the same bytes
+     * ``cl_device_uuid`` where the runtime has one, empty where it does not.
+     *
+     * A caller who wants a device to survive a reinstall -- or a runtime that
+     * enumerates in a different order -- matches on this rather than on the
+     * index. The index is sorted to be stable (GPUs first, then by name), but
+     * only an identifier the driver assigns to the hardware is stable
+     * everywhere.
+     */
+    char uuid[40];
     /** Which kind of device it is. */
     hybsol_opencl_device_kind_t kind;
     /** Non-zero when it can do double arithmetic, which every decomposition needs. */

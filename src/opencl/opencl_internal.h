@@ -54,6 +54,18 @@ struct hybsol_opencl_device
 };
 
 /**
+ * A work-group size worth launching a kernel with.
+ *
+ * Left to itself the driver answers with the kernel's *maximum* -- 8192 on a
+ * consumer card -- which puts a pass of a few hundred block rows into a single
+ * work group on a single compute unit while the rest of the device idles.
+ * This asks for something a pass can spread over, capped where a work item is
+ * still small enough that the tail costs little. Zero means "let the driver
+ * choose", which is the fallback when the kernel will not say.
+ */
+size_t hybsol_opencl_work_group_size(const hybsol_opencl_device_t *device, cl_kernel kernel);
+
+/**
  * A kernel of the device's program for ``precision``, freshly created.
  *
  * The caller owns it and releases it. Kernel objects are not shared: setting

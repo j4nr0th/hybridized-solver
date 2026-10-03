@@ -192,6 +192,50 @@ static void test_device_enumeration(void)
     // An index past the end is refused, not invented.
     hybsol_opencl_device_info_t info;
     CHECK_RESULT(hybsol_opencl_device_info(count, &info), HYBSOL_ERROR_NO_DEVICE);
+
+    // The order a caller can write down: GPUs first, then by name. Two devices
+    // may share a name, so only the pair has to be non-decreasing.
+    for (uint64_t i = 1; i < count; ++i)
+    {
+        hybsol_opencl_device_info_t earlier;
+        hybsol_opencl_device_info_t later;
+        CHECK_OK(hybsol_opencl_device_info(i - 1, &earlier));
+        CHECK_OK(hybsol_opencl_device_info(i, &later));
+
+        const int earlier_gpu = earlier.kind == HYBSOL_OPENCL_DEVICE_GPU;
+        const int later_gpu = later.kind == HYBSOL_OPENCL_DEVICE_GPU;
+        CHECK_MSG(earlier_gpu || !later_gpu, "device %llu is a GPU but device %llu before it is not",
+                  (unsigned long long)i, (unsigned long long)(i - 1));
+        if (earlier_gpu == later_gpu)
+        {
+            CHECK_MSG(strcmp(earlier.name, later.name) <= 0, "device %llu ('%s') sorts after device %llu ('%s')",
+                      (unsigned long long)i, later.name, (unsigned long long)(i - 1), earlier.name);
+        }
+    }
+
+    // The runtime's own identifier is either the 16 bytes it is, in hex, or
+    // empty where the runtime has none -- never a partial string.
+    hybsol_opencl_device_info_t first;
+    CHECK_OK(hybsol_opencl_device_info(0, &first));
+    const size_t uuid_length = strlen(first.uuid);
+    CHECK_MSG(uuid_length == 0 || uuid_length == 32, "device 0's uuid is neither empty nor 32 hex digits: '%s'",
+              first.uuid);
+}
+
+/** The order a caller can write down is the order they get back. */
+static void test_enumeration_is_stable_across_calls(void)
+{
+    const uint64_t count = hybsol_opencl_device_count();
+    for (uint64_t i = 0; i < count; ++i)
+    {
+        hybsol_opencl_device_info_t again;
+        hybsol_opencl_device_info_t first;
+        CHECK_OK(hybsol_opencl_device_info(i, &first));
+        CHECK_OK(hybsol_opencl_device_info(i, &again));
+        CHECK_MSG(strcmp(first.name, again.name) == 0 && strcmp(first.uuid, again.uuid) == 0,
+                  "device %llu changed identity between calls: '%s' then '%s'", (unsigned long long)i, first.name,
+                  again.name);
+    }
 }
 
 /** The same factorizations on both paths, in both precisions, agree. */
@@ -425,6 +469,7 @@ int main(void)
     }
 
     test_device_enumeration();
+    test_enumeration_is_stable_across_calls();
 
     hybsol_opencl_device_t *const device = acquire_device();
     CHECK_MSG(device != NULL, "a device with double arithmetic was expected");

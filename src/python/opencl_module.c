@@ -265,6 +265,7 @@ static PyObject *opencl_device_info(PyObject *const Py_UNUSED(self), PyObject *c
             {.type = CPYOUT_TYPE_PYINT, .value_int = index, .name = "index"},
             {.type = CPYOUT_TYPE_PYSTRING, .value_str = info.name, .name = "name"},
             {.type = CPYOUT_TYPE_PYSTRING, .value_str = info.vendor, .name = "vendor"},
+            {.type = CPYOUT_TYPE_PYSTRING, .value_str = info.uuid, .name = "uuid"},
             {.type = CPYOUT_TYPE_PYSTRING, .value_str = kind_names[kind], .name = "kind"},
             {.type = CPYOUT_TYPE_PYBOOL, .value_bool = info.supports_double != 0, .name = "double"},
             {.type = CPYOUT_TYPE_PYINT, .value_int = (Py_ssize_t)info.global_memory_bytes, .name = "memory"},
