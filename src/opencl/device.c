@@ -238,12 +238,7 @@ static int device_before(const void *const a_ptr, const void *const b_ptr)
     {
         return a_gpu ? -1 : 1; // A GPU sorts ahead of anything else.
     }
-    const int by_name = strcmp(a->name, b->name);
-    if (by_name != 0)
-    {
-        return by_name < 0;
-    }
-    return 0;
+    return strcmp(a->name, b->name);
 }
 
 /**

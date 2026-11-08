@@ -146,8 +146,8 @@ static hybsol_system_t *build_system(uint64_t *const state, const hybsol_precisi
     return sys;
 }
 
-/** The first device that can take a decomposition, or ``NULL``. */
-static hybsol_opencl_device_t *acquire_device(void)
+/** The first device that can take a decomposition, or ``NULL``; its index goes to ``index_out``. */
+static hybsol_opencl_device_t *acquire_device(uint64_t *const index_out)
 {
     for (uint64_t i = 0; i < hybsol_opencl_device_count(); ++i)
     {
@@ -159,6 +159,7 @@ static hybsol_opencl_device_t *acquire_device(void)
         hybsol_opencl_device_t *device = NULL;
         if (hybsol_opencl_device_acquire(i, &device) == HYBSOL_SUCCESS)
         {
+            *index_out = i;
             return device;
         }
     }
@@ -402,10 +403,10 @@ static void test_replay_matches_solve(hybsol_opencl_device_t *const device)
 }
 
 /** Acquire twice, release twice: the device outlives one owner's release. */
-static void test_device_lifetime(hybsol_opencl_device_t *const device)
+static void test_device_lifetime(hybsol_opencl_device_t *const device, const uint64_t index)
 {
     hybsol_opencl_device_t *second = NULL;
-    CHECK_OK(hybsol_opencl_device_acquire(0, &second));
+    CHECK_OK(hybsol_opencl_device_acquire(index, &second));
     CHECK_MSG(second == device, "acquiring the same device twice gave two handles");
     hybsol_opencl_device_release(second);
 
@@ -455,7 +456,8 @@ int main(void)
     test_device_enumeration();
     test_enumeration_is_stable_across_calls();
 
-    hybsol_opencl_device_t *const device = acquire_device();
+    uint64_t device_index = 0;
+    hybsol_opencl_device_t *const device = acquire_device(&device_index);
     CHECK_MSG(device != NULL, "a device with double arithmetic was expected");
     if (device == NULL)
     {
@@ -467,7 +469,7 @@ int main(void)
     test_mixed_precision_on_device(device);
     test_singular_block_agrees(device);
     test_replay_matches_solve(device);
-    test_device_lifetime(device);
+    test_device_lifetime(device, device_index);
 
     hybsol_opencl_device_release(device);
     return test_report("test_gpu");

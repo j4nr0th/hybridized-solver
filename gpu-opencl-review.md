@@ -142,3 +142,48 @@ no `hybsol.opencl` at all — the import fails, nothing else changes.
 - The plugin reaches the bindings' helpers through a capsule
   (`hybsol._mod.backend_api`). If a future backend (CUDA) needs more helpers,
   that struct is the place to add them.
+
+## OpenCL on AMD gfx1201 — 2026-11-08
+
+Validated the backend on the ROCm 7.2.4 box: R9700 (gfx1201) + 610M iGPU
+(gfx1036), both ICDs installed (`amdocl64.icd`, `rusticl.icd`). Loader 3.0,
+`find_package(OpenCL)` green, `_mod_opencl` built.
+
+| ICD selection | `test_gpu` | python suite |
+| --- | --- | --- |
+| both (default env) | 232 checks passed | 378 passed |
+| `OCL_ICD_VENDORS=amdocl64.icd` | 210 checks passed | 378 passed |
+| `OCL_ICD_VENDORS=rusticl.icd` | 1 of 23 FAILED | 365 passed, 13 skipped |
+
+rusticl fails only the precondition `test_gpu.c:461 device != NULL` ("a device
+with double arithmetic was expected"): Mesa's rusticl reports **no fp64** on
+this build (clinfo: `Double-precision Floating-point support (n/a)` on both
+its devices), and the backend refuses any non-fp64 device (vectors are double
+everywhere), so no kernel ever compiles or runs there. Driver fact, not fixed.
+
+Device order with both ICDs (`hybsol.opencl.devices()`): index 0 is
+**rusticl's R9700** — `AMD Radeon AI PRO R9700 (radeonsi, gfx1201, ACO, DRM
+3.64, ...)`; then rusticl's iGPU (`AMD Ryzen 9 9900X ... raphael_mendocino`);
+then amdocl `gfx1036` (double ✓), then amdocl `gfx1201` (double ✓). Note the
+name sort puts the 610M ahead of the R9700 within the AMD ICD.
+
+Kernels on gfx1201 via `amdocl64`: build clean, parity probed explicitly at
+device index 3 (the suites only take the first fp64 device, index 2/gfx1036):
+double rel-err 4.73e-17, single 1.79e-8 — identical to gfx1036's numbers.
+
+Three fixes, all minimal; single-device behaviour unchanged:
+
+1. `src/opencl/device.c` `device_before` returned `by_name < 0` — never
+   negative, so qsort ordered names descending. Invisible on the single-GPU
+   NVIDIA box; with two same-kind devices the documented "then by name" order
+   broke (and `test_gpu` said so). Now `strcmp` directly.
+2. `tests/c/test_gpu.c` hardcoded index 0 in the lifetime test while main
+   picks the first fp64 device; threaded the real index through.
+3. `python/hybsol/opencl.py` `devices()` doctest claimed every found device
+   does doubles; now checks the key's type. Machine-agnostic.
+
+For the HIP phase: qsort is not stable and the order is a total order only
+while names are distinct — two ICDs naming a device alike tie on name alone
+(uuid/vendor is not a secondary key). Also, the OpenCL kind enum cannot tell
+integrated from discrete (both ICDs report GPU type for both GPUs); HIP's
+CU-count rule has no OpenCL analogue.
