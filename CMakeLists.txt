@@ -275,3 +275,20 @@ if (HYBSOL_ENABLE_OPENCL)
 
     install(TARGETS _mod_opencl DESTINATION ${SKBUILD_PROJECT_NAME})
 endif ()
+
+# The HIP backend's Python module, wired exactly like the OpenCL one: it links
+# its own copy of the core, reaches the bindings' helpers through the capsule
+# hybsol._mod publishes, and stays independently loadable.
+if (HYBSOL_ENABLE_HIP)
+    Python_add_library(_mod_hip MODULE src/python/hip_module.c WITH_SOABI)
+    target_link_libraries(_mod_hip PRIVATE hybsol_core hybsol_hip cpyutl)
+    set_property(TARGET _mod_hip PROPERTY C_STANDARD 17)
+    target_compile_definitions(_mod_hip PRIVATE CPYUTL_ENABLE_ASSERTS)
+    target_include_directories(_mod_hip PRIVATE ${NumPy_INCLUDE_DIRS})
+
+    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(_mod_hip PRIVATE -Wall -Wextra -Werror)
+    endif ()
+
+    install(TARGETS _mod_hip DESTINATION ${SKBUILD_PROJECT_NAME})
+endif ()
