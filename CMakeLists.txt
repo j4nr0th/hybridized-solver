@@ -83,6 +83,81 @@ if (HYBSOL_ENABLE_OPENCL)
     endif ()
 endif ()
 
+# The HIP backend is the second plugin: its own library and its own kernels,
+# compiled ahead of time for the architectures asked for, and nothing in
+# hybsol_core links libamdhip64. The runtime lives under /opt/rocm when CMake
+# is not told otherwise, and a machine without it builds exactly as before --
+# with the warning the missing OpenMP package gets.
+option(HYBSOL_ENABLE_HIP "Build the HIP/ROCm backend." ON)
+if (HYBSOL_ENABLE_HIP)
+    find_package(hip CONFIG QUIET HINTS /opt/rocm/lib/cmake /opt/rocm)
+    if (NOT hip_FOUND)
+        message(WARNING "HIP requested but not found; building without the HIP backend.")
+        set(HYBSOL_ENABLE_HIP OFF)
+    endif ()
+endif ()
+
+if (HYBSOL_ENABLE_HIP)
+    enable_language(HIP)
+
+    # The kernels are compiled for the GPU architectures the machine has, unless
+    # the caller pins the list. rocminfo names the agents the runtime sees --
+    # gfxNNNN, not the generic ISA families it also prints -- and where it
+    # cannot answer, this box's pair is the fallback.
+    set(HYBSOL_HIP_ARCHITECTURES "" CACHE STRING
+            "GPU architectures the HIP kernels compile for; empty auto-detects from rocminfo.")
+    if (HYBSOL_HIP_ARCHITECTURES STREQUAL "")
+        find_program(HYBSOL_ROCMINFO rocminfo HINTS /opt/rocm/bin)
+        set(_hybsol_hip_archs "")
+        if (HYBSOL_ROCMINFO)
+            execute_process(COMMAND "${HYBSOL_ROCMINFO}"
+                    OUTPUT_VARIABLE _hybsol_rocminfo OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET TIMEOUT 30)
+            string(REGEX MATCHALL "gfx[0-9][0-9][0-9]+[0-9a-zA-Z]*" _hybsol_hip_archs "${_hybsol_rocminfo}")
+            list(REMOVE_DUPLICATES _hybsol_hip_archs)
+        endif ()
+        if (_hybsol_hip_archs STREQUAL "")
+            set(_hybsol_hip_archs "gfx1201;gfx1036")
+        endif ()
+        set(CMAKE_HIP_ARCHITECTURES "${_hybsol_hip_archs}")
+        unset(_hybsol_rocminfo)
+    else ()
+        set(CMAKE_HIP_ARCHITECTURES "${HYBSOL_HIP_ARCHITECTURES}")
+    endif ()
+    message(STATUS "HIP kernels compiled for: ${CMAKE_HIP_ARCHITECTURES}")
+    unset(_hybsol_hip_archs)
+
+    # One kernel source, two object libraries: the single-precision and the
+    # double-precision instantiations, named apart by the define, since both
+    # suffixes are archived together and chosen by address at launch.
+    set_source_files_properties(src/hip/hip_kernels.cpp PROPERTIES LANGUAGE HIP)
+    add_library(hybsol_hip_k32 OBJECT src/hip/hip_kernels.cpp)
+    add_library(hybsol_hip_k64 OBJECT src/hip/hip_kernels.cpp)
+    target_compile_definitions(hybsol_hip_k64 PRIVATE HYBSOL_HIP_DOUBLE)
+    target_link_libraries(hybsol_hip_k32 PUBLIC hip::device)
+    target_link_libraries(hybsol_hip_k64 PUBLIC hip::device)
+
+    add_library(hybsol_hip STATIC
+            src/hip/device.c
+            src/hip/decomposition_hip.c
+            $<TARGET_OBJECTS:hybsol_hip_k32>
+            $<TARGET_OBJECTS:hybsol_hip_k64>)
+    add_library(hybsol::hip ALIAS hybsol_hip)
+
+    target_compile_features(hybsol_hip PUBLIC c_std_17)
+
+    # PUBLIC: a consumer of hybsol::hip links the runtime too, and reaches
+    # the core's internal declarations (the frame helpers) through src.
+    target_link_libraries(hybsol_hip PUBLIC hybsol::hybsol hip::device)
+    target_include_directories(hybsol_hip PRIVATE src)
+
+    # The host side is C17 and gets the core's warnings; the HIP compiler is
+    # not -Werror clean against its own headers, so the kernels do not.
+    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(hybsol_hip PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Werror>)
+    endif ()
+endif ()
+
 # ---------------------------------------------------------------------------
 # Core: a plain, Python-free static library.
 # ---------------------------------------------------------------------------
