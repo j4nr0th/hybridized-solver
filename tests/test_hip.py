@@ -223,14 +223,15 @@ def test_split_arith_solves_at_native_accuracy() -> None:
 
 
 @requires_device
-@pytest.mark.parametrize("mode", ["ozaki", "ozaki2"])
+@pytest.mark.parametrize("mode", ["ozaki2"])
 def test_the_ozaki_modes_are_refused_until_they_land(mode: str) -> None:
-    """An Ozaki mode names an ABI the kernels do not fill yet.
+    """An Ozaki-II mode names an ABI the kernels do not fill yet.
 
     The message carries the backend's own reason -- the text of
     ``hybsol_hip_last_error``. Double-single (``"split"``) landed with the
-    double-single kernels and became the parity test above; only the Ozaki
-    modes are still waiting.
+    double-single kernels and Ozaki-I (``"ozaki"``) with the WMMA block
+    kernels, each becoming a parity case of its own; only Ozaki-II is still
+    waiting.
     """
     system, _ = build()
     with pytest.raises(DeviceError, match="later phase"):

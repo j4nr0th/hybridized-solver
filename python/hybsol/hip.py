@@ -111,8 +111,11 @@ def decompose(
     arith : str, default: "auto"
         How the factor arithmetic runs on the device: ``"auto"`` lets the
         backend choose, ``"native"`` runs the factors in their own type.
-        ``"split"``, ``"ozaki"`` and ``"ozaki2"`` name the split-precision
-        modes, which arrive in a later phase: asking for one now raises
+        ``"split"`` carries double factors as double-single pairs on the
+        FP32 FMA unit; ``"ozaki"`` slices them for the WMMA matrix cores,
+        which needs a gfx12-family device (and runs the double-single path
+        wherever the blocks are too small for a tile). ``"ozaki2"`` names a
+        mode that arrives in a later phase: asking for it raises
         :exc:`~hybsol.DeviceError`.
 
     Returns

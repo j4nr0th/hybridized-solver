@@ -69,9 +69,10 @@ def decompose(
     n_threads : int, default: 0
         Accepted for symmetry and ignored: the device schedules its own work.
     arith : str, default: "auto"
-        The factor arithmetic mode: ``"auto"``, ``"native"``, or one of the
-        split-precision names ``"split"``, ``"ozaki"``, ``"ozaki2"``, which
-        arrive in a later phase.
+        The factor arithmetic mode: ``"auto"``, ``"native"``, or the
+        split-precision names ``"split"`` and ``"ozaki"`` -- the latter
+        needs a WMMA-capable gfx12 device. ``"ozaki2"`` names a mode that
+        arrives in a later phase.
 
     Returns
     -------

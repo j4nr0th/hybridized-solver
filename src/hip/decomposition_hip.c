@@ -24,6 +24,7 @@
 #include "core/internal.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,6 +49,15 @@ typedef struct
     uint64_t max_block;
     /** Non-zero when double factors run as double-single pairs on the FP32 FMA unit. */
     int kernels_ds;
+    /**
+     * Which Ozaki realization the two block-GEMM passes run on: 0 none,
+     * 1 the FP16 slices, 2 the signed int8 slices. Only set on a gfx12
+     * device, only for double factors, and only once a block is big enough
+     * for a 16x16 tile to pay for itself; every other pass, and every
+     * smaller system, keeps the double-single set -- Ozaki mode asked for
+     * the split paths, the matrix cores just do not apply to it.
+     */
+    int kernels_oz;
     /** What the kernels walk. */
     void *block_offsets;
     void *level_offset;
@@ -58,6 +68,8 @@ typedef struct
     void *row_entry_offset;
     void *entry_col;
     void *entry_val_offset;
+    /** The Ozaki path's shared block scales: one power-of-two double per entry, same order as ``entry_val_offset``. */
+    void *block_scales;
     /** The factors. */
     void *vals;
     /** The solution vector, double whatever the factors are. */
@@ -90,6 +102,26 @@ typedef struct
 static size_t scalar_bytes(const hybsol_precision_t precision)
 {
     return precision == HYBSOL_PRECISION_SINGLE ? sizeof(float) : sizeof(double);
+}
+
+/**
+ * The scratch stride, in elements, one work item's block walk owns.
+ *
+ * The plain and double-single paths need one max-sized block; the Ozaki
+ * scaling pass lays a panel solve in its slot -- a 16 x max_block GEMM
+ * result, the panel's inverse, and the Neumann series' working matrix,
+ * 16*max_block + 512 doubles -- while its GEMM combines stay inside one
+ * max-sized block. The larger of the two is the stride every launch uses.
+ */
+static uint64_t scratch_stride_of(const hip_state_t *const state)
+{
+    const uint64_t gemm = state->max_block * state->max_block;
+    if (state->kernels_oz == 0)
+    {
+        return gemm;
+    }
+    const uint64_t solve = 16 * state->max_block + 512;
+    return (solve > gemm) ? solve : gemm;
 }
 
 /**
@@ -286,12 +318,29 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
 
-    // Ozaki's two modes name the ABI but arrive in a later phase.
-    if (arith == HYBSOL_HIP_ARITH_OZAKI || arith == HYBSOL_HIP_ARITH_OZAKI2)
+    // Ozaki-II names the ABI but lands with its own phase: still refused.
+    if (arith == HYBSOL_HIP_ARITH_OZAKI2)
     {
-        hybsol_hip_set_error("The HIP backend's Ozaki arithmetic comes in a later phase; "
-                             "ask for auto, native, or double-single for now.");
+        hybsol_hip_set_error("The HIP backend's Ozaki-II arithmetic comes in a later phase; "
+                             "ask for auto, native, double-single, or ozaki for now.");
         return HYBSOL_ERROR_DEVICE_CAPABILITY;
+    }
+    // Ozaki-I needs the WMMA matrix cores: only the gfx12 family has them,
+    // and the kernels for this exact target are the ones CMake compiled.
+    int oz_requested = (arith == HYBSOL_HIP_ARITH_OZAKI) ? 1 : 0;
+    if (oz_requested)
+    {
+        hipDeviceProp_t prop;
+        memset(&prop, 0, sizeof(prop));
+        const hipError_t probe = hipGetDeviceProperties(&prop, (int)device->id);
+        if (probe != hipSuccess || strncmp(prop.gcnArchName, "gfx12", 5) != 0)
+        {
+            hybsol_hip_set_error("Device %llu reports %s; the Ozaki block kernels need the WMMA matrix "
+                                 "cores of a gfx12 target. Ask for auto, native, or double-single here.",
+                                 (unsigned long long)device->index,
+                                 (probe == hipSuccess) ? prop.gcnArchName : "(unknown)");
+            return HYBSOL_ERROR_DEVICE_CAPABILITY;
+        }
     }
     // Until the selection phase measures the split paths on this hardware, auto is native.
 
@@ -379,6 +428,29 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         }
     }
 
+    // Ozaki mode on a WMMA device runs the two block-GEMM passes on the
+    // matrix cores once some block reaches 16 -- the tile a WMMA call answers
+    // for. A smaller system asked for the split paths and gets them on the
+    // double-single set, which is the mode's own fallback for the passes the
+    // matrix cores cannot serve. The realization is FP16 slices by default;
+    // the environment names the int8 one until the Phase D harness measures
+    // which deserves the default.
+    if (oz_requested && precision == HYBSOL_PRECISION_DOUBLE)
+    {
+        if (state->max_block >= 16)
+        {
+            const char *const variant = getenv("HYBSOL_HIP_OZAKI_I8");
+            state->kernels_oz = (variant != NULL && variant[0] == '1') ? 2 : 1;
+            // Every pass the matrix cores do not serve -- the diagonals and
+            // the whole solve -- runs the double-single set under Ozaki mode too.
+            state->kernels_ds = 1;
+        }
+        else
+        {
+            state->kernels_ds = 1;
+        }
+    }
+
     hybsol_result_t res = HYBSOL_SUCCESS;
 
     // One read of the schedule sizes every launch: per pass, the rows it factors, their tails, its widest source list.
@@ -441,9 +513,10 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
             state->max_sources[pass] = sources;
         }
 
-        // One scratch block per work item of this pass's elimination.
+        // One scratch block per work item of this pass's elimination, at the
+        // stride every launch of this decomposition will pass.
         const size_t items = (size_t)(dec->level_offset[pass + 1] - dec->level_offset[pass]) * sources;
-        const size_t need = items * (size_t)state->max_block * (size_t)state->max_block;
+        const size_t need = items * (size_t)scratch_stride_of(state);
         if (need > scratch_elements)
         {
             scratch_elements = need;
@@ -512,7 +585,14 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
 
     uint64_t *const val_offsets = n_columns > 0 ? (uint64_t *)malloc((size_t)n_columns * sizeof(uint64_t)) : NULL;
+    double *const block_scales = (n_columns > 0 && state->kernels_oz != 0)
+                                     ? (double *)malloc((size_t)n_columns * sizeof(double))
+                                     : NULL;
     if (res == HYBSOL_SUCCESS && n_columns > 0 && val_offsets == NULL)
+    {
+        res = HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+    if (res == HYBSOL_SUCCESS && state->kernels_oz != 0 && n_columns > 0 && block_scales == NULL)
     {
         res = HYBSOL_ERROR_OUT_OF_MEMORY;
     }
@@ -547,6 +627,33 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
                 {
                     convert_into(vals + at, src, n_values, precision, sys->precision);
                 }
+                if (block_scales != NULL)
+                {
+                    // The shared exponent: one power of two per stored block, a
+                    // strict ceiling of the block's initial magnitude -- the
+                    // device rescans against growth from eliminations, so this
+                    // is the starting exponent the plan asks the host to own.
+                    double maxabs = 0.0;
+                    const double *const v = (const double *)(const void *)(vals + at);
+                    for (size_t i = 0; i < n_values; ++i)
+                    {
+                        const double a = v[i] < 0.0 ? -v[i] : v[i];
+                        if (a > maxabs)
+                        {
+                            maxabs = a;
+                        }
+                    }
+                    if (maxabs == 0.0)
+                    {
+                        block_scales[entry] = 1.0; /* the zero block: every slice comes out zero */
+                    }
+                    else
+                    {
+                        int e = 0;
+                        (void)frexp(maxabs, &e); /* 2^(e-1) <= maxabs < 2^e */
+                        block_scales[entry] = ldexp(1.0, e);
+                    }
+                }
                 at += n_values * scalar;
                 ++entry;
             }
@@ -557,8 +664,21 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     {
         res = buffer_write(device, state->entry_val_offset, val_offsets, bytes_cols);
     }
+    if (res == HYBSOL_SUCCESS && state->kernels_oz != 0 && n_columns > 0)
+    {
+        state->block_scales = buffer_create(device, (size_t)n_columns * sizeof(double));
+        if (state->block_scales == NULL)
+        {
+            res = HYBSOL_ERROR_OUT_OF_MEMORY;
+        }
+        else
+        {
+            res = buffer_write(device, state->block_scales, block_scales, (size_t)n_columns * sizeof(double));
+        }
+    }
 
     free(val_offsets);
+    free(block_scales);
     free(staging);
     if (res != HYBSOL_SUCCESS)
     {
@@ -585,12 +705,21 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     // and keeps the occupancy queries below honest.
     (void)hipSetDevice(device->id);
 
-    // The kernels are compiled into the library; nothing to build, so nothing to fetch.
+    // The kernels are compiled into the library; nothing to build, so nothing to fetch. Ozaki mode
+    // hands the two block-GEMM passes to the matrix-core set -- same walk, extra arguments.
+    const int oz = (state->kernels_oz != 0) ? 1 : 0;
     const void *const eliminate = KERNEL(state, precision, hybsol_eliminate_pass);
-    const void *const diagonal = KERNEL(state, precision, hybsol_diagonal_pass);
     const void *const scale = KERNEL(state, precision, hybsol_scale_pass);
+    const void *const oz_eliminate = (state->kernels_oz == 2) ? (const void *)&hybsol_eliminate_pass_f64_ozi8
+                                                              : (const void *)&hybsol_eliminate_pass_f64_ozf16;
+    const void *const oz_scale = (state->kernels_oz == 2) ? (const void *)&hybsol_scale_pass_f64_ozi8
+                                                          : (const void *)&hybsol_scale_pass_f64_ozf16;
+    const void *const diagonal = KERNEL(state, precision, hybsol_diagonal_pass);
 
     // Bounded work groups rather than the runtime's maximum; the grids round up to whole ones.
+    // (The Ozaki launches ignore these: one whole wavefront per work item, in work groups of
+    // exactly two wavefronts -- WMMA is a wave32 instruction on this hardware, and a 16-lane
+    // group would split a wavefront across two work items.)
     size_t local_x = 0;
     size_t local_y = 0;
     hybsol_hip_work_group_size_2d(device, eliminate, &local_x, &local_y);
@@ -601,7 +730,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     const int none = INT_MAX;
     hybsol_result_t res = buffer_write(device, state->fail_j, &none, sizeof(none));
 
-    uint64_t scratch_stride = state->max_block * state->max_block;
+    uint64_t scratch_stride = scratch_stride_of(state);
     for (uint64_t pass = 0; pass < dec->n_levels && res == HYBSOL_SUCCESS; ++pass)
     {
         const uint64_t from = dec->level_offset[pass];
@@ -616,21 +745,45 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
             uint64_t from_arg = from;
             uint64_t rows_arg = rows;
             uint64_t sources_arg = sources;
-            void *args[] = {&state->level_rows,
-                                   &state->level_k,
-                                   &state->row_n_elim,
-                                   &state->row_entry_offset,
-                                   &state->entry_col,
-                                   &state->entry_val_offset,
-                                   &state->block_offsets,
-                                   &state->vals,
-                                   &state->scratch,
-                                   &from_arg,
-                                   &rows_arg,
-                                   &sources_arg,
-                                   &scratch_stride};
-            res = kernel_launch(device, eliminate, round_up_to(rows, local_x), round_up_to(sources, local_y),
-                                local_x, local_y, args);
+            if (oz == 0)
+            {
+                void *args[] = {&state->level_rows,
+                                       &state->level_k,
+                                       &state->row_n_elim,
+                                       &state->row_entry_offset,
+                                       &state->entry_col,
+                                       &state->entry_val_offset,
+                                       &state->block_offsets,
+                                       &state->vals,
+                                       &state->scratch,
+                                       &from_arg,
+                                       &rows_arg,
+                                       &sources_arg,
+                                       &scratch_stride};
+                res = kernel_launch(device, eliminate, round_up_to(rows, local_x), round_up_to(sources, local_y),
+                                    local_x, local_y, args);
+            }
+            else
+            {
+                // The matrix-core walk wants whole wavefronts: 1-D, 64 lanes a work group,
+                // two work items each, and the shared block scales ride along.
+                const uint64_t waves = rows * sources;
+                void *args[] = {&state->level_rows,
+                                       &state->level_k,
+                                       &state->row_n_elim,
+                                       &state->row_entry_offset,
+                                       &state->entry_col,
+                                       &state->entry_val_offset,
+                                       &state->block_offsets,
+                                       &state->vals,
+                                       &state->scratch,
+                                       &from_arg,
+                                       &rows_arg,
+                                       &sources_arg,
+                                       &scratch_stride,
+                                       &state->block_scales};
+                res = kernel_launch(device, oz_eliminate, (waves + 1u) / 2u, 1, 64, 1, args);
+            }
         }
 
         // The diagonals of the rows whose last pass this is.
@@ -656,19 +809,45 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
         {
             uint64_t first_row = state->scale_offset[pass];
             uint64_t count_rows = diagonals;
-            void *args[] = {&state->dev_scale_row,
-                                   &state->dev_scale_tail,
-                                   &state->row_n_elim,
-                                   &state->row_entry_offset,
-                                   &state->entry_col,
-                                   &state->entry_val_offset,
-                                   &state->block_offsets,
-                                   &state->vals,
-                                   &first_row,
-                                   &count_rows};
-            res = kernel_launch(device, scale, round_up_to(diagonals, scale_local_x), round_up_to(tail, scale_local_y),
-                                scale_local_x, scale_local_y, args);
+            if (oz == 0)
+            {
+                void *args[] = {&state->dev_scale_row,
+                                       &state->dev_scale_tail,
+                                       &state->row_n_elim,
+                                       &state->row_entry_offset,
+                                       &state->entry_col,
+                                       &state->entry_val_offset,
+                                       &state->block_offsets,
+                                       &state->vals,
+                                       &first_row,
+                                       &count_rows};
+                res = kernel_launch(device, scale, round_up_to(diagonals, scale_local_x), round_up_to(tail, scale_local_y),
+                                    scale_local_x, scale_local_y, args);
+            }
+            else
+            {
+                // Same whole-wavefront walk as the eliminations, and the panel solve's
+                // scratch: the wave's index splits into (row, slot) on the tail stride.
+                const uint64_t waves = diagonals * tail;
+                uint64_t tail_stride = tail;
+                void *args[] = {&state->dev_scale_row,
+                                       &state->dev_scale_tail,
+                                       &state->row_n_elim,
+                                       &state->row_entry_offset,
+                                       &state->entry_col,
+                                       &state->entry_val_offset,
+                                       &state->block_offsets,
+                                       &state->vals,
+                                       &first_row,
+                                       &count_rows,
+                                       &state->block_scales,
+                                       &state->scratch,
+                                       &tail_stride,
+                                       &scratch_stride};
+                res = kernel_launch(device, oz_scale, (waves + 1u) / 2u, 1, 64, 1, args);
+            }
         }
+
     }
 
     int failed = none;
@@ -909,6 +1088,7 @@ static void backend_destroy(void *const state_ptr)
     buffer_release(state->row_entry_offset);
     buffer_release(state->entry_col);
     buffer_release(state->entry_val_offset);
+    buffer_release(state->block_scales);
     buffer_release(state->vals);
     buffer_release(state->vec);
     buffer_release(state->scratch);

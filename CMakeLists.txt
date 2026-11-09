@@ -127,33 +127,46 @@ if (HYBSOL_ENABLE_HIP)
     message(STATUS "HIP kernels compiled for: ${CMAKE_HIP_ARCHITECTURES}")
     unset(_hybsol_hip_archs)
 
-    # One kernel source, three object libraries: the single-precision, the
-    # double-precision, and the double-single (double-factor arithmetic on the
-    # FP32 FMA unit) instantiations, named apart by the defines, since all
-    # three suffix sets are archived together and chosen by address at launch.
+    # One kernel source, five object libraries: the single-precision, the
+    # double-precision, the double-single (double-factor arithmetic on the
+    # FP32 FMA unit), and the two Ozaki realizations -- FP16 slices into the
+    # f32-accumulating WMMA tile and signed int8 slices into the int32 one --
+    # named apart by the defines, since all five suffix sets are archived
+    # together and chosen by address at launch.
     set_source_files_properties(src/hip/hip_kernels.cpp PROPERTIES LANGUAGE HIP)
     add_library(hybsol_hip_k32 OBJECT src/hip/hip_kernels.cpp)
     add_library(hybsol_hip_k64 OBJECT src/hip/hip_kernels.cpp)
     add_library(hybsol_hip_kds OBJECT src/hip/hip_kernels.cpp)
+    add_library(hybsol_hip_kozf16 OBJECT src/hip/hip_kernels.cpp)
+    add_library(hybsol_hip_kozi8 OBJECT src/hip/hip_kernels.cpp)
     target_compile_definitions(hybsol_hip_k64 PRIVATE HYBSOL_HIP_DOUBLE)
     target_compile_definitions(hybsol_hip_kds PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_DS)
-    # The double-single chain is error-free transforms: TwoProd and TwoSum
-    # balance a rounded product against its captured error, and any multiply
-    # and add the compiler fuses beyond the fmaf the source asks for re-rounds
-    # a term that balance depends on -- measured: contraction collapses the
-    # split path to plain float accuracy. So this instantiation compiles with
-    # no implicit fusion.
+    target_compile_definitions(hybsol_hip_kozf16 PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_OZ_F16)
+    target_compile_definitions(hybsol_hip_kozi8 PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_OZ_I8)
+    # The double-single chain and both Ozaki walks are error-free transforms:
+    # TwoProd and TwoSum balance a rounded product against its captured
+    # error, and the slice windows are nearest-integer windows of exact
+    # quotients -- any multiply and add the compiler fuses beyond the fma the
+    # source asks for re-rounds a term the balance depends on (measured in
+    # C1: contraction collapses the split path to plain float accuracy). So
+    # these instantiations compile with no implicit fusion.
     target_compile_options(hybsol_hip_kds PRIVATE -ffp-contract=off)
+    target_compile_options(hybsol_hip_kozf16 PRIVATE -ffp-contract=off)
+    target_compile_options(hybsol_hip_kozi8 PRIVATE -ffp-contract=off)
     target_link_libraries(hybsol_hip_k32 PUBLIC hip::device)
     target_link_libraries(hybsol_hip_k64 PUBLIC hip::device)
     target_link_libraries(hybsol_hip_kds PUBLIC hip::device)
+    target_link_libraries(hybsol_hip_kozf16 PUBLIC hip::device)
+    target_link_libraries(hybsol_hip_kozi8 PUBLIC hip::device)
 
     add_library(hybsol_hip STATIC
             src/hip/device.c
             src/hip/decomposition_hip.c
             $<TARGET_OBJECTS:hybsol_hip_k32>
             $<TARGET_OBJECTS:hybsol_hip_k64>
-            $<TARGET_OBJECTS:hybsol_hip_kds>)
+            $<TARGET_OBJECTS:hybsol_hip_kds>
+            $<TARGET_OBJECTS:hybsol_hip_kozf16>
+            $<TARGET_OBJECTS:hybsol_hip_kozi8>)
     add_library(hybsol::hip ALIAS hybsol_hip)
 
     target_compile_features(hybsol_hip PUBLIC c_std_17)

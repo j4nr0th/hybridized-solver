@@ -439,11 +439,10 @@ static void test_split_parity(hybsol_hip_device_t *const device)
     hybsol_system_destroy(sys);
 }
 
-/** The Ozaki modes name the ABI but land in a later phase: asked for, refused. */
+/** Ozaki-II names the ABI but lands in a later phase: asked for, refused. (Ozaki-I landed with the WMMA kernels; Ozaki-II stays on the waiting list.) */
 static void test_split_modes_refused(hybsol_hip_device_t *const device)
 {
     static const hybsol_hip_arith_t later[] = {
-        HYBSOL_HIP_ARITH_OZAKI,
         HYBSOL_HIP_ARITH_OZAKI2,
     };
 

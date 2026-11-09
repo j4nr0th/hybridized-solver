@@ -23,6 +23,24 @@
  * instead, through the same un-#ifdef'd helpers the _f64 pass uses. Which
  * set a launch reaches is the host's choice, so the mode costs nothing here.
  *
+ * A fourth and fifth instantiation, each under -DHYBSOL_HIP_DOUBLE plus
+ * -DHYBSOL_HIP_OZ_F16 or -DHYBSOL_HIP_OZ_I8 (and -ffp-contract=off for the
+ * same reason as the double-single object: the slice windows are exact
+ * integer windows of exact quotients, and a fused multiply-add the compiler
+ * invents past the named fma re-rounds a term that balance depends on),
+ * carry the two block-GEMM passes -- ``eliminate_pass`` and ``scale_pass``
+ * only -- on the RDNA4 matrix cores by Ozaki-I mantissa slicing, entry
+ * points suffixed _f64_ozf16 and _f64_ozi8. Each takes the double factors
+ * and a per-entry-block shared scale (``block_scales``, computed on the
+ * host, one power of two per block); the slices and every product between
+ * them are exact by construction, and only the pruned slice-pair band is
+ * lost -- see the Ozaki section below for the numerics. Every other pass,
+ * and every work item whose blocks are too big for the tile walk or carry
+ * an entry past the sliced range, keeps the plain double arithmetic the
+ * file already has; the host simply never launches these entry points on a
+ * device without WMMA, and the whole section is compiled out on a
+ * non-gfx12 target so one source still builds for gfx1036.
+ *
  * The two dead helpers of the OpenCL string -- ``eliminate_step`` and
  * ``invert_diagonal_into_row``, superseded by the inline walks in the kernels
  * -- are not transcribed: no kernel calls them.
@@ -30,7 +48,7 @@
 
 #include <hip/hip_runtime.h>
 
-#ifdef HYBSOL_HIP_DS
+#if defined(HYBSOL_HIP_DS) || defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
 #include "ds_math.h"
 #endif
 
@@ -38,6 +56,10 @@
 typedef double scalar;
 #ifdef HYBSOL_HIP_DS
 #define HYBSOL_NAME(n) hybsol_##n##_f64_ds
+#elif defined(HYBSOL_HIP_OZ_F16)
+#define HYBSOL_NAME(n) hybsol_##n##_f64_ozf16
+#elif defined(HYBSOL_HIP_OZ_I8)
+#define HYBSOL_NAME(n) hybsol_##n##_f64_ozi8
 #else
 #define HYBSOL_NAME(n) hybsol_##n##_f64
 #endif
@@ -316,6 +338,471 @@ static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigne
 
 #endif /* HYBSOL_HIP_DS */
 
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+
+/* --------------------------------------------------------------------- */
+/* Ozaki-I on the RDNA4 matrix cores                                       */
+/* --------------------------------------------------------------------- */
+/*
+ * Scheme (Ozaki et al. 2012; Ootomo et al. for the FP16-slice/FP32-accumulator
+ * pairing; arXiv:2409.13313 for INT8 units): every stored block carries one
+ * power-of-two shared scale, a strict ceiling of the block's largest element,
+ * so every element x has |x/scale| < 1 exactly (a zero block gets scale 1 and
+ * every slice comes out zero). Each element then deconstructs into k slices of
+ * tau bits: slice i the integer nearest the residue the slices before it left,
+ * x/scale = sum_i s_i 2^{-tau i} to within 2^{-tau k}. Each window step is
+ * exact in double -- m = x/scale is a power-of-two scaling, |residue| bounds
+ * every later window below 2^{tau-1}, and subtract-then-shift keeps both
+ * steps unrounded (all windows are integers far inside the 53-bit significand);
+ * -ffp-contract=off on this object (C1's lesson: implicit
+ * fusion re-rounds a term an exact transform's balance depends on) makes sure
+ * no *other* contraction joins in. Nothing the matrix cores touch ever
+ * rounds: the slice scales at least double the strict power-of-two ceiling
+ * of their block, so |x/scale| <= 1/2 keeps every window at or under
+ * 2^(tau-1) -- |s| <= 1024 in _Float16's 11-bit significand, |s| <= 64 for
+ * signed int8 -- integers the input type carries exactly, and the
+ * combine folds each tile's i32/f32 accumulator out in double with the
+ * power-of-two weight 2^{-tau(i+j)}, scaling back by scale_a * scale_b. Only
+ * the pruned band is lost: the dropped slice pairs' total contribution sits
+ * below 2^{-50} of a block's magnitude, the deepest kept pair at
+ * 2^{-tau*6} (f16) or 2^{-tau*10} (i8) -- 15 of 25 and 43 of 64 products, the
+ * Ozaki-I pruning at target band t ~ 36 the digest's cost table counts.
+ *
+ * Accumulation exactness (why the f16 walk splits its k dimension): the i8
+ * path's int32 accumulator carries 16 * 64^2 = 2^16 per tile and pair
+ * exactly, whatever the blocks' scales. The f16 path's float accumulator is
+ * exact for integers only up to 2^24: leading slices reach 2^10, so a
+ * product reaches 2^20 and a full 16-term sum brushes that ceiling. The
+ * walk therefore runs each pair as groups of at most four products --
+ * quartets for the leading pair, halves whenever exactly one operand is
+ * leading, singles otherwise -- each group a separate WMMA call whose
+ * partial sums stay at or under 4 * 2^20 < 2^22, and the double combine
+ * adds the groups. No f32 rounding ever happens; the only error in the
+ * whole path is the pruned band.
+ *
+ * Fragments: one wavefront (32 lanes) carries one 16x16 output tile, the
+ * layout the Phase D probe pinned down numerically at gfx1201 -- lane L holds
+ * A's row L%16 at k = k0 + 8(L/16) + e and B's column L%16 at the same k
+ * (e = 0..7, the guide's reference-kernel convention: the hardware pairs A's
+ * slot e with B's slot e of the same lane, so only the two loads' consistency
+ * matters -- the i8 byte order inside the two registers passed either way for
+ * the same reason), and register g of the accumulator is row (L/16)*8 + g,
+ * column L%16. The host launches these entry points 1-D with workgroups of
+ * 64 lanes -- exactly two wavefronts, one work item each -- and the kernel
+ * recovers the (which, m) pair the plain kernels walk from the wave index.
+ */
+#if defined(__gfx1200__) || defined(__gfx1201__)
+
+using oz_v8half = _Float16 [[clang::ext_vector_type(8)]];
+using oz_v8float = float [[clang::ext_vector_type(8)]];
+using oz_v2int = int [[clang::ext_vector_type(2)]];
+using oz_v8int = int [[clang::ext_vector_type(8)]];
+
+/*
+ * Kept slice pairs, zero-based (u = slice index - 1): f16 keeps u+v <= 4
+ * (15 of 25), i8 keeps u+v <= 8 (43 of 64).
+ */
+static __device__ __constant__ const unsigned char oz_f16_pairs[15][2] = {
+    {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2}, {2, 1}, {3, 0}, {0, 4}, {1, 3}, {2, 2}, {3, 1}, {4, 0}
+};
+static __device__ __constant__ const unsigned char oz_i8_pairs[43][2] = {
+    {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2}, {2, 1}, {3, 0}, {0, 4}, {1, 3}, {2, 2}, {3, 1},
+    {4, 0}, {0, 5}, {1, 4}, {2, 3}, {3, 2}, {4, 1}, {5, 0}, {0, 6}, {1, 5}, {2, 4}, {3, 3}, {4, 2}, {5, 1}, {6, 0},
+    {0, 7}, {1, 6}, {2, 5}, {3, 4}, {4, 3}, {5, 2}, {6, 1}, {7, 0}, {1, 7}, {2, 6}, {3, 5}, {4, 4}, {5, 3}, {6, 2},
+    {7, 1}
+};
+
+/* Pair weight 2^{-tau(u+v+2)}: exact powers of two, spelled out. */
+static __device__ __constant__ const double oz_f16_weights[5] = {2.384185791015625e-07, 1.1641532182693481e-10,
+                                                                 5.684341886080802e-14, 2.7755575615628914e-17,
+                                                                 1.3552527156068805e-20};
+static __device__ __constant__ const double oz_i8_weights[9] = {
+    6.103515625e-05,        4.76837158203125e-07,      3.725290298461914e-09,    2.9103830456733704e-11,
+    2.2737367544323206e-13, 1.7763568394002505e-15,    1.3877787807814457e-17,   1.0842021724855044e-19,
+    8.470329472543003e-22};
+
+/*
+ * The scale a block is actually sliced at: two times the strict power-of-two
+ * ceiling of its own largest element (frexp answers it exactly), floored at
+ * twice whatever the host precomputed at create. The host scale covers the
+ * *initial* values; eliminations rewrite blocks and can grow them -- the same
+ * fact the double-single mode's range guard exists for -- so the device
+ * rescans the block it loads and takes the larger ceiling. The extra factor
+ * two is what makes rounding safe: |x/scale| <= 1/2 lands every leading
+ * window at or under 2^(tau-1) -- |s_1| <= 1024 in _Float16 and |s_1| <= 64
+ * in signed int8 -- where a nearest-integer step can never reach the +128 a
+ * signed byte cannot spell. Slicing still spans 50 (f16) or 56 (i8) bits of
+ * the significand, far past the pruned band.
+ */
+static __device__ double oz_scale_of(const double *const m, const unsigned long count, const double host_scale)
+{
+    double maxabs = 0.0;
+    for (unsigned long i = 0; i < count; ++i)
+    {
+        const double v = m[i] < 0.0 ? -m[i] : m[i];
+        if (v > maxabs)
+            maxabs = v;
+    }
+    if (maxabs == 0.0)
+        return (host_scale > 2.0) ? host_scale : 2.0;
+    int e = 0;
+    (void)frexp(maxabs, &e); /* 2^(e-1) <= maxabs < 2^e */
+    const double s = ldexp(1.0, e + 1);
+    return (host_scale > s) ? host_scale : s;
+}
+
+/* The k slice windows of one element m = x/scale, zero-based index = slice-1. */
+static __device__ inline void oz_window_f16(const double m, _Float16 *const out)
+{
+    double q = m * 2048.0; /* 2^tau */
+    #pragma unroll
+    for (int i = 0; i < HYBSOL_OZ_F16_SLICES; ++i)
+    {
+        out[i] = (_Float16)nearbyint(q); /* every window at or under 2^(tau-1): exact in f16 */
+        if (i + 1 < HYBSOL_OZ_F16_SLICES)
+            q = (q - (double)out[i]) * 2048.0; /* the residue, shifted: both steps exact */
+    }
+}
+
+static __device__ inline void oz_window_i8(const double m, signed char *const out)
+{
+    double q = m * 128.0; /* 2^tau */
+    #pragma unroll
+    for (int i = 0; i < HYBSOL_OZ_I8_SLICES; ++i)
+    {
+        out[i] = (signed char)nearbyint(q); /* the halved window keeps every slice at or under 64 */
+        if (i + 1 < HYBSOL_OZ_I8_SLICES)
+            q = (q - (double)out[i]) * 128.0; /* the residue, shifted: both steps exact */
+    }
+}
+
+/*
+ * out = a @ b: a is rows_a x inner stored with row stride a_stride, b is
+ * inner x cols_b dense but only its first rows_b (<= inner) rows are stored
+ * -- rows past that read as zero, which keeps edge panels from touching
+ * memory past their block and is exact whenever the caller's operand needs
+ * only those rows. rows_a, inner and cols_b all <= 32, and one wavefront
+ * tiles the output in ceil(/16)^2 WMMA tiles. The scales are powers of two
+ * that dominate the two blocks' largest entries by at least a factor two
+ * (never zero), and the walk splits each pair's k dimension into groups of
+ * at most four products so every float partial sum stays an exact integer
+ * below 2^24 -- see the accumulation note at the head of this section.
+ */
+static __device__ void oz_block_gemm_f16(const double *a, const double scale_a, const unsigned rows_a,
+                                         const unsigned a_stride, const unsigned inner, const double *b,
+                                         const double scale_b, const unsigned rows_b, const unsigned cols_b,
+                                         double *out)
+{
+    const unsigned lane = threadIdx.x & 31u;
+    const unsigned kbase_lane = 8u * (lane >> 4); /* the lane group's first k inside a k tile */
+    const double inv_a = 1.0 / scale_a, inv_b = 1.0 / scale_b; /* powers of two: exact */
+    for (unsigned ti = 0; ti * 16u < rows_a; ++ti)
+    {
+        for (unsigned tj = 0; tj * 16u < cols_b; ++tj)
+        {
+            double acc[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            for (unsigned tk = 0; tk * 16u < inner; ++tk)
+            {
+                const unsigned row = ti * 16u + (lane & 15u);
+                const unsigned col = tj * 16u + (lane & 15u);
+                _Float16 asl[8][HYBSOL_OZ_F16_SLICES];
+                _Float16 bsl[8][HYBSOL_OZ_F16_SLICES];
+                #pragma unroll
+                for (unsigned e = 0; e < 8u; ++e)
+                {
+                    const unsigned kk = tk * 16u + kbase_lane + e;
+                    if (row < rows_a && kk < inner)
+                        oz_window_f16(a[row * a_stride + kk] * inv_a, &asl[e][0]);
+                    else
+                    {
+                        #pragma unroll
+                        for (int s = 0; s < HYBSOL_OZ_F16_SLICES; ++s)
+                            asl[e][s] = (_Float16)0;
+                    }
+                    if (col < cols_b && kk < inner && kk < rows_b)
+                        oz_window_f16(b[kk * cols_b + col] * inv_b, &bsl[e][0]);
+                    else
+                    {
+                        #pragma unroll
+                        for (int s = 0; s < HYBSOL_OZ_F16_SLICES; ++s)
+                            bsl[e][s] = (_Float16)0;
+                    }
+                }
+                #pragma unroll
+                for (unsigned p = 0; p < 15u; ++p)
+                {
+                    const unsigned u = oz_f16_pairs[p][0], v = oz_f16_pairs[p][1];
+                    const unsigned groups = (u == 0u && v == 0u) ? 4u : ((u == 0u || v == 0u) ? 2u : 1u);
+                    #pragma unroll
+                    for (unsigned gq = 0; gq < 4u; ++gq)
+                    {
+                        if (gq >= groups)
+                            break;
+                        const unsigned span = 16u / groups;
+                        const unsigned klo = span * gq;
+                        oz_v8half frag_a = {}, frag_b = {};
+                        #pragma unroll
+                        for (unsigned e = 0; e < 8u; ++e)
+                        {
+                            if (kbase_lane + e < klo || kbase_lane + e >= klo + span)
+                                continue;
+                            frag_a[e] = asl[e][u];
+                            frag_b[e] = bsl[e][v];
+                        }
+                        oz_v8float c = {};
+                        c = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(frag_a, frag_b, c);
+                        const double w = oz_f16_weights[u + v];
+                        #pragma unroll
+                        for (unsigned g = 0; g < 8u; ++g)
+                            acc[g] += (double)c[g] * w;
+                    }
+                }
+            }
+            const double weight = scale_a * scale_b;
+            const unsigned crow = ti * 16u + (lane >> 4) * 8u;
+            const unsigned ccol = tj * 16u + (lane & 15u);
+            #pragma unroll
+            for (unsigned g = 0; g < 8u; ++g)
+            {
+                if (crow + g < rows_a && ccol < cols_b)
+                    out[(crow + g) * cols_b + ccol] = acc[g] * weight;
+            }
+        }
+    }
+}
+
+/* The int8 walk: slices at or under 127 in absolute value, every product and
+   every 16-term partial sum carried exactly by the int32 accumulator (the
+   signed-operand form, unclamped), so one WMMA call per pair and k tile. */
+static __device__ void oz_block_gemm_i8(const double *a, const double scale_a, const unsigned rows_a,
+                                        const unsigned a_stride, const unsigned inner, const double *b,
+                                        const double scale_b, const unsigned rows_b, const unsigned cols_b,
+                                        double *out)
+{
+    const unsigned lane = threadIdx.x & 31u;
+    const unsigned kbase_lane = 8u * (lane >> 4);
+    const double inv_a = 1.0 / scale_a, inv_b = 1.0 / scale_b;
+    for (unsigned ti = 0; ti * 16u < rows_a; ++ti)
+    {
+        for (unsigned tj = 0; tj * 16u < cols_b; ++tj)
+        {
+            double acc[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            for (unsigned tk = 0; tk * 16u < inner; ++tk)
+            {
+                const unsigned row = ti * 16u + (lane & 15u);
+                const unsigned col = tj * 16u + (lane & 15u);
+                signed char asl[8][HYBSOL_OZ_I8_SLICES];
+                signed char bsl[8][HYBSOL_OZ_I8_SLICES];
+                #pragma unroll
+                for (unsigned e = 0; e < 8u; ++e)
+                {
+                    const unsigned kk = tk * 16u + kbase_lane + e;
+                    if (row < rows_a && kk < inner)
+                        oz_window_i8(a[row * a_stride + kk] * inv_a, &asl[e][0]);
+                    else
+                    {
+                        #pragma unroll
+                        for (int s = 0; s < HYBSOL_OZ_I8_SLICES; ++s)
+                            asl[e][s] = (signed char)0;
+                    }
+                    if (col < cols_b && kk < inner && kk < rows_b)
+                        oz_window_i8(b[kk * cols_b + col] * inv_b, &bsl[e][0]);
+                    else
+                    {
+                        #pragma unroll
+                        for (int s = 0; s < HYBSOL_OZ_I8_SLICES; ++s)
+                            bsl[e][s] = (signed char)0;
+                    }
+                }
+                #pragma unroll
+                for (unsigned p = 0; p < 43u; ++p)
+                {
+                    const unsigned u = oz_i8_pairs[p][0], v = oz_i8_pairs[p][1];
+                    oz_v2int frag_a = {}, frag_b = {};
+                    unsigned long long ra = 0, rb = 0;
+                    #pragma unroll
+                    for (unsigned e = 0; e < 8u; ++e)
+                    {
+                        ra |= ((unsigned long long)(unsigned char)asl[e][u]) << (8u * e);
+                        rb |= ((unsigned long long)(unsigned char)bsl[e][v]) << (8u * e);
+                    }
+                    frag_a[0] = (int)(ra & 0xffffffffu);
+                    frag_a[1] = (int)(ra >> 32);
+                    frag_b[0] = (int)(rb & 0xffffffffu);
+                    frag_b[1] = (int)(rb >> 32);
+                    oz_v8int c = {};
+                    c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, frag_a, true, frag_b, c, false);
+                    const double w = oz_i8_weights[u + v];
+                    #pragma unroll
+                    for (unsigned g = 0; g < 8u; ++g)
+                        acc[g] += (double)c[g] * w;
+                }
+            }
+            const double weight = scale_a * scale_b;
+            const unsigned crow = ti * 16u + (lane >> 4) * 8u;
+            const unsigned ccol = tj * 16u + (lane & 15u);
+            #pragma unroll
+            for (unsigned g = 0; g < 8u; ++g)
+            {
+                if (crow + g < rows_a && ccol < cols_b)
+                    out[(crow + g) * cols_b + ccol] = acc[g] * weight;
+            }
+        }
+    }
+}
+
+/* The dispatch the kernels call: whichever realization this object compiled. */
+static __device__ void oz_block_gemm(const double *a, const double scale_a, const unsigned rows_a,
+                                     const unsigned a_stride, const unsigned inner, const double *b,
+                                     const double scale_b, const unsigned rows_b, const unsigned cols_b,
+                                     double *out)
+{
+#ifdef HYBSOL_HIP_OZ_I8
+    oz_block_gemm_i8(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
+#else
+    oz_block_gemm_f16(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
+#endif
+}
+
+/*
+ * scale_pass on the matrix cores. Inverting each unit-triangular LU panel is
+ * a finite Neumann series: with W = I - Lpanel, Lpanel = I - W is unit lower
+ * triangular, so W is strictly lower triangular and W^16 = 0 identically at
+ * any magnitude -- hence sum_{m<16} W^m is Lpanel^-1 exactly in exact
+ * arithmetic. The series runs as its doubling product form, four P <- P + P
+ * @ W^steps and three W <- W @ W squarings through the same tile walk; P and
+ * W are rescanned for fresh strict-ceiling scales after every step, so their
+ * windows stay legal however far the intermediates grow. Rows and
+ * columns past the block's own edge carry the identity through W and P, and
+ * only rows inside the edge are ever applied to a right-hand side. The two
+ * GEMM walks around the inversion -- folding the earlier panels' eliminations
+ * into this panel's right-hand side, and applying the inverse -- read the
+ * stored blocks with their own rescanned scales (eliminations grow entries,
+ * exactly as in the double-single range guard). Accumulation between GEMMs
+ * stays in double, matching the plain path's scratch contract.
+ *
+ * scratch layout, one stride per work item: G (16 x size_tail), P (16x16),
+ * W (16x16) -- 16*max_block + 512 doubles, the stride the host sized.
+ */
+static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rhs, const double host_rhs,
+                                    const unsigned size, const unsigned size_tail, double *scratch)
+{
+    double *const g = scratch;
+    /* G holds every tile walk's output -- 16 rows by size_tail columns for
+     * the block walks, 16 by 16 for the Neumann steps -- so it starts at a
+     * region of max(16*size_tail, 256) doubles; P and W follow, one stride
+     * per work item, the host having sized the stride as 16*max_block + 512
+     * whenever Ozaki is live. */
+    double *const p = scratch + (size_tail > 15u ? 16u * size_tail : 256u);
+    double *const wmat = p + 16u * 16u;
+    const double scale_lu = oz_scale_of(lu, size * size, host_lu);
+    const unsigned panels = (size + 15u) / 16u;
+    for (unsigned pp = 0; pp < panels; ++pp)
+    {
+        const unsigned prow = pp * 16u;
+        const unsigned prows = (size - prow < 16u) ? size - prow : 16u;
+
+        for (unsigned cp = 0; cp < pp; ++cp)
+        {
+            const double scale_cp = oz_scale_of(rhs + cp * 16u * size_tail, 16u * size_tail, host_rhs);
+            oz_block_gemm(lu + prow * size + cp * 16u, scale_lu, prows, size, 16u, rhs + cp * 16u * size_tail,
+                          scale_cp, 16u, size_tail, g);
+            for (unsigned r = 0; r < prows; ++r)
+                for (unsigned c = 0; c < size_tail; ++c)
+                    rhs[(prow + r) * size_tail + c] -= g[r * size_tail + c];
+        }
+
+        /* W = I - L: zero diagonal, minus the strictly-lower (r > c) LU
+         * entries -- nothing from U's upper half, or W would not be strictly
+         * lower triangular and the series would diverge. It stays strictly
+         * below scale_lu (which strictly bounds |lu|), so the same ceiling
+         * slices it; the series sums raw W^m, so P = L^-1. */
+        #pragma unroll
+        for (unsigned r = 0; r < 16u; ++r)
+            for (unsigned c = 0; c < 16u; ++c)
+                wmat[r * 16u + c] = (r > c && r < prows && prow + c < size)
+                                        ? -lu[(prow + r) * size + prow + c]
+                                        : 0.0;
+        #pragma unroll
+        for (unsigned r = 0; r < 16u; ++r)
+            for (unsigned c = 0; c < 16u; ++c)
+                p[r * 16u + c] = (r == c ? 1.0 : 0.0);
+
+        /* P accumulates the product form of the finite geometric series:
+         * (I + W)(I + W^2)(I + W^4)(I + W^8) = sum_{m<16} W^m exactly for a
+         * nilpotent W -- four accumulate steps and three squarings, each a
+         * tile walk through the G region, instead of fifteen steps of a
+         * chain that would only be a truncated series step by step. P and W
+         * are rescanned for strict power-of-two scales between steps, so
+         * the windows stay legal however large the intermediate powers. */
+        double scale_p = 2.0; /* |I| <= 1 < 2 */
+        double scale_w = scale_lu;
+        for (unsigned step = 0; step < 4u; ++step)
+        {
+            oz_block_gemm(p, scale_p, 16u, 16u, 16u, wmat, scale_w, 16u, 16u, g);
+            for (unsigned i = 0; i < 256u; ++i)
+                p[i] += g[i];
+            if (step + 1u < 4u)
+            {
+                oz_block_gemm(wmat, scale_w, 16u, 16u, 16u, wmat, scale_w, 16u, 16u, g);
+                for (unsigned i = 0; i < 256u; ++i)
+                    wmat[i] = g[i];
+                scale_w = oz_scale_of(wmat, 256u, 1.0);
+            }
+            scale_p = oz_scale_of(p, 256u, 1.0);
+        }
+
+        /* What is left is the block-diagonal solve: this panel's right-hand
+         * side, folded clean by the loop above, gets replaced by P @ it --
+         * replaced, not added to: L_pp^-1 acts on the panel as a whole. The
+         * rows_b bound keeps the edge panel's rows past the block's end out
+         * of both the reads and the product (P is lower triangular, so those
+         * rows only ever feed output rows outside the edge, which are
+         * dropped). */
+        const double scale_pp = oz_scale_of(rhs + prow * size_tail, prows * size_tail, host_rhs);
+        oz_block_gemm(p, scale_p, 16u, 16u, 16u, rhs + prow * size_tail, scale_pp, prows, size_tail, g);
+        for (unsigned r = 0; r < prows; ++r)
+            for (unsigned c = 0; c < size_tail; ++c)
+                rhs[(prow + r) * size_tail + c] = g[r * size_tail + c];
+    }
+
+    /* The Neumann series finished each panel's L solve; the U half is a
+     * back-substitution over the panel structure, walked the other way: by
+     * the time panel pp is reached, every panel below it is final, so one
+     * dense tile walk per (pp, cp) subtracts U_pp,cp @ x_cp, and a 16x16
+     * triangular finish -- cheap next to the walks, and the divisions are
+     * the same scalar ones the diagonal pass itself does in double. */
+    for (unsigned pp = panels; pp > 0; --pp)
+    {
+        const unsigned prow = (pp - 1u) * 16u;
+        const unsigned prows = (size - prow < 16u) ? size - prow : 16u;
+
+        for (unsigned cp = pp; cp < panels; ++cp)
+        {
+            const unsigned prows_cp = (size - cp * 16u < 16u) ? size - cp * 16u : 16u;
+            const double scale_cp = oz_scale_of(rhs + cp * 16u * size_tail, prows_cp * size_tail, host_rhs);
+            oz_block_gemm(lu + prow * size + cp * 16u, scale_lu, prows, size, 16u, rhs + cp * 16u * size_tail,
+                          scale_cp, prows_cp, size_tail, g);
+            for (unsigned r = 0; r < prows; ++r)
+                for (unsigned c = 0; c < size_tail; ++c)
+                    rhs[(prow + r) * size_tail + c] -= g[r * size_tail + c];
+        }
+
+        for (unsigned c = 0; c < size_tail; ++c)
+            for (unsigned r = prows; r > 0; --r)
+            {
+                double acc = rhs[(prow + r - 1) * size_tail + c];
+                for (unsigned j = r; j < prows; ++j)
+                    acc -= lu[(prow + r - 1) * size + prow + j] * rhs[(prow + j) * size_tail + c];
+                rhs[(prow + r - 1) * size_tail + c] = acc / lu[(prow + r - 1) * size + prow + r - 1];
+            }
+    }
+}
+
+#endif /* __gfx1200__ || __gfx1201__ */
+
+#endif /* HYBSOL_HIP_OZ_F16 || HYBSOL_HIP_OZ_I8 */
+
 /* One pass's eliminations: a work item per (block row, source block) of the grid's second dimension. */
 /* Occurrences that factor a diagonal instead are left to hybsol_diagonal_pass. */
 /* Each source entry has its own destination, so no two work items write the same block. */
@@ -324,13 +811,31 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
                                             const unsigned long *entry_col, const unsigned long *entry_val_offset,
                                             const unsigned long *block_offsets, scalar *vals, scalar *scratch,
                                             const unsigned long pass_first, const unsigned long pass_count,
-                                            const unsigned long sources_stride, const unsigned long scratch_stride)
+                                            const unsigned long sources_stride, const unsigned long scratch_stride
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+                                            ,
+                                            const double *block_scales
+#endif
+                                            )
 {
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+    /* The Ozaki builds run one whole wavefront per work item: the host
+       launches 1-D with workgroups of 64 lanes, and the wave's index carries
+       the (which, m) pair the plain kernels walk with two grid dimensions.
+       The pair is wave-uniform by construction, so every lane agrees. */
+    const unsigned long wave = HYBSOL_GID0 >> 5;
+    const unsigned long which = wave / sources_stride;
+    const unsigned long m = wave % sources_stride;
+    if (which >= pass_count)
+        return;
+    const unsigned long j = pass_first + which;
+#else
     const unsigned long which = HYBSOL_GID0;
     if (which >= pass_count)
         return;
     const unsigned long j = pass_first + which;
     const unsigned long m = HYBSOL_GID1;
+#endif
 
     const unsigned long row = level_rows[j];
     const unsigned long step = level_k[j];
@@ -369,6 +874,24 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
     const scalar *const left = vals + entry_val_offset[at_step];
     const scalar *const right = vals + entry_val_offset[entry_src];
     scalar *const dest_block = vals + entry_val_offset[at_tgt + dest];
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    /* The matrix cores when the whole pair fits the tile walk and every entry
+       sits in the range the slicing carries; the host only reaches this entry
+       point on a WMMA device with blocks that big, but the per-pair bounds
+       here are what keep a mixed system — one small pair among large ones —
+       correct. Anything else falls through to the plain double walk. */
+    if (size_tgt <= 32u && size_src <= 32u && n_cols <= 32u && oz_block_fits(left, size_tgt * size_src)
+        && oz_block_fits(right, size_src * n_cols))
+    {
+        oz_block_gemm(left, oz_scale_of(left, size_tgt * size_src, block_scales[at_step]), size_tgt, size_src,
+                      size_src, right, oz_scale_of(right, size_src * n_cols, block_scales[entry_src]), size_src,
+                      n_cols, out);
+        mat_subtract(dest_block, out, size_tgt, n_cols);
+        return;
+    }
+#endif
+#endif
 #ifdef HYBSOL_HIP_DS
     if (ds_fits(left, size_tgt * size_src) && ds_fits(right, size_src * n_cols)
         && ds_fits(dest_block, size_tgt * n_cols))
@@ -418,23 +941,54 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
                                         const unsigned long *row_n_elim, const unsigned long *row_entry_offset,
                                         const unsigned long *entry_col, const unsigned long *entry_val_offset,
                                         const unsigned long *block_offsets, scalar *vals,
-                                        const unsigned long pass_first, const unsigned long pass_count)
+                                        const unsigned long pass_first, const unsigned long pass_count
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+                                            ,
+                                            const double *block_scales, scalar *scratch,
+                                            const unsigned long tail_stride, const unsigned long scratch_stride
+#endif
+                                            )
 {
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+    /* One wavefront per work item, the wave's index carrying the (row, tail
+       slot) pair -- see the note at the eliminate entry's head. */
+    const unsigned long wave = HYBSOL_GID0 >> 5;
+    const unsigned long which = wave / tail_stride;
+    const unsigned long gid1 = wave % tail_stride;
+    if (which >= pass_count)
+        return;
+#else
     const unsigned long which = HYBSOL_GID0;
     if (which >= pass_count)
         return;
+    const unsigned long gid1 = HYBSOL_GID1;
+#endif
     const unsigned long row = scale_rows[pass_first + which];
     const unsigned long tail = scale_tail[pass_first + which];
     const unsigned long at = row_entry_offset[row];
     const unsigned long i_diag = row_n_elim[row];
-    const unsigned long slot = i_diag + 1 + HYBSOL_GID1;
-    if (HYBSOL_GID1 >= tail)
+    const unsigned long slot = i_diag + 1 + gid1;
+    if (gid1 >= tail)
         return;
 
     const unsigned long size = block_size(block_offsets, row);
     const unsigned long size_tail = block_size(block_offsets, entry_col[at + slot]);
     scalar *const lu = vals + entry_val_offset[at + i_diag];
     scalar *const rhs = vals + entry_val_offset[at + slot];
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    /* The matrix-core solve when the pair fits the tile walk and every entry
+       sits in the range the slicing carries; the Neumann inversion of the
+       panel replaces the plain forward solve one-for-one, the same storage,
+       the same zero-pivot failure already reported by the diagonal pass. */
+    if (size <= 32u && size_tail <= 32u && oz_block_fits(lu, size * size) && oz_block_fits(rhs, size * size_tail))
+    {
+        oz_scale_run(lu, block_scales[at + i_diag], rhs, block_scales[at + slot], size, size_tail,
+                     scratch + wave * scratch_stride);
+        return;
+    }
+#endif
+#endif
 #ifdef HYBSOL_HIP_DS
     if (ds_fits(lu, size * size) && ds_fits(rhs, size * size_tail))
         lu_solve_ds(lu, rhs, size, size_tail);

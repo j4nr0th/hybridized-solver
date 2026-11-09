@@ -45,6 +45,44 @@ typedef struct ds_pair
  */
 #define HYBSOL_DS_MAX 1e30
 
+/* ------------------------------------------------------------------------- */
+/* Ozaki slicing constants (shared by the two Ozaki kernel instantiations)     */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The largest magnitude an Ozaki work item agrees to slice.
+ *
+ * The shared block scale is a power of two from the block's own maximum, and
+ * the extraction below shifts a slice window by up to the full slice span; a
+ * scale beyond ~2^332 would overflow the double that carries it, so an entry
+ * block reaching this magnitude leaves the work item to the plain double
+ * path, exactly as the pair guard above leaves a magnitude past
+ * HYBSOL_DS_MAX to the native path. Powers of two up to 2^333 carry every
+ * window exactly.
+ */
+#define HYBSOL_OZ_MAX_ENTRY 1e100
+
+/**
+ * Slice parameters per realization (Ozaki et al. 2012; Ootomo et al. for the
+ * FP16-slice/FP32-accumulator pairing; arXiv:2409.13313 for INT8 units):
+ * tau mantissa bits per slice, k = ceil(53 / tau) slices to cover a double.
+ */
+#define HYBSOL_OZ_F16_TAU 11
+#define HYBSOL_OZ_F16_SLICES 5
+#define HYBSOL_OZ_I8_TAU 7
+#define HYBSOL_OZ_I8_SLICES 8
+
+/** Whether every element of a block sits in the range the slicing carries. */
+static __device__ inline int oz_block_fits(const double *const m, const unsigned long count)
+{
+    for (unsigned long i = 0; i < count; ++i)
+    {
+        if (m[i] <= -HYBSOL_OZ_MAX_ENTRY || m[i] >= HYBSOL_OZ_MAX_ENTRY)
+            return 0;
+    }
+    return 1;
+}
+
 /**
  * Split an FP64 into the pair.
  *

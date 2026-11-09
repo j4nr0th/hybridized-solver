@@ -65,8 +65,10 @@ typedef struct hybsol_hip_device_details
  * device; :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` runs the factors in their
  * own type, single accumulating in ``float`` and double in ``double``; and
  * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` carries double factors as
- * two FP32 pieces on the FP32 FMA unit. The Ozaki modes below exist so the
- * ABI is stable; until their phases land, asking for one is refused with
+ * two FP32 pieces on the FP32 FMA unit. The Ozaki modes below slice the
+ * factors' mantissas for the WMMA matrix cores: only gfx12-family devices
+ * have those, and Ozaki-II's name is still only an ABI -- until its phase
+ * lands, asking for it is refused with
  * :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY`.
  */
 typedef enum hybsol_hip_arith
@@ -82,9 +84,14 @@ typedef enum hybsol_hip_arith
      * Only meaningful for double factors; single factors are FP32 already.
      */
     HYBSOL_HIP_ARITH_DOUBLE_SINGLE = 2,
-    /** FP64 on the matrix cores by mantissa slicing; comes in a later phase. */
+    /**
+     * FP64 on the WMMA matrix cores by mantissa slicing (Ozaki-I): the two
+     * block-GEMM passes run as sliced 16x16 tiles, every other pass takes
+     * the double-single set. Needs a gfx12-family device; smaller blocks
+     * keep the double-single path for those passes too.
+     */
     HYBSOL_HIP_ARITH_OZAKI = 3,
-    /** Asymmetric slicing for use under iterative refinement; a later phase. */
+    /** Asymmetric slicing for use under iterative refinement; a later phase, refused for now. */
     HYBSOL_HIP_ARITH_OZAKI2 = 4,
 } hybsol_hip_arith_t;
 
@@ -153,8 +160,10 @@ const char *hybsol_hip_last_error(void);
  * ``graph`` asserted to have been built from ``sys``.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY` when the device
- * cannot do double arithmetic or ``arith`` asks for a split-precision mode
- * that has not landed yet, :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` or
+ * cannot do double arithmetic, when ``arith`` asks for a split-precision
+ * mode the target lacks (Ozaki on a device without WMMA matrix cores, or
+ * Ozaki-II anywhere until its phase lands),
+ * :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` or
  * :c:enumerator:`HYBSOL_ERROR_DEVICE` when a buffer cannot be allocated or
  * uploaded, leaving ``*out`` ``NULL`` either way.
  */
