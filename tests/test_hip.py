@@ -198,13 +198,39 @@ def test_arith_native_is_an_explicit_name_for_the_default() -> None:
 
 
 @requires_device
-@pytest.mark.parametrize("mode", ["split", "ozaki", "ozaki2"])
-def test_the_split_modes_are_refused_until_they_land(mode: str) -> None:
-    """A split-precision mode names an ABI the kernels do not fill yet.
+def test_split_arith_solves_at_native_accuracy() -> None:
+    """``arith="split"`` carries the double factors in double-single pairs.
+
+    Upgraded from the refusal that guarded this mode before the double-single
+    kernels landed: the same seeded system now solves inside the
+    ``cond * 1e-10`` gate, beats the single-precision factors of that system
+    by 1e3, and agrees with the native solve to native tolerance.
+    """
+    system, matrix = build()
+    rhs = np.ones(sum(SIZES))
+    device = first_device()
+
+    native = hip.decompose(system, device=device, arith="native").solve(rhs)
+    split = hip.decompose(system, device=device, arith="split").solve(rhs)
+    single = hip.decompose(system, device=device, precision=Precision.SINGLE).solve(rhs)
+
+    split_residual = np.abs(matrix @ split - 1.0).max()
+    single_residual = np.abs(matrix @ single - 1.0).max()
+
+    assert split_residual < max(np.linalg.cond(matrix) * 1e-10, 1e-8)
+    assert split_residual * 1e3 < single_residual
+    np.testing.assert_allclose(split, native, rtol=1e-9, atol=1e-12)
+
+
+@requires_device
+@pytest.mark.parametrize("mode", ["ozaki", "ozaki2"])
+def test_the_ozaki_modes_are_refused_until_they_land(mode: str) -> None:
+    """An Ozaki mode names an ABI the kernels do not fill yet.
 
     The message carries the backend's own reason -- the text of
-    ``hybsol_hip_last_error``. A later phase lands double-single and Ozaki
-    arithmetic; this test turns into a parity test against the CPU then.
+    ``hybsol_hip_last_error``. Double-single (``"split"``) landed with the
+    double-single kernels and became the parity test above; only the Ozaki
+    modes are still waiting.
     """
     system, _ = build()
     with pytest.raises(DeviceError, match="later phase"):

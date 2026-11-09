@@ -65,9 +65,11 @@ static void compare_solves(const hybsol_decomposition_t *const gpu, const hybsol
     free(reference);
 }
 
-/** A seeded random system in ``precision``, with a diagonal the tolerances can live with. */
+/** A seeded random system in ``precision``, with a diagonal the tolerances can live with.
+ *  ``dense_out``, when given, keeps the assembled matrix so a caller can measure residuals
+ *  against it; ``NULL`` discards it. */
 static hybsol_system_t *build_system(uint64_t *const state, const hybsol_precision_t precision, const uint64_t n_blocks,
-                                     uint64_t *const sizes)
+                                     uint64_t *const sizes, double (*const dense_out)[MAX_DIM])
 {
     uint64_t offsets[MAX_BLOCKS + 1] = {0};
     for (uint64_t i = 0; i < n_blocks; ++i)
@@ -112,6 +114,11 @@ static hybsol_system_t *build_system(uint64_t *const state, const hybsol_precisi
             sum += fabs(dense[i][j]);
         }
         dense[i][i] += sum;
+    }
+
+    if (dense_out != NULL)
+    {
+        memcpy(dense_out, dense, sizeof(dense));
     }
 
     hybsol_system_t *sys = NULL;
@@ -234,7 +241,7 @@ static void test_parity_in_both_precisions(hybsol_hip_device_t *const device)
         const hybsol_precision_t precision = single ? HYBSOL_PRECISION_SINGLE : HYBSOL_PRECISION_DOUBLE;
         uint64_t sizes[MAX_BLOCKS];
         uint64_t state = 0x9e3779b97f4a7c15ULL + (uint64_t)single;
-        hybsol_system_t *const sys = build_system(&state, precision, 5, sizes);
+        hybsol_system_t *const sys = build_system(&state, precision, 5, sizes, NULL);
         CHECK(sys != NULL);
         if (sys == NULL)
         {
@@ -285,7 +292,7 @@ static void test_mixed_precision_on_device(hybsol_hip_device_t *const device)
     {
         uint64_t sizes[MAX_BLOCKS];
         uint64_t state = 12345 + (uint64_t)c;
-        hybsol_system_t *const sys = build_system(&state, cases[c].system_precision, 4, sizes);
+        hybsol_system_t *const sys = build_system(&state, cases[c].system_precision, 4, sizes, NULL);
         CHECK(sys != NULL);
         if (sys == NULL)
         {
@@ -311,6 +318,125 @@ static void test_mixed_precision_on_device(hybsol_hip_device_t *const device)
         hybsol_elimination_destroy(graph);
         hybsol_system_destroy(sys);
     }
+}
+
+/** The relative infinity residual of a decomposition's solve of the given dense system. */
+static double solve_residual(const hybsol_decomposition_t *const dec, const double (*const dense)[MAX_DIM],
+                             const uint64_t dim, const double *const rhs, const uint64_t n_threads)
+{
+    double x[MAX_DIM];
+    double norm = 0.0;
+    for (uint64_t i = 0; i < dim; ++i)
+    {
+        x[i] = rhs[i];
+        if (fabs(rhs[i]) > norm)
+        {
+            norm = fabs(rhs[i]);
+        }
+    }
+    CHECK_OK(hybsol_decomposition_solve(dec, x, n_threads));
+
+    double worst = 0.0;
+    for (uint64_t i = 0; i < dim; ++i)
+    {
+        double row = 0.0;
+        for (uint64_t j = 0; j < dim; ++j)
+        {
+            row += dense[i][j] * x[j];
+        }
+        const double difference = fabs(row - rhs[i]);
+        if (difference > worst)
+        {
+            worst = difference;
+        }
+    }
+    return worst / norm;
+}
+
+/** Double-single factors: a seeded SPD system solved natively, in split, and in single. */
+static void test_split_parity(hybsol_hip_device_t *const device)
+{
+    uint64_t sizes[MAX_BLOCKS];
+    uint64_t state = 0x243f6a8885a308d3ULL;
+    double dense[MAX_DIM][MAX_DIM];
+    hybsol_system_t *const sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 6, sizes, dense);
+    CHECK(sys != NULL);
+    if (sys == NULL)
+    {
+        return;
+    }
+    const uint64_t dim = hybsol_system_total_size(sys);
+
+    // The conditioning is bounded by construction, and estimated here: the builder makes
+    // every diagonal exactly one plus its off-diagonal absolute row sum, so Gershgorin
+    // puts the spectrum in [1, 1 + 2R] for R the largest such sum -- hence cond <= 1 + 2R.
+    double worst_row = 0.0;
+    for (uint64_t i = 0; i < dim; ++i)
+    {
+        double row = 0.0;
+        for (uint64_t j = 0; j < dim; ++j)
+        {
+            row += fabs(dense[i][j]);
+        }
+        row -= fabs(dense[i][i]);
+        if (row > worst_row)
+        {
+            worst_row = row;
+        }
+    }
+    const double cond = 1.0 + 2.0 * worst_row;
+    const double gate = cond * 1e-10 > 1e-8 ? cond * 1e-10 : 1e-8;
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+
+    hybsol_decomposition_t *cpu = NULL;
+    CHECK_OK(hybsol_decomposition_create_with_precision(sys, graph, HYBSOL_PRECISION_DOUBLE, &cpu));
+    CHECK_OK(hybsol_decomposition_factorize(cpu, 1));
+
+    hybsol_decomposition_t *native = NULL;
+    CHECK_OK(hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, HYBSOL_HIP_ARITH_NATIVE,
+                                                       device, &native));
+    CHECK_OK(hybsol_decomposition_factorize(native, 0));
+
+    hybsol_decomposition_t *split = NULL;
+    CHECK_OK(hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE,
+                                                       HYBSOL_HIP_ARITH_DOUBLE_SINGLE, device, &split));
+    CHECK_OK(hybsol_decomposition_factorize(split, 0));
+
+    // The same double system solved with single factors: the accuracy split has to beat.
+    hybsol_decomposition_t *single = NULL;
+    CHECK_OK(hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_SINGLE, HYBSOL_HIP_ARITH_AUTO,
+                                                       device, &single));
+    CHECK_OK(hybsol_decomposition_factorize(single, 0));
+
+    double rhs[MAX_DIM];
+    for (uint64_t i = 0; i < dim; ++i)
+    {
+        rhs[i] = 1.0 + 0.25 * (double)i;
+    }
+
+    const double native_residual = solve_residual(native, dense, dim, rhs, 0);
+    const double split_residual = solve_residual(split, dense, dim, rhs, 0);
+    const double single_residual = solve_residual(single, dense, dim, rhs, 0);
+
+    CHECK_MSG(split_residual <= gate,
+              "the split solve residual is %.3e, over the gate %.3e (native %.3e, cond <= %.2f)", split_residual, gate,
+              native_residual, cond);
+    CHECK_MSG(split_residual * 1e3 <= single_residual,
+              "the split solve residual %.3e is not 1e3 under the single-factor residual %.3e", split_residual,
+              single_residual);
+    CHECK_MSG(native_residual <= gate, "the native solve residual is %.3e, over the gate %.3e", native_residual, gate);
+
+    // And the split solution itself tracks the CPU's native f64 solve.
+    compare_solves(split, cpu, 1e-9, "split-vs-native solve agreement");
+
+    hybsol_decomposition_destroy(single);
+    hybsol_decomposition_destroy(split);
+    hybsol_decomposition_destroy(native);
+    hybsol_decomposition_destroy(cpu);
+    hybsol_elimination_destroy(graph);
+    hybsol_system_destroy(sys);
 }
 
 /** The Ozaki modes name the ABI but land in a later phase: asked for, refused. */
@@ -388,7 +514,7 @@ static void test_replay_matches_solve(hybsol_hip_device_t *const device)
 {
     uint64_t sizes[MAX_BLOCKS];
     uint64_t state = 777;
-    hybsol_system_t *const sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 4, sizes);
+    hybsol_system_t *const sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 4, sizes, NULL);
     CHECK(sys != NULL);
     if (sys == NULL)
     {
@@ -450,7 +576,7 @@ static void test_device_lifetime(hybsol_hip_device_t *const device, const uint64
 
     uint64_t sizes[MAX_BLOCKS];
     uint64_t state = 31;
-    hybsol_system_t *sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes);
+    hybsol_system_t *sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes, NULL);
     CHECK(sys != NULL);
     if (sys == NULL)
     {
@@ -468,7 +594,7 @@ static void test_device_lifetime(hybsol_hip_device_t *const device, const uint64
     hybsol_system_destroy(sys);
 
     // Still usable after that decomposition went away.
-    sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes);
+    sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes, NULL);
     CHECK(sys != NULL);
     if (sys == NULL)
     {
@@ -511,6 +637,7 @@ int main(void)
 
     test_parity_in_both_precisions(device);
     test_mixed_precision_on_device(device);
+    test_split_parity(device);
     test_split_modes_refused(device);
     test_singular_block_agrees(device);
     test_replay_matches_solve(device);
