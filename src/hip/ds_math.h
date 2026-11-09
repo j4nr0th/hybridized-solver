@@ -63,9 +63,11 @@ typedef struct ds_pair
 #define HYBSOL_OZ_MAX_ENTRY 1e100
 
 /**
- * Slice parameters per realization (Ozaki et al. 2012; Ootomo et al. for the
+ * Slice parameters (Ozaki et al. 2012; Ootomo et al. for the
  * FP16-slice/FP32-accumulator pairing; arXiv:2409.13313 for INT8 units):
  * tau mantissa bits per slice, k = ceil(53 / tau) slices to cover a double.
+ * The int8 pair drives the Ozaki-I slices; the FP16 pair drives the windows
+ * Ozaki-II slices one operand into.
  */
 #define HYBSOL_OZ_F16_TAU 11
 #define HYBSOL_OZ_F16_SLICES 5

@@ -72,7 +72,14 @@ typedef struct hybsol_hip_device_details
  */
 typedef enum hybsol_hip_arith
 {
-    /** The backend's best choice for this device and precision. */
+    /**
+     * The measured best for this device and precision: single factors run
+     * :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` (FP32 needs no split), double
+     * factors take the fastest mode the selection harness gates clean on a
+     * gfx12-family device -- native today -- and
+     * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` on every other gfx
+     * target.
+     */
     HYBSOL_HIP_ARITH_AUTO = 0,
     /** The factors' own arithmetic, the CPU backend's model. */
     HYBSOL_HIP_ARITH_NATIVE = 1,
@@ -84,10 +91,11 @@ typedef enum hybsol_hip_arith
      */
     HYBSOL_HIP_ARITH_DOUBLE_SINGLE = 2,
     /**
-     * FP64 on the WMMA matrix cores by mantissa slicing (Ozaki-I): the two
-     * block-GEMM passes run as sliced 16x16 tiles, every other pass takes
-     * the double-single set. Needs a gfx12-family device; smaller blocks
-     * keep the double-single path for those passes too.
+     * FP64 on the WMMA matrix cores by mantissa slicing (Ozaki-I, signed
+     * int8 slices): the two block-GEMM passes run as sliced 16x16 tiles,
+     * every other pass takes the double-single set. Needs a gfx12-family
+     * device; smaller blocks keep the double-single path for those passes
+     * too.
      */
     HYBSOL_HIP_ARITH_OZAKI = 3,
     /**

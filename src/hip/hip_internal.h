@@ -76,24 +76,30 @@ extern void hybsol_apply_ops_f64_ds(void);
 
 /*
  * The Ozaki sets: the eliminate and scale entry points again, suffixed
- * _f64_ozf16, _f64_ozi8 and _f64_oz2 -- the two Ozaki-I realizations and
- * the Ozaki-II (asymmetric-slicing) mode -- compiled from the same source
- * under -DHYBSOL_HIP_DOUBLE with -DHYBSOL_HIP_OZ_F16 (FP16 slices, FP32
- * accumulate), -DHYBSOL_HIP_OZ_I8 (signed int8 slices, int32 accumulate)
- * or -DHYBSOL_HIP_OZ2 (FP16 slices against a single FP16 window). These
- * take one or two arguments more than the _f64 set -- the per-entry-block
- * shared scales (``block_scales``), plus a scratch region and its stride
- * for the scaling pass -- so the host passes each entry point its own
- * matching argument array. Only the WMMA devices reach them, and only the
- * two block-GEMM passes: every other pass under an Ozaki mode still runs
- * the _f64_ds set above.
+ * _f64_ozi8 and _f64_oz2 -- the Ozaki-I realization the selection harness
+ * kept, and the Ozaki-II (asymmetric-slicing) mode -- compiled from the
+ * same source under -DHYBSOL_HIP_DOUBLE with -DHYBSOL_HIP_OZ_I8 (signed
+ * int8 slices, int32 accumulate) or -DHYBSOL_HIP_OZ2 (FP16 slices against
+ * a single FP16 window, FP32 accumulate). These take one or two arguments
+ * more than the _f64 set -- the per-entry-block shared scales
+ * (``block_scales``), plus a scratch region and its stride for the scaling
+ * pass -- so the host passes each entry point its own matching argument
+ * array. Only the WMMA devices reach them, and only the two block-GEMM
+ * passes: every other pass under an Ozaki mode still runs the _f64_ds set
+ * above.
  */
-extern void hybsol_eliminate_pass_f64_ozf16(void);
-extern void hybsol_scale_pass_f64_ozf16(void);
 extern void hybsol_eliminate_pass_f64_ozi8(void);
 extern void hybsol_scale_pass_f64_ozi8(void);
 extern void hybsol_eliminate_pass_f64_oz2(void);
 extern void hybsol_scale_pass_f64_oz2(void);
+
+/*
+ * The arithmetic :c:enumerator:`HYBSOL_HIP_ARITH_AUTO` names for double
+ * factors on a gfx12-family device: the fastest mode passing the
+ * selection harness gate on this hardware, set in device.c from the
+ * harness table and flipped there if a future rerun ranks differently.
+ */
+extern const hybsol_hip_arith_t HYBSOL_HIP_DEFAULT_FOR_GFX12;
 
 /**
  * A work-group (thread block) size worth launching a kernel with.

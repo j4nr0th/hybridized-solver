@@ -163,13 +163,12 @@ static double residual_of(const double *const dense, const uint64_t dim, const d
     return worst / norm;
 }
 
-/** One mode's row: its arith argument, whether it gates, and whether the env names the int8 Ozaki-I realization. */
+/** One mode's row: its arith argument and whether the residual gates. */
 typedef struct
 {
     const char *name;
     hybsol_hip_arith_t arith;
     int gated;
-    int ozaki_i8;
 } mode_case_t;
 
 /** Median of a handful of timings. */
@@ -211,22 +210,11 @@ static double probe_ms(void)
     return (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-6;
 }
 
-static void run_mode(const hybsol_hip_arith_t arith, const int gated, const int ozaki_i8, const char *const name,
+static void run_mode(const hybsol_hip_arith_t arith, const int gated, const char *const name,
                      const hybsol_system_t *const sys, const hybsol_elimination_t *const graph,
                      hybsol_hip_device_t *const device, const double *const dense, const uint64_t dim,
                      const double *const rhs, const double cond)
 {
-    // The realization hook the harness compares while both are compiled;
-    // the selection phase removes the loser and this hook with it.
-    if (ozaki_i8)
-    {
-        setenv("HYBSOL_HIP_OZAKI_I8", "1", 1);
-    }
-    else
-    {
-        unsetenv("HYBSOL_HIP_OZAKI_I8");
-    }
-
     double seconds[ROUNDS];
     double residual = -1.0;
     hybsol_result_t first_res = HYBSOL_SUCCESS;
@@ -263,7 +251,6 @@ static void run_mode(const hybsol_hip_arith_t arith, const int gated, const int 
         residual = residual_of(dense, dim, rhs, x);
         free(x);
     }
-    unsetenv("HYBSOL_HIP_OZAKI_I8");
     const double probe_after = probe_ms();
 
     if (first_res != HYBSOL_SUCCESS)
@@ -303,11 +290,10 @@ static void run_size(const uint64_t size, hybsol_hip_device_t *const device)
     const uint64_t dim = hybsol_system_total_size(sys);
 
     static const mode_case_t modes[] = {
-        { "native", HYBSOL_HIP_ARITH_NATIVE, 1, 0 },
-        { "double_single", HYBSOL_HIP_ARITH_DOUBLE_SINGLE, 1, 0 },
-        { "ozaki_f16", HYBSOL_HIP_ARITH_OZAKI, 1, 0 },
-        { "ozaki_i8", HYBSOL_HIP_ARITH_OZAKI, 1, 1 },
-        { "ozaki2", HYBSOL_HIP_ARITH_OZAKI2, 0, 0 },
+        { "native", HYBSOL_HIP_ARITH_NATIVE, 1 },
+        { "double_single", HYBSOL_HIP_ARITH_DOUBLE_SINGLE, 1 },
+        { "ozaki_i8", HYBSOL_HIP_ARITH_OZAKI, 1 },
+        { "ozaki2", HYBSOL_HIP_ARITH_OZAKI2, 0 },
     };
 
     hybsol_elimination_t *graph = NULL;
@@ -324,8 +310,7 @@ static void run_size(const uint64_t size, hybsol_hip_device_t *const device)
            (unsigned long long)N_BLOCKS, (unsigned long long)dim, cond);
     for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m)
     {
-        run_mode(modes[m].arith, modes[m].gated, modes[m].ozaki_i8, modes[m].name, sys, graph, device, dense, dim,
-                 rhs, cond);
+        run_mode(modes[m].arith, modes[m].gated, modes[m].name, sys, graph, device, dense, dim, rhs, cond);
     }
 
     hybsol_elimination_destroy(graph);

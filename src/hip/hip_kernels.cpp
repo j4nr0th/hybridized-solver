@@ -23,20 +23,22 @@
  * instead, through the same un-#ifdef'd helpers the _f64 pass uses. Which
  * set a launch reaches is the host's choice, so the mode costs nothing here.
  *
- * A fourth, fifth and sixth instantiation, each under -DHYBSOL_HIP_DOUBLE
- * plus -DHYBSOL_HIP_OZ_F16, -DHYBSOL_HIP_OZ_I8 or -DHYBSOL_HIP_OZ2 (and
- * -ffp-contract=off for the same reason as the double-single object: the
- * slice windows are exact integer windows of exact quotients, and a fused
- * multiply-add the compiler invents past the named fma re-rounds a term
- * that balance depends on), carry the two block-GEMM passes --
- * ``eliminate_pass`` and ``scale_pass`` only -- on the RDNA4 matrix cores
- * by Ozaki mantissa slicing, entry points suffixed _f64_ozf16, _f64_ozi8
- * and _f64_oz2. The first two are Ozaki-I, both operands sliced; the third
- * is Ozaki-II, asymmetric: the left operand keeps its five FP16 slices
- * while the right is a single slice under its block scale, ~11 bits of
- * accuracy kept and the mode meant for the inner solve under iterative
- * refinement -- the harness prints its residual, never gates it. Each
- * takes the double factors
+ * A fourth and fifth instantiation, each under -DHYBSOL_HIP_DOUBLE plus
+ * -DHYBSOL_HIP_OZ_I8 or -DHYBSOL_HIP_OZ2 (and -ffp-contract=off for the
+ * same reason as the double-single object: the slice windows are exact
+ * integer windows of exact quotients, and a fused multiply-add the
+ * compiler invents past the named fma re-rounds a term that balance
+ * depends on), carry the two block-GEMM passes -- ``eliminate_pass`` and
+ * ``scale_pass`` only -- on the RDNA4 matrix cores by Ozaki mantissa
+ * slicing, entry points suffixed _f64_ozi8 and _f64_oz2. The first is
+ * Ozaki-I, both operands sliced into the int32 tile -- the realization
+ * the selection harness clocked fastest, its FP16-slice sibling having
+ * lost the head to head (1.3x at 32-wide blocks) and been cut; the
+ * second is Ozaki-II, asymmetric: the left operand keeps its five FP16
+ * slices while the right is a single slice under its block scale, ~11
+ * bits of accuracy kept and the mode meant for the inner solve under
+ * iterative refinement -- the harness prints its residual, never gates
+ * it. Each takes the double factors
  * and a per-entry-block shared scale (``block_scales``, computed on the
  * host, one power of two per block); the slices and every product between
  * them are exact by construction, and only the pruned slice-pair band is
@@ -54,14 +56,14 @@
 
 #include <hip/hip_runtime.h>
 
-#if defined(HYBSOL_HIP_DS) || defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
+#if defined(HYBSOL_HIP_DS) || defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
 #include "ds_math.h"
 #endif
 
 /* One spelling for "this object carries an Ozaki block-GEMM path": the
    argument lists, wave walks and fast paths are identical across the
    realizations, which differ only inside oz_block_gemm. */
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
+#if defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
 #define HYBSOL_HIP_OZ
 #endif
 
@@ -69,8 +71,6 @@
 typedef double scalar;
 #ifdef HYBSOL_HIP_DS
 #define HYBSOL_NAME(n) hybsol_##n##_f64_ds
-#elif defined(HYBSOL_HIP_OZ_F16)
-#define HYBSOL_NAME(n) hybsol_##n##_f64_ozf16
 #elif defined(HYBSOL_HIP_OZ_I8)
 #define HYBSOL_NAME(n) hybsol_##n##_f64_ozi8
 #elif defined(HYBSOL_HIP_OZ2)
@@ -356,7 +356,7 @@ static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigne
 #ifdef HYBSOL_HIP_OZ
 
 /* --------------------------------------------------------------------- */
-/* Ozaki-I on the RDNA4 matrix cores                                       */
+/* Ozaki on the RDNA4 matrix cores (Ozaki-I int8, Ozaki-II asymmetric)     */
 /* --------------------------------------------------------------------- */
 /*
  * Scheme (Ozaki et al. 2012; Ootomo et al. for the FP16-slice/FP32-accumulator
@@ -377,23 +377,26 @@ static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigne
  * 2^(tau-1) -- |s| <= 1024 in _Float16's 11-bit significand, |s| <= 64 for
  * signed int8 -- integers the input type carries exactly, and the
  * combine folds each tile's i32/f32 accumulator out in double with the
- * power-of-two weight 2^{-tau(i+j)}, scaling back by scale_a * scale_b. Only
- * the pruned band is lost: the dropped slice pairs' total contribution sits
- * below 2^{-50} of a block's magnitude, the deepest kept pair at
- * 2^{-tau*6} (f16) or 2^{-tau*10} (i8) -- 15 of 25 and 43 of 64 products, the
- * Ozaki-I pruning at target band t ~ 36 the digest's cost table counts.
+ * power-of-two weight 2^{-tau(i+j)}, scaling back by scale_a * scale_b.
+ * Ozaki-I loses only the pruned band: the dropped slice pairs' total
+ * contribution sits below 2^{-50} of a block's magnitude, the deepest
+ * kept pair at 2^{-tau*10} -- 43 of 64 products, the Ozaki-I pruning at
+ * target band t ~ 36 the digest's cost table counts. (An FP16-slice
+ * realization of the same scheme, tau = 11 and 15 of 25 products kept,
+ * was compiled for the selection harness's head to head and cut when it
+ * lost: 1.3x slower at 32-wide blocks.)
  *
- * Accumulation exactness (why the f16 walk splits its k dimension): the i8
- * path's int32 accumulator carries 16 * 64^2 = 2^16 per tile and pair
- * exactly, whatever the blocks' scales. The f16 path's float accumulator is
- * exact for integers only up to 2^24: leading slices reach 2^10, so a
- * product reaches 2^20 and a full 16-term sum brushes that ceiling. The
- * walk therefore runs each pair as groups of at most four products --
- * quartets for the leading pair, halves whenever exactly one operand is
- * leading, singles otherwise -- each group a separate WMMA call whose
- * partial sums stay at or under 4 * 2^20 < 2^22, and the double combine
- * adds the groups. No f32 rounding ever happens; the only error in the
- * whole path is the pruned band.
+ * Accumulation exactness (why the FP16-window walks split their k
+ * dimension): the i8 path's int32 accumulator carries 16 * 64^2 = 2^16
+ * per tile and pair exactly, whatever the blocks' scales. A float
+ * accumulator is exact for integers only up to 2^24: leading windows
+ * reach 2^10, so a product reaches 2^20 and a full 16-term sum brushes
+ * that ceiling. The walk therefore runs each pair as groups of at most
+ * four products -- quartets for the leading pair, halves whenever
+ * exactly one operand is leading, singles otherwise -- each group a
+ * separate WMMA call whose partial sums stay at or under 4 * 2^20 <
+ * 2^22, and the double combine adds the groups. No f32 rounding ever
+ * happens; the only error in the whole path is the pruned band.
  *
  * Ozaki-II (the _f64_oz2 object) keeps this whole machinery and thins one
  * side: the left operand is still sliced k = 5, but the right is a single
@@ -424,12 +427,10 @@ using oz_v2int = int [[clang::ext_vector_type(2)]];
 using oz_v8int = int [[clang::ext_vector_type(8)]];
 
 /*
- * Kept slice pairs, zero-based (u = slice index - 1): f16 keeps u+v <= 4
- * (15 of 25), i8 keeps u+v <= 8 (43 of 64).
+ * Kept slice pairs for the Ozaki-I walk, zero-based (u = slice index - 1):
+ * the int8 realization keeps u+v <= 8 (43 of 64). Ozaki-II needs no table:
+ * its pairs are simply (u, 0).
  */
-static __device__ __constant__ const unsigned char oz_f16_pairs[15][2] = {
-    {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2}, {2, 1}, {3, 0}, {0, 4}, {1, 3}, {2, 2}, {3, 1}, {4, 0}
-};
 static __device__ __constant__ const unsigned char oz_i8_pairs[43][2] = {
     {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2}, {2, 1}, {3, 0}, {0, 4}, {1, 3}, {2, 2}, {3, 1},
     {4, 0}, {0, 5}, {1, 4}, {2, 3}, {3, 2}, {4, 1}, {5, 0}, {0, 6}, {1, 5}, {2, 4}, {3, 3}, {4, 2}, {5, 1}, {6, 0},
@@ -509,92 +510,12 @@ static __device__ inline void oz_window_i8(const double m, signed char *const ou
  * only those rows. rows_a, inner and cols_b all <= 32, and one wavefront
  * tiles the output in ceil(/16)^2 WMMA tiles. The scales are powers of two
  * that dominate the two blocks' largest entries by at least a factor two
- * (never zero), and the walk splits each pair's k dimension into groups of
- * at most four products so every float partial sum stays an exact integer
- * below 2^24 -- see the accumulation note at the head of this section.
+ * (never zero). The Ozaki-II walk splits each pair's k dimension into
+ * groups of at most four products so every float partial sum stays an
+ * exact integer below 2^24 -- see the accumulation note at the head of
+ * this section; the Ozaki-I int8 walk needs no split, its int32
+ * accumulator is exact for every 16-term sum.
  */
-static __device__ void oz_block_gemm_f16(const double *a, const double scale_a, const unsigned rows_a,
-                                         const unsigned a_stride, const unsigned inner, const double *b,
-                                         const double scale_b, const unsigned rows_b, const unsigned cols_b,
-                                         double *out)
-{
-    const unsigned lane = threadIdx.x & 31u;
-    const unsigned kbase_lane = 8u * (lane >> 4); /* the lane group's first k inside a k tile */
-    const double inv_a = 1.0 / scale_a, inv_b = 1.0 / scale_b; /* powers of two: exact */
-    for (unsigned ti = 0; ti * 16u < rows_a; ++ti)
-    {
-        for (unsigned tj = 0; tj * 16u < cols_b; ++tj)
-        {
-            double acc[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-            for (unsigned tk = 0; tk * 16u < inner; ++tk)
-            {
-                const unsigned row = ti * 16u + (lane & 15u);
-                const unsigned col = tj * 16u + (lane & 15u);
-                _Float16 asl[8][HYBSOL_OZ_F16_SLICES];
-                _Float16 bsl[8][HYBSOL_OZ_F16_SLICES];
-                #pragma unroll
-                for (unsigned e = 0; e < 8u; ++e)
-                {
-                    const unsigned kk = tk * 16u + kbase_lane + e;
-                    if (row < rows_a && kk < inner)
-                        oz_window_f16(a[row * a_stride + kk] * inv_a, &asl[e][0]);
-                    else
-                    {
-                        #pragma unroll
-                        for (int s = 0; s < HYBSOL_OZ_F16_SLICES; ++s)
-                            asl[e][s] = (_Float16)0;
-                    }
-                    if (col < cols_b && kk < inner && kk < rows_b)
-                        oz_window_f16(b[kk * cols_b + col] * inv_b, &bsl[e][0]);
-                    else
-                    {
-                        #pragma unroll
-                        for (int s = 0; s < HYBSOL_OZ_F16_SLICES; ++s)
-                            bsl[e][s] = (_Float16)0;
-                    }
-                }
-                #pragma unroll
-                for (unsigned p = 0; p < 15u; ++p)
-                {
-                    const unsigned u = oz_f16_pairs[p][0], v = oz_f16_pairs[p][1];
-                    const unsigned groups = (u == 0u && v == 0u) ? 4u : ((u == 0u || v == 0u) ? 2u : 1u);
-                    #pragma unroll
-                    for (unsigned gq = 0; gq < 4u; ++gq)
-                    {
-                        if (gq >= groups)
-                            break;
-                        const unsigned span = 16u / groups;
-                        const unsigned klo = span * gq;
-                        oz_v8half frag_a = {}, frag_b = {};
-                        #pragma unroll
-                        for (unsigned e = 0; e < 8u; ++e)
-                        {
-                            if (kbase_lane + e < klo || kbase_lane + e >= klo + span)
-                                continue;
-                            frag_a[e] = asl[e][u];
-                            frag_b[e] = bsl[e][v];
-                        }
-                        oz_v8float c = {};
-                        c = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(frag_a, frag_b, c);
-                        const double w = oz_f16_weights[u + v];
-                        #pragma unroll
-                        for (unsigned g = 0; g < 8u; ++g)
-                            acc[g] += (double)c[g] * w;
-                    }
-                }
-            }
-            const double weight = scale_a * scale_b;
-            const unsigned crow = ti * 16u + (lane >> 4) * 8u;
-            const unsigned ccol = tj * 16u + (lane & 15u);
-            #pragma unroll
-            for (unsigned g = 0; g < 8u; ++g)
-            {
-                if (crow + g < rows_a && ccol < cols_b)
-                    out[(crow + g) * cols_b + ccol] = acc[g] * weight;
-            }
-        }
-    }
-}
 
 /* The int8 walk: slices at or under 127 in absolute value, every product and
    every 16-term partial sum carried exactly by the int32 accumulator (the
@@ -771,10 +692,8 @@ static __device__ void oz_block_gemm(const double *a, const double scale_a, cons
 {
 #ifdef HYBSOL_HIP_OZ2
     oz_block_gemm_oz2(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
-#elif defined(HYBSOL_HIP_OZ_I8)
-    oz_block_gemm_i8(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
 #else
-    oz_block_gemm_f16(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
+    oz_block_gemm_i8(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
 #endif
 }
 

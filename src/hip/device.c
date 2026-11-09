@@ -93,7 +93,26 @@ const char *hybsol_hip_last_error(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Enumeration                                                                 */
+/* The measured default                                                      */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The arithmetic AUTO names for double factors on a gfx12-family device.
+ *
+ * The fastest mode passing the selection harness gate (tests/c/
+ * test_hip_precision.c) on the R9700 at every block size the harness
+ * benches, 8/16/32: native FP64 clocked ahead of double-single and of
+ * both Ozaki realizations on the harness's 128-block banded system --
+ * these block sizes live on launch overhead, and native's per-work-item
+ * walk is the cheapest. The harness table that picked it lives in that
+ * test's commit message (a contended-GPU run; the idle rerun's numbers
+ * supersede them, and this line flips with them if the ranking moves).
+ * The split paths stay explicitly reachable by name.
+ */
+const hybsol_hip_arith_t HYBSOL_HIP_DEFAULT_FOR_GFX12 = HYBSOL_HIP_ARITH_NATIVE;
+
+/* ------------------------------------------------------------------------- */
+/* Enumeration                                                               */
 /* ------------------------------------------------------------------------- */
 
 /** One device as the enumeration lists it: the runtime's handle and its facts. */
