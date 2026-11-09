@@ -234,6 +234,17 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     CUTL_ASSERT(device != NULL, "The device must not be NULL.");
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
+    hybsol_opencl_clear_error();
+
+    // A precision outside the enum names no kernel set and no element width: the kernel names and
+    // the strides both branch on it, so an unchecked value would mean whichever branch the
+    // comparison happens to take. The bindings parse the argument before reaching this call, so
+    // no Python caller sees the refusal; it is here for the C caller who writes the enum himself.
+    if (precision != HYBSOL_PRECISION_SINGLE && precision != HYBSOL_PRECISION_DOUBLE)
+    {
+        hybsol_opencl_set_error("Precision %d is neither single nor double.", (int)precision);
+        return HYBSOL_ERROR_DEVICE_CAPABILITY;
+    }
 
     // Vectors are double everywhere, so a device that cannot do double takes no decomposition at all.
     if (!device->supports_double)
@@ -656,7 +667,9 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     }
     if (res == HYBSOL_SUCCESS && failed != none)
     {
-        // The slot holds the smallest failing work item, hence the earliest such row.
+        // The slot holds the smallest absolute index into diag_row -- the kernel adds its
+        // pass's offset -- so the row it names is the row that failed, in whichever pass it
+        // failed, and the earliest such row in the pass order.
         dec->failing_block = state->diag_row[(uint64_t)failed];
         res = HYBSOL_ERROR_SINGULAR;
     }

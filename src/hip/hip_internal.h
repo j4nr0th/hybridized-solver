@@ -80,11 +80,12 @@ extern void hybsol_apply_ops_f64_ds(void);
  * kept, and the Ozaki-II (asymmetric-slicing) mode -- compiled from the
  * same source under -DHYBSOL_HIP_DOUBLE with -DHYBSOL_HIP_OZ_I8 (signed
  * int8 slices, int32 accumulate) or -DHYBSOL_HIP_OZ2 (FP16 slices against
- * a single FP16 window, FP32 accumulate). These take one or two arguments
- * more than the _f64 set -- the per-entry-block shared scales
- * (``block_scales``), plus a scratch region and its stride for the scaling
- * pass -- so the host passes each entry point its own matching argument
- * array. Only the WMMA devices reach them, and only the two block-GEMM
+ * a single FP16 window, FP32 accumulate). The eliminate entry point takes
+ * exactly the arguments of its _f64 twin; the scaling one takes three more,
+ * a scratch region, its row stride and its per-work-item stride, which is
+ * where the Neumann panel inverts the diagonal -- so the host passes each
+ * entry point its own matching argument array. Only the WMMA devices reach
+ * them, and only the two block-GEMM
  * passes: every other pass under an Ozaki mode still runs the _f64_ds set
  * above.
  */
@@ -134,3 +135,9 @@ void hybsol_hip_set_error(const char *format, ...);
 
 /** Note a failing HIP call, if it has nothing of its own to say. */
 void hybsol_hip_note_hip_error(hipError_t error, const char *what);
+
+/**
+ * Forget the note, for the entry points about to start an operation of their
+ * own: a note may only ever explain the call that is failing right now.
+ */
+void hybsol_hip_clear_error(void);

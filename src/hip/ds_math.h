@@ -18,11 +18,12 @@
  * multiply-add fusion: every transform here balances a rounded product
  * against its captured error, so the object that compiles these kernels is
  * built -ffp-contract=off (see ``CMakeLists.txt``); ``fmaf`` itself, which
- * the source asks for by name, is exempt and stays. The range guard the kernels apply --
- * fall back to native arithmetic for any block with an element of magnitude
- * above HYBSOL_DS_MAX -- is a property of the *pair*, not of these helpers:
- * a magnitude past a float's range makes ``hi`` infinite and every transform
- * below meaningless.
+ * source asks for by name, is exempt and stays. The range guard the kernels apply --
+ * fall back to native arithmetic for any block with an element outside the
+ * HYBSOL_DS_MIN-to-HYBSOL_DS_MAX window -- is a property of the *pair*, not of these
+ * helpers: a magnitude above the window makes ``hi`` infinite and every transform below
+ * meaningless, and one below it makes ``hi`` zero, which quietly drops the block's whole
+ * contribution instead.
  */
 
 #ifndef HYBSOL_DS_MATH_H
@@ -38,29 +39,51 @@ typedef struct ds_pair
 } ds_t;
 
 /**
- * The largest magnitude the double-single kernels agree to carry.
+ * The window of magnitudes the double-single kernels agree to carry, applied
+ * to every element of every block the walk touches.
  *
- * Well under a float's overflow, so a product of two carried values still
- * fits the FP32 exponent range the transforms assume.
+ * Both ends belong to the *pair*, not to these helpers. A carried value is
+ * two floats, so it must survive being multiplied by another carried value:
+ * the products land at the square of what the blocks hold, and a float carries
+ * normals only between ~1e-38 and ~3e38. A block of 1e30 elements multiplied
+ * by another such block therefore overflows the pair to infinity just as
+ * surely as a block of 1e-30 elements underflows it to zero -- and an
+ * underflowed pair is worse than an overflowed one, because it reads as an
+ * exact zero: the terms simply stop counting, and a solve that should have
+ * them comes back wrong with nothing to show for it. So the window is the
+ * square-root region, with room for a sum of a block's products, and it is
+ * applied element by element: a factored diagonal block carries multipliers of
+ * order one beside entries at the block's own scale, and a rule that only
+ * looked at the largest would let the small side underflow. Anything outside
+ * it leaves the block to the plain double path, which carries the whole double
+ * range and is the mode's own fallback for a magnitude the pair cannot hold.
+ * Zeros are exempt: a zero pair is exact at any scale.
  */
-#define HYBSOL_DS_MAX 1e30
+#define HYBSOL_DS_MAX 1e15
+#define HYBSOL_DS_MIN 1e-15
 
 /* ------------------------------------------------------------------------- */
 /* Ozaki slicing constants (shared by the two Ozaki kernel instantiations)     */
 /* ------------------------------------------------------------------------- */
 
 /**
- * The largest magnitude an Ozaki work item agrees to slice.
+ * The magnitudes an Ozaki work item agrees to slice, as a window on a block's
+ * largest element.
  *
  * The shared block scale is a power of two from the block's own maximum, and
  * the extraction below shifts a slice window by up to the full slice span; a
- * scale beyond ~2^332 would overflow the double that carries it, so an entry
- * block reaching this magnitude leaves the work item to the plain double
- * path, exactly as the pair guard above leaves a magnitude past
- * HYBSOL_DS_MAX to the native path. Powers of two up to 2^333 carry every
- * window exactly.
+ * scale beyond ~2^332 puts the tile's result past what the double combine can
+ * hold once the two operands' scales multiply, so an entry block reaching this
+ * magnitude leaves the work item to the plain double path, exactly as the pair
+ * guard above leaves a magnitude past HYBSOL_DS_MAX to the native path. Powers
+ * of two up to 2^333 carry every window exactly. The floor is the same ceiling
+ * mirrored: at 2^-332 the product of the two scales underflows to zero, and a
+ * block sliced at that scale contributes nothing at all -- a wrong answer with
+ * nothing wrong in it. An all-zero block slices at zero whatever its scale, so
+ * it fits.
  */
 #define HYBSOL_OZ_MAX_ENTRY 1e100
+#define HYBSOL_OZ_MIN_ENTRY 1e-100
 
 /**
  * Slice parameters (Ozaki et al. 2012; Ootomo et al. for the
@@ -74,15 +97,19 @@ typedef struct ds_pair
 #define HYBSOL_OZ_I8_TAU 7
 #define HYBSOL_OZ_I8_SLICES 8
 
-/** Whether every element of a block sits in the range the slicing carries. */
+/** Whether a block sits in the magnitude window the slicing carries. */
 static __device__ inline int oz_block_fits(const double *const m, const unsigned long count)
 {
+    double maxabs = 0.0;
     for (unsigned long i = 0; i < count; ++i)
     {
-        if (m[i] <= -HYBSOL_OZ_MAX_ENTRY || m[i] >= HYBSOL_OZ_MAX_ENTRY)
-            return 0;
+        const double v = m[i] < 0.0 ? -m[i] : m[i];
+        if (v > maxabs)
+            maxabs = v;
     }
-    return 1;
+    if (maxabs == 0.0)
+        return 1;
+    return maxabs <= HYBSOL_OZ_MAX_ENTRY && maxabs >= HYBSOL_OZ_MIN_ENTRY;
 }
 
 /**

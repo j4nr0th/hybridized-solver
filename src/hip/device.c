@@ -87,6 +87,28 @@ void hybsol_hip_note_hip_error(const hipError_t error, const char *const what)
     hybsol_hip_set_error("%s: HIP error %d (%s).", what, (int)error, hipGetErrorString(error));
 }
 
+/* For callers that already hold the lock, as the device table's refusals do. */
+static void set_error_locked(const char *const format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vsnprintf(g_last_error, sizeof(g_last_error), format, args);
+    va_end(args);
+}
+
+/*
+ * Drop the note. The note answers "why did *this* call fail", so every entry
+ * point that starts an operation of its own opens by clearing it: a note from
+ * an earlier refusal would otherwise be quoted against an unrelated one,
+ * naming whichever device failed last time rather than this one.
+ */
+void hybsol_hip_clear_error(void)
+{
+    lock_acquire();
+    g_last_error[0] = '\0';
+    lock_release();
+}
+
 const char *hybsol_hip_last_error(void)
 {
     return g_last_error;
@@ -427,11 +449,14 @@ hybsol_result_t hybsol_hip_device_acquire(const uint64_t index, hybsol_hip_devic
 {
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
+    hybsol_hip_clear_error();
 
     lock_acquire();
     ensure_enumerated();
     if (index >= g_device_count)
     {
+        set_error_locked("No HIP device has index %llu; the runtime lists %llu.", (unsigned long long)index,
+                         (unsigned long long)g_device_count);
         lock_release();
         return HYBSOL_ERROR_NO_DEVICE;
     }

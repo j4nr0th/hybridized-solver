@@ -18,10 +18,11 @@
  * the FP32 FMA unit, entry points suffixed _f64_ds: the same grids, the same
  * argument lists, the same double storage -- a kernel splits each block it
  * loads, chains the ds operations, and folds the result back to double for
- * the store. Any block with an element above HYBSOL_DS_MAX is a range the
- * pair cannot carry, and that work item does its block in plain double
- * instead, through the same un-#ifdef'd helpers the _f64 pass uses. Which
- * set a launch reaches is the host's choice, so the mode costs nothing here.
+ * the store. Any block with an element outside the HYBSOL_DS_MIN-to-DS_MAX
+ * window is a range the pair cannot carry, and that work item does its block in
+ * plain double instead, through the same un-#ifdef'd helpers the _f64 pass
+ * uses. Which set a launch reaches is the host's choice, so the mode costs
+ * nothing here.
  *
  * A fourth and fifth instantiation, each under -DHYBSOL_HIP_DOUBLE plus
  * -DHYBSOL_HIP_OZ_I8 or -DHYBSOL_HIP_OZ2 (and -ffp-contract=off for the
@@ -38,13 +39,13 @@
  * slices while the right is a single slice under its block scale, ~11
  * bits of accuracy kept and the mode meant for the inner solve under
  * iterative refinement -- the harness prints its residual, never gates
- * it. Each takes the double factors
- * and a per-entry-block shared scale (``block_scales``, computed on the
- * host, one power of two per block); the slices and every product between
- * them are exact by construction, and only the pruned slice-pair band is
- * lost -- see the Ozaki section below for the numerics. Every other pass,
- * and every work item whose blocks are too big for the tile walk or carry
- * an entry past the sliced range, keeps the plain double arithmetic the
+ * it. Each takes the double factors and builds the shared scale of every
+ * operand region itself, as tight as what the tile walk is about to read;
+ * the slices and every product between them are exact by construction, and
+ * only the pruned slice-pair band is lost -- see the Ozaki section below for
+ * the numerics. Every other pass,
+ * and every work item whose blocks are too big for the tile walk or carry a
+ * magnitude outside the sliced window, keeps the plain double arithmetic the
  * file already has; the host simply never launches these entry points on a
  * device without WMMA, and the whole section is compiled out on a
  * non-gfx12 target so one source still builds for gfx1036.
@@ -218,17 +219,27 @@ static __device__ void vec_lu_solve(const scalar *m, double *b, const unsigned l
 static_assert(sizeof(ds_t) == sizeof(scalar), "a double-single pair must fill one factor slot to share its scratch");
 
 /*
- * The range guard, run as a block is loaded: any element past HYBSOL_DS_MAX makes a float ``hi`` meaningless, so
- * that work item does the block in plain double instead. A sweep of the block is cheap next to the block walk it
- * gates, and the fallback is what keeps the mode never wrong at any magnitude.
+ * The range guard, run as a block is loaded: a block with any element outside the window the pair
+ * carries is done in plain double instead, through the same un-#ifdef'd helpers the _f64 pass uses.
+ * Both ends matter, and per element rather than per block: past the top a float ``hi`` is infinite,
+ * and below the bottom it is zero, which silently deletes that element's contribution rather than
+ * announcing itself. A factored diagonal block is exactly the mixed case -- multipliers of order
+ * one beside entries at the block's own scale -- so a window on the block's largest element alone
+ * would let the small side through. Zeros are exempt: a zero pair is exact at any scale, and a
+ * stored block of nothing but zeros is a normal thing to meet. A sweep of the block is cheap next
+ * to the block walk it gates, and the fallback is what keeps the mode never wrong at any magnitude.
  *
- * ``scalar`` is double in this instantiation, so a double vector segment passes through the same sweep.
+ * ``scalar`` is double in this instantiation, so a double vector segment passes through the same
+ * sweep.
  */
 static __device__ int ds_fits(const scalar *m, const unsigned long count)
 {
     for (unsigned long i = 0; i < count; ++i)
     {
-        if (m[i] > (scalar)HYBSOL_DS_MAX || m[i] < -(scalar)HYBSOL_DS_MAX)
+        const double v = m[i] < 0.0 ? -(double)m[i] : (double)m[i];
+        if (v == 0.0)
+            continue;
+        if (v > (double)HYBSOL_DS_MAX || v < (double)HYBSOL_DS_MIN)
             return 0;
     }
     return 1;
@@ -449,18 +460,24 @@ static __device__ __constant__ const double oz_i8_weights[9] = {
 
 /*
  * The scale a block is actually sliced at: two times the strict power-of-two
- * ceiling of its own largest element (frexp answers it exactly), floored at
- * twice whatever the host precomputed at create. The host scale covers the
- * *initial* values; eliminations rewrite blocks and can grow them -- the same
- * fact the double-single mode's range guard exists for -- so the device
- * rescans the block it loads and takes the larger ceiling. The extra factor
+ * ceiling of the largest element the walk is about to read (frexp answers it
+ * exactly), floored at 2 so an all-zero region still divides. The extra factor
  * two is what makes rounding safe: |x/scale| <= 1/2 lands every leading
  * window at or under 2^(tau-1) -- |s_1| <= 1024 in _Float16 and |s_1| <= 64
  * in signed int8 -- where a nearest-integer step can never reach the +128 a
  * signed byte cannot spell. Slicing still spans 50 (f16) or 56 (i8) bits of
  * the significand, far past the pruned band.
+ *
+ * The ceiling is the region's own, taken as it is read: eliminations rewrite
+ * blocks in both directions, and a factor block divided by its pivot drops
+ * from its block's scale to multipliers of order one. A scale looser than the
+ * region by 2^k costs k bits of every slice, which is how a shared exponent
+ * picked once -- at create, from the initial values -- turns a
+ * 1e12-scaled system into a 1e-4 answer: the block's whole mantissa sits below
+ * the window span. Nothing here inherits from the host; the operand in front
+ * of the tile is the only thing a scale may be built from.
  */
-static __device__ double oz_scale_of(const double *const m, const unsigned long count, const double host_scale)
+static __device__ double oz_scale_of(const double *const m, const unsigned long count)
 {
     double maxabs = 0.0;
     for (unsigned long i = 0; i < count; ++i)
@@ -470,11 +487,34 @@ static __device__ double oz_scale_of(const double *const m, const unsigned long 
             maxabs = v;
     }
     if (maxabs == 0.0)
-        return (host_scale > 2.0) ? host_scale : 2.0;
+        return 2.0;
     int e = 0;
     (void)frexp(maxabs, &e); /* 2^(e-1) <= maxabs < 2^e */
-    const double s = ldexp(1.0, e + 1);
-    return (host_scale > s) ? host_scale : s;
+    return ldexp(1.0, e + 1);
+}
+
+/* The same ceiling over a strided region: the first ``cols`` entries of each of
+   the first ``rows`` rows, ``stride`` entries apart -- what a tile walk reads
+   out of a stored block whose row is wider than the tile. */
+static __device__ double oz_scale_of_region(const double *const m, const unsigned rows, const unsigned cols,
+                                            const unsigned stride)
+{
+    double maxabs = 0.0;
+    for (unsigned r = 0; r < rows; ++r)
+    {
+        const double *const line = m + (size_t)r * stride;
+        for (unsigned c = 0; c < cols; ++c)
+        {
+            const double v = line[c] < 0.0 ? -line[c] : line[c];
+            if (v > maxabs)
+                maxabs = v;
+        }
+    }
+    if (maxabs == 0.0)
+        return 2.0;
+    int e = 0;
+    (void)frexp(maxabs, &e);
+    return ldexp(1.0, e + 1);
 }
 
 /* The k slice windows of one element m = x/scale, zero-based index = slice-1. */
@@ -717,8 +757,8 @@ static __device__ void oz_block_gemm(const double *a, const double scale_a, cons
  * scratch layout, one stride per work item: G (16 x size_tail), P (16x16),
  * W (16x16) -- 16*max_block + 512 doubles, the stride the host sized.
  */
-static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rhs, const double host_rhs,
-                                    const unsigned size, const unsigned size_tail, double *scratch)
+static __device__ void oz_scale_run(scalar *lu, scalar *rhs, const unsigned size, const unsigned size_tail,
+                                    double *scratch)
 {
     double *const g = scratch;
     /* G holds every tile walk's output -- 16 rows by size_tail columns for
@@ -728,7 +768,6 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
      * whenever Ozaki is live. */
     double *const p = scratch + (size_tail > 15u ? 16u * size_tail : 256u);
     double *const wmat = p + 16u * 16u;
-    const double scale_lu = oz_scale_of(lu, size * size, host_lu);
     const unsigned panels = (size + 15u) / 16u;
     for (unsigned pp = 0; pp < panels; ++pp)
     {
@@ -737,7 +776,8 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
 
         for (unsigned cp = 0; cp < pp; ++cp)
         {
-            const double scale_cp = oz_scale_of(rhs + cp * 16u * size_tail, 16u * size_tail, host_rhs);
+            const double scale_lu = oz_scale_of_region(lu + prow * size + cp * 16u, prows, 16u, size);
+            const double scale_cp = oz_scale_of(rhs + cp * 16u * size_tail, 16u * size_tail);
             oz_block_gemm(lu + prow * size + cp * 16u, scale_lu, prows, size, 16u, rhs + cp * 16u * size_tail,
                           scale_cp, 16u, size_tail, g);
             for (unsigned r = 0; r < prows; ++r)
@@ -747,9 +787,10 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
 
         /* W = I - L: zero diagonal, minus the strictly-lower (r > c) LU
          * entries -- nothing from U's upper half, or W would not be strictly
-         * lower triangular and the series would diverge. It stays strictly
-         * below scale_lu (which strictly bounds |lu|), so the same ceiling
-         * slices it; the series sums raw W^m, so P = L^-1. */
+         * lower triangular and the series would diverge. It is sliced at its
+         * own ceiling below, not the LU block's: the multipliers it is built
+         * from are quotients, and their scale has nothing to do with the
+         * block's; the series sums raw W^m, so P = L^-1. */
         #pragma unroll
         for (unsigned r = 0; r < 16u; ++r)
             for (unsigned c = 0; c < 16u; ++c)
@@ -768,8 +809,8 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
          * chain that would only be a truncated series step by step. P and W
          * are rescanned for strict power-of-two scales between steps, so
          * the windows stay legal however large the intermediate powers. */
-        double scale_p = 2.0; /* |I| <= 1 < 2 */
-        double scale_w = scale_lu;
+        double scale_p = oz_scale_of(p, 256u); /* |I| <= 1 < 2 */
+        double scale_w = oz_scale_of(wmat, 256u);
         for (unsigned step = 0; step < 4u; ++step)
         {
             oz_block_gemm(p, scale_p, 16u, 16u, 16u, wmat, scale_w, 16u, 16u, g);
@@ -780,9 +821,9 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
                 oz_block_gemm(wmat, scale_w, 16u, 16u, 16u, wmat, scale_w, 16u, 16u, g);
                 for (unsigned i = 0; i < 256u; ++i)
                     wmat[i] = g[i];
-                scale_w = oz_scale_of(wmat, 256u, 1.0);
+                scale_w = oz_scale_of(wmat, 256u);
             }
-            scale_p = oz_scale_of(p, 256u, 1.0);
+            scale_p = oz_scale_of(p, 256u);
         }
 
         /* What is left is the block-diagonal solve: this panel's right-hand
@@ -792,7 +833,7 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
          * of both the reads and the product (P is lower triangular, so those
          * rows only ever feed output rows outside the edge, which are
          * dropped). */
-        const double scale_pp = oz_scale_of(rhs + prow * size_tail, prows * size_tail, host_rhs);
+        const double scale_pp = oz_scale_of(rhs + prow * size_tail, prows * size_tail);
         oz_block_gemm(p, scale_p, 16u, 16u, 16u, rhs + prow * size_tail, scale_pp, prows, size_tail, g);
         for (unsigned r = 0; r < prows; ++r)
             for (unsigned c = 0; c < size_tail; ++c)
@@ -813,7 +854,13 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
         for (unsigned cp = pp; cp < panels; ++cp)
         {
             const unsigned prows_cp = (size - cp * 16u < 16u) ? size - cp * 16u : 16u;
-            const double scale_cp = oz_scale_of(rhs + cp * 16u * size_tail, prows_cp * size_tail, host_rhs);
+            /* The tile is 16 wide but the block's last column panel is not, and past its
+               edge the walk reads neighbouring rows of the same block -- contributions it
+               masks off with rows_b, but a scale scan must not swallow them: a LU block
+               holds multipliers of order one next to U entries at the block's own scale,
+               and a ceiling taken from the wrong half slices the right half to zero. */
+            const double scale_lu = oz_scale_of_region(lu + prow * size + cp * 16u, prows, prows_cp, size);
+            const double scale_cp = oz_scale_of(rhs + cp * 16u * size_tail, prows_cp * size_tail);
             oz_block_gemm(lu + prow * size + cp * 16u, scale_lu, prows, size, 16u, rhs + cp * 16u * size_tail,
                           scale_cp, prows_cp, size_tail, g);
             for (unsigned r = 0; r < prows; ++r)
@@ -844,12 +891,7 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
                                             const unsigned long *entry_col, const unsigned long *entry_val_offset,
                                             const unsigned long *block_offsets, scalar *vals, scalar *scratch,
                                             const unsigned long pass_first, const unsigned long pass_count,
-                                            const unsigned long sources_stride, const unsigned long scratch_stride
-#ifdef HYBSOL_HIP_OZ
-                                            ,
-                                            const double *block_scales
-#endif
-                                            )
+                                            const unsigned long sources_stride, const unsigned long scratch_stride)
 {
 #ifdef HYBSOL_HIP_OZ
     /* The Ozaki builds run one whole wavefront per work item: the host
@@ -917,9 +959,8 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
     if (size_tgt <= 32u && size_src <= 32u && n_cols <= 32u && oz_block_fits(left, size_tgt * size_src)
         && oz_block_fits(right, size_src * n_cols))
     {
-        oz_block_gemm(left, oz_scale_of(left, size_tgt * size_src, block_scales[at_step]), size_tgt, size_src,
-                      size_src, right, oz_scale_of(right, size_src * n_cols, block_scales[entry_src]), size_src,
-                      n_cols, out);
+        oz_block_gemm(left, oz_scale_of(left, size_tgt * size_src), size_tgt, size_src, size_src, right,
+                      oz_scale_of(right, size_src * n_cols), size_src, n_cols, out);
         mat_subtract(dest_block, out, size_tgt, n_cols);
         return;
     }
@@ -966,7 +1007,7 @@ extern "C" __global__ void HYBSOL_NAME(diagonal_pass)(const unsigned long *diag_
 #endif
         failed = lu_decompose(diag, size);
     if (failed != 0)
-        atomicMin(fail_j, (int)(HYBSOL_GID0));
+        atomicMin(fail_j, (int)(pass_first + HYBSOL_GID0));
 }
 
 /* Scale every block above a diagonal by that diagonal's inverse: one work item per (block row, block). */
@@ -977,8 +1018,8 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
                                         const unsigned long pass_first, const unsigned long pass_count
 #ifdef HYBSOL_HIP_OZ
                                             ,
-                                            const double *block_scales, scalar *scratch,
-                                            const unsigned long tail_stride, const unsigned long scratch_stride
+                                            scalar *scratch, const unsigned long tail_stride,
+                                            const unsigned long scratch_stride
 #endif
                                             )
 {
@@ -1016,8 +1057,7 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
        the same zero-pivot failure already reported by the diagonal pass. */
     if (size <= 32u && size_tail <= 32u && oz_block_fits(lu, size * size) && oz_block_fits(rhs, size * size_tail))
     {
-        oz_scale_run(lu, block_scales[at + i_diag], rhs, block_scales[at + slot], size, size_tail,
-                     scratch + wave * scratch_stride);
+        oz_scale_run(lu, rhs, size, size_tail, scratch + wave * scratch_stride);
         return;
     }
 #endif

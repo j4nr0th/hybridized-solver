@@ -91,3 +91,9 @@ void hybsol_opencl_set_error(const char *format, ...);
 
 /** Note a failing OpenCL call, if it has nothing of its own to say. */
 void hybsol_opencl_note_cl_error(cl_int error, const char *what);
+
+/**
+ * Forget the note, for the entry points about to start an operation of their
+ * own: a note may only ever explain the call that is failing right now.
+ */
+void hybsol_opencl_clear_error(void);

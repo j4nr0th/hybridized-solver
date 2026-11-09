@@ -94,6 +94,19 @@ const char *hybsol_opencl_last_error(void)
     return g_last_error;
 }
 
+/*
+ * Drop the note. The note answers "why did *this* call fail", so every entry
+ * point that starts an operation of its own opens by clearing it: a note from
+ * an earlier refusal would otherwise be quoted against an unrelated one,
+ * naming whichever device failed last time rather than this one.
+ */
+void hybsol_opencl_clear_error(void)
+{
+    lock_acquire();
+    g_last_error[0] = '\0';
+    lock_release();
+}
+
 /* For callers that already hold the lock: the program build runs under it. */
 
 static void note_cl_error_locked(const cl_int error, const char *const what)
@@ -451,12 +464,15 @@ hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, hybsol_opencl
 {
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
+    hybsol_opencl_clear_error();
 
     lock_acquire();
     ensure_enumerated();
     if (index >= g_device_count)
     {
         lock_release();
+        hybsol_opencl_set_error("No OpenCL device has index %llu; the runtime lists %llu.",
+                                (unsigned long long)index, (unsigned long long)g_device_count);
         return HYBSOL_ERROR_NO_DEVICE;
     }
     if (index >= g_acquired_capacity)

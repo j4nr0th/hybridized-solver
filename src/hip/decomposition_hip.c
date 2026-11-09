@@ -70,8 +70,6 @@ typedef struct
     void *row_entry_offset;
     void *entry_col;
     void *entry_val_offset;
-    /** The Ozaki path's shared block scales: one power-of-two double per entry, same order as ``entry_val_offset``. */
-    void *block_scales;
     /** The factors. */
     void *vals;
     /** The solution vector, double whatever the factors are. */
@@ -319,6 +317,29 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     CUTL_ASSERT(device != NULL, "The device must not be NULL.");
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
+    hybsol_hip_clear_error();
+
+    // A value outside either enum names nothing this backend implements, and every test below
+    // compares against a named mode -- an unchecked one would silently mean whichever answer the
+    // comparisons happen to give. The bindings parse both arguments before reaching this call, so
+    // no Python caller sees the refusal; it is here for the C caller who writes the enum himself.
+    if (precision != HYBSOL_PRECISION_SINGLE && precision != HYBSOL_PRECISION_DOUBLE)
+    {
+        hybsol_hip_set_error("Precision %d is neither single nor double.", (int)precision);
+        return HYBSOL_ERROR_DEVICE_CAPABILITY;
+    }
+    switch (arith)
+    {
+    case HYBSOL_HIP_ARITH_AUTO:
+    case HYBSOL_HIP_ARITH_NATIVE:
+    case HYBSOL_HIP_ARITH_DOUBLE_SINGLE:
+    case HYBSOL_HIP_ARITH_OZAKI:
+    case HYBSOL_HIP_ARITH_OZAKI2: break;
+    default:
+        hybsol_hip_set_error("Arithmetic mode %d is not one of auto, native, double-single, Ozaki or Ozaki-II.",
+                             (int)arith);
+        return HYBSOL_ERROR_DEVICE_CAPABILITY;
+    }
 
     // The gfx12 family owns the WMMA matrix cores the Ozaki kernels run on,
     // and the kernels for this exact target are the ones CMake compiled.
@@ -345,20 +366,22 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
 
     // An Ozaki mode without the WMMA cores is a capability miss, not a
-    // silent fallback. (Ozaki-II is the asymmetric variant -- one operand
+    // silent fallback -- but only for the factors that could ever reach
+    // them. Single factors run the FP32 kernels whatever ``arith`` says, on
+    // every device: there the mode names no path at all, so refusing it on
+    // one device and accepting it on another would be a distinction without
+    // a difference. (Ozaki-II is the asymmetric variant -- one operand
     // sliced, the other a single window -- meant as the inner solve under
     // iterative refinement; the harness prints its accuracy and never
     // gates on it, and AUTO never names it.)
-    if (chosen == HYBSOL_HIP_ARITH_OZAKI || chosen == HYBSOL_HIP_ARITH_OZAKI2)
+    if ((chosen == HYBSOL_HIP_ARITH_OZAKI || chosen == HYBSOL_HIP_ARITH_OZAKI2)
+        && precision == HYBSOL_PRECISION_DOUBLE && !gfx12)
     {
-        if (!gfx12)
-        {
-            hybsol_hip_set_error("Device %llu reports %s; the Ozaki block kernels need the WMMA matrix "
-                                 "cores of a gfx12 target. Ask for auto, native, or double-single here.",
-                                 (unsigned long long)device->index,
-                                 (probe == hipSuccess) ? prop.gcnArchName : "(unknown)");
-            return HYBSOL_ERROR_DEVICE_CAPABILITY;
-        }
+        hybsol_hip_set_error("Device %llu reports %s; the Ozaki block kernels need the WMMA matrix "
+                             "cores of a gfx12 target. Ask for auto, native, or double-single here.",
+                             (unsigned long long)device->index,
+                             (probe == hipSuccess) ? prop.gcnArchName : "(unknown)");
+        return HYBSOL_ERROR_DEVICE_CAPABILITY;
     }
 
     // Vectors are double everywhere, so a device that cannot do double takes no decomposition at all.
@@ -532,9 +555,27 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
             state->max_sources[pass] = sources;
         }
 
-        // One scratch block per work item of this pass's elimination, at the
-        // stride every launch of this decomposition will pass.
-        const size_t items = (size_t)(dec->level_offset[pass + 1] - dec->level_offset[pass]) * sources;
+        // One scratch block per work item of the pass, at the stride every
+        // launch of this decomposition will pass. The plain and double-single
+        // elimination walk owns ``rows x sources`` items; the Ozaki scaling
+        // walk owns ``diagonals x tail`` instead, and each of its waves writes
+        // its panel solve into its own slot. A pass that only factors
+        // diagonals has no elimination items at all -- which is exactly the
+        // case where an Ozaki scale wave still runs, so the scale count is the
+        // only thing that sizes the buffer there. Getting this wrong is not a
+        // wrong answer but a write past the end of the buffer: for a system
+        // with no eliminations anywhere, the buffer is empty, and the kernel
+        // writes through a null pointer.
+        const size_t elim_items = (size_t)(dec->level_offset[pass + 1] - dec->level_offset[pass]) * sources;
+        size_t items = elim_items;
+        if (state->kernels_oz != 0)
+        {
+            const size_t scale_items = (size_t)(diag_count - state->diag_offset[pass]) * (size_t)state->max_tail[pass];
+            if (scale_items > items)
+            {
+                items = scale_items;
+            }
+        }
         const size_t need = items * (size_t)scratch_stride_of(state);
         if (need > scratch_elements)
         {
@@ -604,14 +645,7 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
 
     uint64_t *const val_offsets = n_columns > 0 ? (uint64_t *)malloc((size_t)n_columns * sizeof(uint64_t)) : NULL;
-    double *const block_scales = (n_columns > 0 && state->kernels_oz != 0)
-                                     ? (double *)malloc((size_t)n_columns * sizeof(double))
-                                     : NULL;
     if (res == HYBSOL_SUCCESS && n_columns > 0 && val_offsets == NULL)
-    {
-        res = HYBSOL_ERROR_OUT_OF_MEMORY;
-    }
-    if (res == HYBSOL_SUCCESS && state->kernels_oz != 0 && n_columns > 0 && block_scales == NULL)
     {
         res = HYBSOL_ERROR_OUT_OF_MEMORY;
     }
@@ -646,33 +680,6 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
                 {
                     convert_into(vals + at, src, n_values, precision, sys->precision);
                 }
-                if (block_scales != NULL)
-                {
-                    // The shared exponent: one power of two per stored block, a
-                    // strict ceiling of the block's initial magnitude -- the
-                    // device rescans against growth from eliminations, so this
-                    // is the starting exponent the plan asks the host to own.
-                    double maxabs = 0.0;
-                    const double *const v = (const double *)(const void *)(vals + at);
-                    for (size_t i = 0; i < n_values; ++i)
-                    {
-                        const double a = v[i] < 0.0 ? -v[i] : v[i];
-                        if (a > maxabs)
-                        {
-                            maxabs = a;
-                        }
-                    }
-                    if (maxabs == 0.0)
-                    {
-                        block_scales[entry] = 1.0; /* the zero block: every slice comes out zero */
-                    }
-                    else
-                    {
-                        int e = 0;
-                        (void)frexp(maxabs, &e); /* 2^(e-1) <= maxabs < 2^e */
-                        block_scales[entry] = ldexp(1.0, e);
-                    }
-                }
                 at += n_values * scalar;
                 ++entry;
             }
@@ -683,21 +690,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     {
         res = buffer_write(device, state->entry_val_offset, val_offsets, bytes_cols);
     }
-    if (res == HYBSOL_SUCCESS && state->kernels_oz != 0 && n_columns > 0)
-    {
-        state->block_scales = buffer_create(device, (size_t)n_columns * sizeof(double));
-        if (state->block_scales == NULL)
-        {
-            res = HYBSOL_ERROR_OUT_OF_MEMORY;
-        }
-        else
-        {
-            res = buffer_write(device, state->block_scales, block_scales, (size_t)n_columns * sizeof(double));
-        }
-    }
 
     free(val_offsets);
-    free(block_scales);
     free(staging);
     if (res != HYBSOL_SUCCESS)
     {
@@ -716,6 +710,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
 {
     HYBSOL_MARK_USED(n_threads);
     hip_state_t *const state = (hip_state_t *)state_ptr;
+    hybsol_hip_clear_error();
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_hip_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -785,7 +780,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
             else
             {
                 // The matrix-core walk wants whole wavefronts: 1-D, 64 lanes a work group,
-                // two work items each, and the shared block scales ride along.
+                // two work items each, the pair's scales taken on the device.
                 const uint64_t waves = rows * sources;
                 void *args[] = {&state->level_rows,
                                        &state->level_k,
@@ -799,8 +794,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
                                        &from_arg,
                                        &rows_arg,
                                        &sources_arg,
-                                       &scratch_stride,
-                                       &state->block_scales};
+                                       &scratch_stride};
                 res = kernel_launch(device, oz_eliminate, (waves + 1u) / 2u, 1, 64, 1, args);
             }
         }
@@ -859,7 +853,6 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
                                        &state->vals,
                                        &first_row,
                                        &count_rows,
-                                       &state->block_scales,
                                        &state->scratch,
                                        &tail_stride,
                                        &scratch_stride};
@@ -876,7 +869,9 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     }
     if (res == HYBSOL_SUCCESS && failed != none)
     {
-        // The slot holds the smallest failing work item, hence the earliest such row.
+        // The slot holds the smallest absolute index into diag_row -- the kernels add their
+        // pass's offset -- so the row it names is the row that failed, in whichever pass it
+        // failed, and the earliest such row in the pass order.
         dec->failing_block = state->diag_row[(uint64_t)failed];
         res = HYBSOL_ERROR_SINGULAR;
     }
@@ -1107,7 +1102,6 @@ static void backend_destroy(void *const state_ptr)
     buffer_release(state->row_entry_offset);
     buffer_release(state->entry_col);
     buffer_release(state->entry_val_offset);
-    buffer_release(state->block_scales);
     buffer_release(state->vals);
     buffer_release(state->vec);
     buffer_release(state->scratch);
