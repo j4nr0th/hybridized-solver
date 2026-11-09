@@ -13,6 +13,8 @@ from hybsol._mod import Decomposition as Decomposition
 from hybsol._mod import DeviceError as DeviceError
 from hybsol._mod import Elimination as Elimination
 from hybsol._mod import SingularSystemError as SingularSystemError
+from hybsol.bench import bench_backends as bench_backends
+from hybsol.bench import best_backend as best_backend
 from hybsol.pipeline import factorize as factorize
 from hybsol.pipeline import refined_solve as refined_solve
 
@@ -24,6 +26,8 @@ __all__ = [
     "Precision",
     "SingularSystemError",
     "__version__",
+    "bench_backends",
+    "best_backend",
     "factorize",
     "refined_solve",
 ]
