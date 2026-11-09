@@ -189,8 +189,9 @@ static void device_uuid_string(const hipDevice_t device, char *const out, const 
  * One device's kind, from its compute-unit count.
  *
  * HIP has no property that marks a device integrated, so the rule is the
- * device's shape: an iGPU has a handful of compute units (the 610M has 4,
- * the R9700 has 64), and ten or fewer of them means integrated.
+ * device's shape: an iGPU has a handful of compute units (the 9900X's
+ * reports 1, the R9700 reports 32), and sixteen or fewer of them means
+ * integrated.
  */
 static hybsol_hip_device_kind_t device_kind(const hipDevice_t device)
 {

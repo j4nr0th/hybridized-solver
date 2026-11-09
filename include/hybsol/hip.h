@@ -67,8 +67,11 @@ typedef struct hybsol_hip_device_details
  * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` carries double factors as
  * the FP32 FMA unit. The Ozaki modes below slice the
  * factors' mantissas for the WMMA matrix cores: only gfx12-family devices
- * have those, and asking for either on another device answers
- * :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY`.
+ * have those, and asking for either on another device with double factors
+ * answers :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY`. Single factors are
+ * FP32 already and the matrix cores hold no double, so on every device an
+ * Ozaki mode asks nothing beyond what ``native`` does -- a no-op, not a
+ * refusal.
  */
 typedef enum hybsol_hip_arith
 {
@@ -177,8 +180,11 @@ const char *hybsol_hip_last_error(void);
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY` when the device
  * cannot do double arithmetic, when ``arith`` asks for a split-precision
- * mode the target lacks (Ozaki on a device without WMMA matrix cores, or
- * Ozaki-II anywhere until its phase lands),
+ * mode with double factors that the target lacks (Ozaki or Ozaki-II on a
+ * device without WMMA matrix cores), or when ``precision`` or ``arith`` is
+ * not one of the enumerated values -- an out-of-range enum names no kernel
+ * set and no element width, and is refused rather than run as whichever
+ * branch its comparison happens to take.
  * :c:enumerator:`HYBSOL_ERROR_OUT_OF_MEMORY` or
  * :c:enumerator:`HYBSOL_ERROR_DEVICE` when a buffer cannot be allocated or
  * uploaded, leaving ``*out`` ``NULL`` either way.

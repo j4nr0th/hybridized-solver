@@ -105,6 +105,29 @@ def _make_system(precision: str = "double"):
     )
 
 
+def _device_module(name: str):
+    """Import a backend module; an absent one raises, and the harness counts that."""
+    import importlib
+
+    return importlib.import_module(name)
+
+
+def _device_decompose(
+    module_name: str,
+    device: object,
+    precision: object = None,
+    arith: object = "auto",
+) -> None:
+    """Ask a device backend to factorize, with an argument of the caller's choosing."""
+    module = _device_module(module_name)
+    kwargs: dict[str, object] = {"device": device}
+    if precision is not None:
+        kwargs["precision"] = precision
+    if module_name == "hybsol.hip":
+        kwargs["arith"] = arith
+    module.decompose(_make_system(), **kwargs)
+
+
 # --------------------------------------------------------------------------
 # Case construction
 # --------------------------------------------------------------------------
@@ -226,6 +249,46 @@ def _read_only_cases():
         ("str_data", lambda: BlockSystem.from_blocks([2, 2], [0], [0], ["a"] * 4)),
     ]:
         yield f"from_blocks/{name}", thunk
+
+    # The device bindings, against whatever devices this machine has. The import
+    # is inside the call so a build without a backend answers as a refusal
+    # rather than as a case that went missing.
+    for module_name in ("hybsol.hip", "hybsol.opencl"):
+        for name, value in [
+            ("negative", -1),
+            ("negative_far", -(2**40)),
+            ("float", 1.5),
+            ("str", "0"),
+            ("none", None),
+            ("past_the_end", 10**12),
+            ("uint64_max", 2**64 - 1),
+            ("complex", 1 + 0j),
+            ("list", [0]),
+        ]:
+            yield (
+                f"{module_name}.decompose/device_{name}",
+                lambda v=value, m=module_name: _device_decompose(m, v),
+            )
+            yield (
+                f"{module_name}.device_info/{name}",
+                lambda v=value, m=module_name: _device_module(m).device_info(v),
+            )
+        for name, value in [
+            ("quad", "quad"),
+            ("none", None),
+            ("int", 7),
+            ("list", ["auto"]),
+        ]:
+            yield (
+                f"{module_name}.decompose/precision_{name}",
+                lambda v=value, m=module_name: _device_decompose(m, 0, precision=v),
+            )
+        if module_name == "hybsol.hip":
+            for name, value in [("misspelled", "fast"), ("int", 3), ("list", ["auto"])]:
+                yield (
+                    "hybsol.hip.decompose/arith_" + name,
+                    lambda v=value: _device_decompose("hybsol.hip", 0, arith=v),
+                )
 
     for name, thunk in [
         ("bad_strategy", lambda: _make_system().compute_reordering("nonsense")),

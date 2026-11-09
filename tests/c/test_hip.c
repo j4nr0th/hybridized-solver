@@ -474,6 +474,132 @@ static void test_singular_block_agrees(hybsol_hip_device_t *const device)
     hybsol_system_destroy(sys);
 }
 
+/** A pass that spans several blocks blames the block whose pivot failed. */
+static void test_multi_pass_singular_block_agrees(hybsol_hip_device_t *const device)
+{
+    const uint64_t sizes[4] = {2, 2, 2, 2};
+    const double identity[4] = {3.0, 0.0, 0.0, 3.0};
+    const double rank_one[4] = {1.0, 2.0, 2.0, 4.0};
+    const double zeroes[4] = {0.0, 0.0, 0.0, 0.0};
+    const hybsol_hip_arith_t modes[] = {
+        HYBSOL_HIP_ARITH_NATIVE, HYBSOL_HIP_ARITH_DOUBLE_SINGLE, HYBSOL_HIP_ARITH_OZAKI};
+    hybsol_system_t *sys = NULL;
+
+    CHECK_OK(hybsol_system_create(4, sizes, &sys, &CUTL_STD_ALLOCATOR));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, identity));
+    CHECK_OK(hybsol_system_add_block(sys, 1, 1, 2, 2, rank_one));
+    CHECK_OK(hybsol_system_add_block(sys, 2, 2, 2, 2, identity));
+    CHECK_OK(hybsol_system_add_block(sys, 3, 3, 2, 2, identity));
+    for (uint64_t at = 0; at < 4; at += 2)
+    {
+        CHECK_OK(hybsol_system_add_block(sys, at, at + 1, 2, 2, zeroes));
+        CHECK_OK(hybsol_system_add_block(sys, at + 1, at, 2, 2, zeroes));
+    }
+    CHECK(hybsol_system_is_valid(sys));
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+
+    hybsol_decomposition_t *cpu = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &cpu));
+    CHECK_RESULT(hybsol_decomposition_factorize(cpu, 1), HYBSOL_ERROR_SINGULAR);
+    const uint64_t named = hybsol_decomposition_failing_block(cpu);
+    CHECK_MSG(named == 1, "the CPU blamed block %llu, not the rank-one one", (unsigned long long)named);
+
+    for (size_t mode = 0; mode < sizeof(modes) / sizeof(modes[0]); ++mode)
+    {
+        hybsol_decomposition_t *gpu = NULL;
+        const hybsol_result_t created
+            = hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, modes[mode], device, &gpu);
+        if (created == HYBSOL_ERROR_DEVICE_CAPABILITY)
+        {
+            printf("  mode %d refused here: %s\n", (int)modes[mode], hybsol_hip_last_error());
+            continue;
+        }
+        CHECK_RESULT(created, HYBSOL_SUCCESS);
+
+        // The failing column sits inside a pass that also covers blocks 0 and 2:
+        // reporting the pass's first column instead of the block's own named the
+        // row before the truth.
+        CHECK_RESULT(hybsol_decomposition_factorize(gpu, 0), HYBSOL_ERROR_SINGULAR);
+        CHECK_MSG(hybsol_decomposition_failing_block(gpu) == named,
+                  "mode %d named block %llu, the CPU named %llu",
+                  (int)modes[mode],
+                  (unsigned long long)hybsol_decomposition_failing_block(gpu),
+                  (unsigned long long)named);
+        hybsol_decomposition_destroy(gpu);
+    }
+
+    hybsol_decomposition_destroy(cpu);
+    hybsol_elimination_destroy(graph);
+    hybsol_system_destroy(sys);
+}
+
+/** Enum values the bindings cannot produce still answer with a refusal. */
+static void test_hostile_arguments(hybsol_hip_device_t *const device)
+{
+    const uint64_t sizes[1] = {4};
+    double values[16];
+    uint64_t state = 4242;
+    hybsol_system_t *sys = NULL;
+
+    for (size_t i = 0; i < 16; ++i)
+    {
+        values[i] = (double)(i / 4) + 0.25 * (double)(rng_next(&state) % 100);
+    }
+    for (size_t row = 0; row < 4; ++row)
+    {
+        values[row * 4 + row] += 10.0;
+    }
+
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 4, 4, values));
+    CHECK(hybsol_system_is_valid(sys));
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+
+    // An arithmetic mode outside the five names no kernel set, and a precision
+    // outside the two names no element width: both branch on the value, so
+    // neither may become whichever branch the comparison happens to take.
+    const hybsol_hip_arith_t bad_arith[] = {(hybsol_hip_arith_t)99, (hybsol_hip_arith_t)-1};
+    for (size_t at = 0; at < 2; ++at)
+    {
+        hybsol_decomposition_t *gpu = NULL;
+        const hybsol_result_t res = hybsol_hip_decomposition_create_on_device(
+            sys, graph, HYBSOL_PRECISION_DOUBLE, bad_arith[at], device, &gpu);
+        CHECK_RESULT(res, HYBSOL_ERROR_DEVICE_CAPABILITY);
+        CHECK(gpu == NULL);
+        CHECK(hybsol_hip_last_error()[0] != '\0');
+    }
+    {
+        hybsol_decomposition_t *gpu = NULL;
+        const hybsol_result_t res = hybsol_hip_decomposition_create_on_device(
+            sys, graph, (hybsol_precision_t)7, HYBSOL_HIP_ARITH_NATIVE, device, &gpu);
+        CHECK_RESULT(res, HYBSOL_ERROR_DEVICE_CAPABILITY);
+        CHECK(gpu == NULL);
+    }
+
+    // A refusal is not a wedged backend: the next honest call works.
+    hybsol_decomposition_t *gpu = NULL;
+    CHECK_OK(hybsol_hip_decomposition_create_on_device(
+        sys, graph, HYBSOL_PRECISION_DOUBLE, HYBSOL_HIP_ARITH_AUTO, device, &gpu));
+    CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
+    hybsol_decomposition_destroy(gpu);
+
+    // And a note explains the call it belongs to, not the last refusal: an
+    // index nothing has is answered with its own index.
+    hybsol_hip_device_t *missing = NULL;
+    CHECK_RESULT(hybsol_hip_device_acquire(9999, &missing), HYBSOL_ERROR_NO_DEVICE);
+    CHECK(missing == NULL);
+    CHECK_MSG(strstr(hybsol_hip_last_error(), "9999") != NULL,
+              "the refusal said ``%s'', which does not name the index asked for",
+              hybsol_hip_last_error());
+
+    hybsol_elimination_destroy(graph);
+    hybsol_system_destroy(sys);
+}
+
 /** Replaying the operations and back-substituting is the same solve. */
 static void test_replay_matches_solve(hybsol_hip_device_t *const device)
 {
@@ -604,6 +730,8 @@ int main(void)
     test_mixed_precision_on_device(device);
     test_split_parity(device);
     test_singular_block_agrees(device);
+    test_multi_pass_singular_block_agrees(device);
+    test_hostile_arguments(device);
     test_replay_matches_solve(device);
     test_device_lifetime(device, device_index);
 

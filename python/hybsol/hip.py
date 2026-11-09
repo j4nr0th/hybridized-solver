@@ -124,6 +124,14 @@ def decompose(
         window. Its accuracy is the refinement partner's, not a direct
         solve's: use it under :func:`hybsol.refined_solve`.
 
+        Single factors ignore the mode on every device: they are already
+        the narrow arithmetic and the matrix cores hold no double, so
+        ``"ozaki"`` there runs the same kernels ``"native"`` does rather
+        than refusing. Blocks the tiles cannot serve -- narrower than 16,
+        wider than 32, or carrying magnitudes outside the range the
+        arithmetic of the moment can hold -- fall back per block, silently
+        and at full accuracy.
+
     Returns
     -------
     Decomposition

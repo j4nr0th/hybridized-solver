@@ -239,3 +239,120 @@ def test_two_device_decompositions_coexist() -> None:
 
     exact = np.linalg.solve(matrix, rhs)
     np.testing.assert_allclose(first.solve(rhs), exact, rtol=1e-8, atol=1e-12)
+
+
+def _from_blocks(
+    sizes: tuple[int, ...], entries: dict[tuple[int, int], np.ndarray]
+) -> tuple[BlockSystem, np.ndarray]:
+    """Store dense blocks in a system of ``sizes``; return it and its matrix."""
+    system = BlockSystem(*sizes)
+    offsets = np.cumsum((0, *sizes))
+    matrix = np.zeros((int(offsets[-1]), int(offsets[-1])))
+    for (row, col), block in entries.items():
+        array = np.asarray(block, dtype=np.float64)
+        system.add_block(row, col, array)
+        matrix[offsets[row] : offsets[row + 1], offsets[col] : offsets[col + 1]] = array
+    return system, matrix
+
+
+@requires_device
+def test_a_multi_pass_singular_block_is_named_by_the_device() -> None:
+    """The block the device blames is the block the CPU blames.
+
+    The rank-one block sits in the middle of four, so its second pivot fails
+    partway through a pass that covers several blocks: the pass used to
+    report the first column it started at rather than the column that
+    failed, naming the row before the truth.
+    """
+    entries: dict[tuple[int, int], np.ndarray] = {
+        (0, 0): np.eye(2) * 3.0,
+        (1, 1): np.array([[1.0, 2.0], [2.0, 4.0]]),  # Rank one: no second pivot.
+        (2, 2): np.eye(2) * 3.0,
+        (3, 3): np.eye(2) * 3.0,
+    }
+    for row, col in ((0, 1), (1, 0), (2, 3), (3, 2)):
+        entries[(row, col)] = np.zeros((2, 2))
+    system, _ = _from_blocks((2, 2, 2, 2), entries)
+
+    with pytest.raises(hybsol.SingularSystemError) as cpu:
+        system.decompose()
+    with pytest.raises(hybsol.SingularSystemError) as device:
+        opencl.decompose(system, device=first_device())
+
+    assert str(device.value) == str(cpu.value)
+    assert str(cpu.value).endswith("(block 1)")
+
+
+@requires_device
+def test_a_stored_zero_coupling_is_walked_like_any_other() -> None:
+    """Exact zeros off the diagonal are stored blocks, and the walk visits them."""
+    rng = np.random.default_rng(11)
+    zero = np.zeros((6, 6))
+    matrix = rng.standard_normal((6, 6))
+    matrix[np.diag_indices(6)] += 6
+    system, dense = _from_blocks(
+        (6, 6), {(0, 0): matrix, (1, 1): matrix.T, (0, 1): zero, (1, 0): zero}
+    )
+    rhs = np.ones(12)
+
+    solution = opencl.decompose(system, device=first_device()).solve(rhs)
+    np.testing.assert_allclose(
+        solution, np.linalg.solve(dense, rhs), rtol=1e-9, atol=1e-12
+    )
+
+
+@requires_device
+def test_a_one_sided_pattern_solves_as_stored() -> None:
+    """A block above the diagonal with no mirror below is the caller's own.
+
+    ``is_valid`` only requires a mirror for blocks *below* the diagonal, so
+    this system is legal, needs no elimination, and solves exactly what was
+    stored -- a dense triangle, not the symmetric matrix a caller might have
+    meant.
+    """
+    rng = np.random.default_rng(5)
+    above = rng.standard_normal((6, 6))
+    diagonal = rng.standard_normal((6, 6))
+    diagonal[np.diag_indices(6)] += 6
+    system, dense = _from_blocks(
+        (6, 6), {(0, 0): diagonal, (1, 1): diagonal.T, (0, 1): above}
+    )
+    rhs = np.ones(12)
+
+    solution = opencl.decompose(system, device=first_device()).solve(rhs)
+    np.testing.assert_allclose(
+        solution, np.linalg.solve(dense, rhs), rtol=1e-9, atol=1e-12
+    )
+
+
+@requires_device
+@pytest.mark.parametrize("value", [1.5, "0", None, 2**63])
+def test_a_device_that_is_not_an_index_is_a_type_error(value: object) -> None:
+    """A float, a string or nothing at all is the caller's mistake, early."""
+    system, _ = build()
+    with pytest.raises(TypeError):
+        opencl.decompose(system, device=value)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        opencl.device_info(value)  # type: ignore[arg-type]
+
+
+@requires_device
+def test_a_device_index_far_out_of_range_says_so_itself() -> None:
+    """The detail a DeviceError carries belongs to the call that raised.
+
+    A refusal that has something to explain -- a device that cannot do
+    double arithmetic -- leaves that explanation behind, and the next
+    failure used to quote it instead of its own reason.
+    """
+    system, _ = build()
+    no_double = next((info for info in _ALL if not info["double"]), None)
+    if no_double is None:
+        pytest.skip("every OpenCL device here can do double arithmetic")
+    with pytest.raises(DeviceError) as earlier:
+        opencl.decompose(system, device=no_double["index"])
+
+    with pytest.raises(DeviceError) as missing:
+        opencl.decompose(system, device=10**12)
+    message = str(missing.value)
+    assert str(earlier.value) not in message
+    assert "1000000000000" in message

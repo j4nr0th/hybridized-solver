@@ -346,6 +346,98 @@ static void test_singular_block_agrees(hybsol_opencl_device_t *const device)
     hybsol_system_destroy(sys);
 }
 
+/** A pass that spans several blocks blames the block whose pivot failed. */
+static void test_multi_pass_singular_block_agrees(hybsol_opencl_device_t *const device)
+{
+    const uint64_t sizes[4] = {2, 2, 2, 2};
+    const double identity[4] = {3.0, 0.0, 0.0, 3.0};
+    const double rank_one[4] = {1.0, 2.0, 2.0, 4.0};
+    const double zeroes[4] = {0.0, 0.0, 0.0, 0.0};
+    hybsol_system_t *sys = NULL;
+
+    CHECK_OK(hybsol_system_create(4, sizes, &sys, &CUTL_STD_ALLOCATOR));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, identity));
+    CHECK_OK(hybsol_system_add_block(sys, 1, 1, 2, 2, rank_one));
+    CHECK_OK(hybsol_system_add_block(sys, 2, 2, 2, 2, identity));
+    CHECK_OK(hybsol_system_add_block(sys, 3, 3, 2, 2, identity));
+    for (uint64_t at = 0; at < 4; at += 2)
+    {
+        CHECK_OK(hybsol_system_add_block(sys, at, at + 1, 2, 2, zeroes));
+        CHECK_OK(hybsol_system_add_block(sys, at + 1, at, 2, 2, zeroes));
+    }
+    CHECK(hybsol_system_is_valid(sys));
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+
+    hybsol_decomposition_t *cpu = NULL;
+    CHECK_OK(hybsol_decomposition_create(sys, graph, &cpu));
+    CHECK_RESULT(hybsol_decomposition_factorize(cpu, 1), HYBSOL_ERROR_SINGULAR);
+    const uint64_t named = hybsol_decomposition_failing_block(cpu);
+    CHECK_MSG(named == 1, "the CPU blamed block %llu, not the rank-one one", (unsigned long long)named);
+
+    hybsol_decomposition_t *gpu = NULL;
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_RESULT(hybsol_decomposition_factorize(gpu, 0), HYBSOL_ERROR_SINGULAR);
+    CHECK_MSG(hybsol_decomposition_failing_block(gpu) == named,
+              "the device named block %llu, the CPU named %llu",
+              (unsigned long long)hybsol_decomposition_failing_block(gpu),
+              (unsigned long long)named);
+
+    hybsol_decomposition_destroy(gpu);
+    hybsol_decomposition_destroy(cpu);
+    hybsol_elimination_destroy(graph);
+    hybsol_system_destroy(sys);
+}
+
+/** A precision value the bindings cannot produce still answers with a refusal. */
+static void test_hostile_arguments(hybsol_opencl_device_t *const device)
+{
+    const uint64_t sizes[1] = {4};
+    double values[16];
+    hybsol_system_t *sys = NULL;
+
+    for (size_t i = 0; i < 16; ++i)
+    {
+        values[i] = 0.5 + 0.1 * (double)i;
+    }
+    for (size_t row = 0; row < 4; ++row)
+    {
+        values[row * 4 + row] += 10.0;
+    }
+
+    CHECK_OK(hybsol_system_create(1, sizes, &sys, &CUTL_STD_ALLOCATOR));
+    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 4, 4, values));
+    CHECK(hybsol_system_is_valid(sys));
+
+    hybsol_elimination_t *graph = NULL;
+    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+
+    // Kernel names and element widths both branch on the precision, so a value
+    // outside the enum may not become whichever branch the comparison takes.
+    hybsol_decomposition_t *gpu = NULL;
+    CHECK_RESULT(hybsol_opencl_decomposition_create_on_device(sys, graph, (hybsol_precision_t)7, device, &gpu),
+                 HYBSOL_ERROR_DEVICE_CAPABILITY);
+    CHECK(gpu == NULL);
+    CHECK(hybsol_opencl_last_error()[0] != '\0');
+
+    // A refusal is not a wedged backend: the next honest call works.
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
+    hybsol_decomposition_destroy(gpu);
+
+    // And the note answers the call that failed, not the one before it.
+    hybsol_opencl_device_t *missing = NULL;
+    CHECK_RESULT(hybsol_opencl_device_acquire(9999, &missing), HYBSOL_ERROR_NO_DEVICE);
+    CHECK(missing == NULL);
+    CHECK_MSG(strstr(hybsol_opencl_last_error(), "9999") != NULL,
+              "the refusal said ``%s'', which does not name the index asked for",
+              hybsol_opencl_last_error());
+
+    hybsol_elimination_destroy(graph);
+    hybsol_system_destroy(sys);
+}
+
 /** Replaying the operations and back-substituting is the same solve. */
 static void test_replay_matches_solve(hybsol_opencl_device_t *const device)
 {
@@ -468,6 +560,8 @@ int main(void)
     test_parity_in_both_precisions(device);
     test_mixed_precision_on_device(device);
     test_singular_block_agrees(device);
+    test_multi_pass_singular_block_agrees(device);
+    test_hostile_arguments(device);
     test_replay_matches_solve(device);
     test_device_lifetime(device, device_index);
 
