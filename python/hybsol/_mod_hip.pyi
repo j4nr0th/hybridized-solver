@@ -71,8 +71,11 @@ def decompose(
     arith : str, default: "auto"
         The factor arithmetic mode: ``"auto"``, ``"native"``, or the
         split-precision names ``"split"`` and ``"ozaki"`` -- the latter
-        needs a WMMA-capable gfx12 device. ``"ozaki2"`` names a mode that
-        arrives in a later phase.
+        needs a WMMA-capable gfx12 device and tiles blocks of at least
+        16, falling back to ``"split"`` below that. ``"ozaki2"`` is the
+        asymmetric Ozaki variant, a refinement partner: accurate to
+        roughly 11 bits on the unsliced side, so it is meant for the
+        inner solve of ``hybsol.refined_solve``, not a direct solve.
 
     Returns
     -------

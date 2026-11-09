@@ -127,23 +127,26 @@ if (HYBSOL_ENABLE_HIP)
     message(STATUS "HIP kernels compiled for: ${CMAKE_HIP_ARCHITECTURES}")
     unset(_hybsol_hip_archs)
 
-    # One kernel source, five object libraries: the single-precision, the
+    # One kernel source, six object libraries: the single-precision, the
     # double-precision, the double-single (double-factor arithmetic on the
-    # FP32 FMA unit), and the two Ozaki realizations -- FP16 slices into the
-    # f32-accumulating WMMA tile and signed int8 slices into the int32 one --
-    # named apart by the defines, since all five suffix sets are archived
-    # together and chosen by address at launch.
+    # FP32 FMA unit), the two Ozaki-I realizations -- FP16 slices into the
+    # f32-accumulating WMMA tile and signed int8 slices into the int32 one
+    # -- and the Ozaki-II variant, asymmetric FP16 slicing into the f32
+    # tile, all named apart by the defines, since every suffix set is
+    # archived together and chosen by address at launch.
     set_source_files_properties(src/hip/hip_kernels.cpp PROPERTIES LANGUAGE HIP)
     add_library(hybsol_hip_k32 OBJECT src/hip/hip_kernels.cpp)
     add_library(hybsol_hip_k64 OBJECT src/hip/hip_kernels.cpp)
     add_library(hybsol_hip_kds OBJECT src/hip/hip_kernels.cpp)
     add_library(hybsol_hip_kozf16 OBJECT src/hip/hip_kernels.cpp)
     add_library(hybsol_hip_kozi8 OBJECT src/hip/hip_kernels.cpp)
+    add_library(hybsol_hip_koz2 OBJECT src/hip/hip_kernels.cpp)
     target_compile_definitions(hybsol_hip_k64 PRIVATE HYBSOL_HIP_DOUBLE)
     target_compile_definitions(hybsol_hip_kds PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_DS)
     target_compile_definitions(hybsol_hip_kozf16 PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_OZ_F16)
     target_compile_definitions(hybsol_hip_kozi8 PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_OZ_I8)
-    # The double-single chain and both Ozaki walks are error-free transforms:
+    target_compile_definitions(hybsol_hip_koz2 PRIVATE HYBSOL_HIP_DOUBLE HYBSOL_HIP_OZ2)
+    # The double-single chain and every Ozaki walk are error-free transforms:
     # TwoProd and TwoSum balance a rounded product against its captured
     # error, and the slice windows are nearest-integer windows of exact
     # quotients -- any multiply and add the compiler fuses beyond the fma the
@@ -153,11 +156,13 @@ if (HYBSOL_ENABLE_HIP)
     target_compile_options(hybsol_hip_kds PRIVATE -ffp-contract=off)
     target_compile_options(hybsol_hip_kozf16 PRIVATE -ffp-contract=off)
     target_compile_options(hybsol_hip_kozi8 PRIVATE -ffp-contract=off)
+    target_compile_options(hybsol_hip_koz2 PRIVATE -ffp-contract=off)
     target_link_libraries(hybsol_hip_k32 PUBLIC hip::device)
     target_link_libraries(hybsol_hip_k64 PUBLIC hip::device)
     target_link_libraries(hybsol_hip_kds PUBLIC hip::device)
     target_link_libraries(hybsol_hip_kozf16 PUBLIC hip::device)
     target_link_libraries(hybsol_hip_kozi8 PUBLIC hip::device)
+    target_link_libraries(hybsol_hip_koz2 PUBLIC hip::device)
 
     add_library(hybsol_hip STATIC
             src/hip/device.c
@@ -166,7 +171,8 @@ if (HYBSOL_ENABLE_HIP)
             $<TARGET_OBJECTS:hybsol_hip_k64>
             $<TARGET_OBJECTS:hybsol_hip_kds>
             $<TARGET_OBJECTS:hybsol_hip_kozf16>
-            $<TARGET_OBJECTS:hybsol_hip_kozi8>)
+            $<TARGET_OBJECTS:hybsol_hip_kozi8>
+            $<TARGET_OBJECTS:hybsol_hip_koz2>)
     add_library(hybsol::hip ALIAS hybsol_hip)
 
     target_compile_features(hybsol_hip PUBLIC c_std_17)

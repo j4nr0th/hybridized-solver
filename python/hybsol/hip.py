@@ -113,10 +113,12 @@ def decompose(
         backend choose, ``"native"`` runs the factors in their own type.
         ``"split"`` carries double factors as double-single pairs on the
         FP32 FMA unit; ``"ozaki"`` slices them for the WMMA matrix cores,
-        which needs a gfx12-family device (and runs the double-single path
-        wherever the blocks are too small for a tile). ``"ozaki2"`` names a
-        mode that arrives in a later phase: asking for it raises
-        :exc:`~hybsol.DeviceError`.
+        which needs a gfx12-family device and tiles only where a block
+        reaches 16 wide -- smaller blocks, and every pass the tiles do not
+        serve, keep the double-single path. ``"ozaki2"`` is the asymmetric
+        variant: one operand keeps its five slices, the other its single
+        top-11-bit window. Its accuracy is the refinement partner's, not a
+        direct solve's: use it under :func:`hybsol.refined_solve`.
 
     Returns
     -------
@@ -127,7 +129,7 @@ def decompose(
     ------
     hybsol.DeviceError
         No device has that index, it cannot do double arithmetic, ``arith``
-        asks for a mode the backend does not offer yet, or the device runtime
+        asks for a mode the device cannot serve, or the device runtime
         failed.
     ValueError
         The system does not satisfy the solver's structural assumptions,

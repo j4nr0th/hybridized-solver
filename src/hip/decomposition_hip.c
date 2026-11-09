@@ -50,12 +50,14 @@ typedef struct
     /** Non-zero when double factors run as double-single pairs on the FP32 FMA unit. */
     int kernels_ds;
     /**
-     * Which Ozaki realization the two block-GEMM passes run on: 0 none,
-     * 1 the FP16 slices, 2 the signed int8 slices. Only set on a gfx12
-     * device, only for double factors, and only once a block is big enough
-     * for a 16x16 tile to pay for itself; every other pass, and every
-     * smaller system, keeps the double-single set -- Ozaki mode asked for
-     * the split paths, the matrix cores just do not apply to it.
+     * Which Ozaki path the two block-GEMM passes run on: 0 none,
+     * 1 the FP16 slices, 2 the signed int8 slices, 3 the Ozaki-II
+     * asymmetric walk (FP16 slices against a single FP16 window). Only
+     * set on a gfx12 device, only for double factors, and only once a
+     * block is big enough for a 16x16 tile to pay for itself; every other
+     * pass, and every smaller system, keeps the double-single set -- an
+     * Ozaki mode asked for the split paths, the matrix cores just do not
+     * apply to it.
      */
     int kernels_oz;
     /** What the kernels walk. */
@@ -318,16 +320,12 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
 
-    // Ozaki-II names the ABI but lands with its own phase: still refused.
-    if (arith == HYBSOL_HIP_ARITH_OZAKI2)
-    {
-        hybsol_hip_set_error("The HIP backend's Ozaki-II arithmetic comes in a later phase; "
-                             "ask for auto, native, double-single, or ozaki for now.");
-        return HYBSOL_ERROR_DEVICE_CAPABILITY;
-    }
-    // Ozaki-I needs the WMMA matrix cores: only the gfx12 family has them,
-    // and the kernels for this exact target are the ones CMake compiled.
-    int oz_requested = (arith == HYBSOL_HIP_ARITH_OZAKI) ? 1 : 0;
+    // Both Ozaki modes need the WMMA matrix cores: only the gfx12 family
+    // has them, and the kernels for this exact target are the ones CMake
+    // compiled. (Ozaki-II is the asymmetric variant -- one operand sliced,
+    // the other a single window -- meant as the inner solve under iterative
+    // refinement; the harness prints its accuracy and never gates on it.)
+    int oz_requested = (arith == HYBSOL_HIP_ARITH_OZAKI || arith == HYBSOL_HIP_ARITH_OZAKI2) ? 1 : 0;
     if (oz_requested)
     {
         hipDeviceProp_t prop;
@@ -428,21 +426,30 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         }
     }
 
-    // Ozaki mode on a WMMA device runs the two block-GEMM passes on the
+    // An Ozaki mode on a WMMA device runs the two block-GEMM passes on the
     // matrix cores once some block reaches 16 -- the tile a WMMA call answers
     // for. A smaller system asked for the split paths and gets them on the
     // double-single set, which is the mode's own fallback for the passes the
-    // matrix cores cannot serve. The realization is FP16 slices by default;
-    // the environment names the int8 one until the Phase D harness measures
-    // which deserves the default.
-    if (oz_requested && precision == HYBSOL_PRECISION_DOUBLE)
+    // matrix cores cannot serve. Ozaki-I's realization is FP16 slices by
+    // default; the environment names the int8 one until the Phase D harness
+    // measures which deserves the default. Ozaki-II has one realization.
+    if ((arith == HYBSOL_HIP_ARITH_OZAKI || arith == HYBSOL_HIP_ARITH_OZAKI2)
+        && precision == HYBSOL_PRECISION_DOUBLE)
     {
         if (state->max_block >= 16)
         {
-            const char *const variant = getenv("HYBSOL_HIP_OZAKI_I8");
-            state->kernels_oz = (variant != NULL && variant[0] == '1') ? 2 : 1;
+            if (arith == HYBSOL_HIP_ARITH_OZAKI2)
+            {
+                state->kernels_oz = 3;
+            }
+            else
+            {
+                const char *const variant = getenv("HYBSOL_HIP_OZAKI_I8");
+                state->kernels_oz = (variant != NULL && variant[0] == '1') ? 2 : 1;
+            }
             // Every pass the matrix cores do not serve -- the diagonals and
-            // the whole solve -- runs the double-single set under Ozaki mode too.
+            // the whole solve -- runs the double-single set under an Ozaki
+            // mode too.
             state->kernels_ds = 1;
         }
         else
@@ -710,10 +717,14 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     const int oz = (state->kernels_oz != 0) ? 1 : 0;
     const void *const eliminate = KERNEL(state, precision, hybsol_eliminate_pass);
     const void *const scale = KERNEL(state, precision, hybsol_scale_pass);
-    const void *const oz_eliminate = (state->kernels_oz == 2) ? (const void *)&hybsol_eliminate_pass_f64_ozi8
-                                                              : (const void *)&hybsol_eliminate_pass_f64_ozf16;
-    const void *const oz_scale = (state->kernels_oz == 2) ? (const void *)&hybsol_scale_pass_f64_ozi8
-                                                          : (const void *)&hybsol_scale_pass_f64_ozf16;
+    const void *const oz_eliminate = (state->kernels_oz == 2)
+                                         ? (const void *)&hybsol_eliminate_pass_f64_ozi8
+                                         : ((state->kernels_oz == 3) ? (const void *)&hybsol_eliminate_pass_f64_oz2
+                                                                     : (const void *)&hybsol_eliminate_pass_f64_ozf16);
+    const void *const oz_scale = (state->kernels_oz == 2)
+                                     ? (const void *)&hybsol_scale_pass_f64_ozi8
+                                     : ((state->kernels_oz == 3) ? (const void *)&hybsol_scale_pass_f64_oz2
+                                                                 : (const void *)&hybsol_scale_pass_f64_ozf16);
     const void *const diagonal = KERNEL(state, precision, hybsol_diagonal_pass);
 
     // Bounded work groups rather than the runtime's maximum; the grids round up to whole ones.

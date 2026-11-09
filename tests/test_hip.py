@@ -223,19 +223,54 @@ def test_split_arith_solves_at_native_accuracy() -> None:
 
 
 @requires_device
-@pytest.mark.parametrize("mode", ["ozaki2"])
-def test_the_ozaki_modes_are_refused_until_they_land(mode: str) -> None:
-    """An Ozaki-II mode names an ABI the kernels do not fill yet.
+def test_ozaki_arith_solves_at_native_accuracy() -> None:
+    """``arith="ozaki"`` runs the block GEMMs on the WMMA matrix cores.
 
-    The message carries the backend's own reason -- the text of
-    ``hybsol_hip_last_error``. Double-single (``"split"``) landed with the
-    double-single kernels and Ozaki-I (``"ozaki"``) with the WMMA block
-    kernels, each becoming a parity case of its own; only Ozaki-II is still
-    waiting.
+    Sized so the tiles apply (a 16-wide block at the gate), gated exactly
+    like the split parity case: residual inside ``cond * 1e-10``, and the
+    solve agrees with the native one to native tolerance.
     """
-    system, _ = build()
-    with pytest.raises(DeviceError, match="later phase"):
-        hip.decompose(system, device=first_device(), arith=mode)
+    sizes = (16, 16, 8)
+    system, matrix = build(precision=Precision.DOUBLE, sizes=sizes)
+    rhs = np.ones(sum(sizes))
+    device = first_device()
+
+    try:
+        ozaki = hip.decompose(system, device=device, arith="ozaki").solve(rhs)
+    except DeviceError:
+        pytest.skip("no gfx12 device for the Ozaki modes")
+
+    native = hip.decompose(system, device=device, arith="native").solve(rhs)
+    ozaki_residual = np.abs(matrix @ ozaki - 1.0).max()
+    assert ozaki_residual < max(np.linalg.cond(matrix) * 1e-10, 1e-8)
+    np.testing.assert_allclose(ozaki, native, rtol=1e-9, atol=1e-12)
+
+
+@requires_device
+def test_ozaki2_arith_runs_as_a_refinement_partner() -> None:
+    """``arith="ozaki2"`` runs and solves with no accuracy gate on purpose.
+
+    Asymmetric slicing keeps only ~11 bits on the unsliced side, so the
+    raw solve is refinement-partner grade; the contract is that
+    :func:`hybsol.refined_solve` on top of it lands the answer.
+    """
+    sizes = (16, 16, 8)
+    system, matrix = build(precision=Precision.DOUBLE, sizes=sizes)
+    rhs = np.ones(sum(sizes))
+    device = first_device()
+
+    try:
+        dec = hip.decompose(system, device=device, arith="ozaki2")
+        solution = dec.solve(rhs)
+    except DeviceError:
+        pytest.skip("no gfx12 device for the Ozaki modes")
+
+    assert solution.shape == rhs.shape
+    assert np.all(np.isfinite(solution))
+
+    refined = hybsol.refined_solve(system, dec, rhs, tolerance=1e-8)
+    exact = np.linalg.solve(matrix, rhs)
+    np.testing.assert_allclose(refined, exact, rtol=1e-6, atol=1e-9)
 
 
 @requires_device

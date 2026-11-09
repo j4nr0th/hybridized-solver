@@ -23,14 +23,20 @@
  * instead, through the same un-#ifdef'd helpers the _f64 pass uses. Which
  * set a launch reaches is the host's choice, so the mode costs nothing here.
  *
- * A fourth and fifth instantiation, each under -DHYBSOL_HIP_DOUBLE plus
- * -DHYBSOL_HIP_OZ_F16 or -DHYBSOL_HIP_OZ_I8 (and -ffp-contract=off for the
- * same reason as the double-single object: the slice windows are exact
- * integer windows of exact quotients, and a fused multiply-add the compiler
- * invents past the named fma re-rounds a term that balance depends on),
- * carry the two block-GEMM passes -- ``eliminate_pass`` and ``scale_pass``
- * only -- on the RDNA4 matrix cores by Ozaki-I mantissa slicing, entry
- * points suffixed _f64_ozf16 and _f64_ozi8. Each takes the double factors
+ * A fourth, fifth and sixth instantiation, each under -DHYBSOL_HIP_DOUBLE
+ * plus -DHYBSOL_HIP_OZ_F16, -DHYBSOL_HIP_OZ_I8 or -DHYBSOL_HIP_OZ2 (and
+ * -ffp-contract=off for the same reason as the double-single object: the
+ * slice windows are exact integer windows of exact quotients, and a fused
+ * multiply-add the compiler invents past the named fma re-rounds a term
+ * that balance depends on), carry the two block-GEMM passes --
+ * ``eliminate_pass`` and ``scale_pass`` only -- on the RDNA4 matrix cores
+ * by Ozaki mantissa slicing, entry points suffixed _f64_ozf16, _f64_ozi8
+ * and _f64_oz2. The first two are Ozaki-I, both operands sliced; the third
+ * is Ozaki-II, asymmetric: the left operand keeps its five FP16 slices
+ * while the right is a single slice under its block scale, ~11 bits of
+ * accuracy kept and the mode meant for the inner solve under iterative
+ * refinement -- the harness prints its residual, never gates it. Each
+ * takes the double factors
  * and a per-entry-block shared scale (``block_scales``, computed on the
  * host, one power of two per block); the slices and every product between
  * them are exact by construction, and only the pruned slice-pair band is
@@ -48,8 +54,15 @@
 
 #include <hip/hip_runtime.h>
 
-#if defined(HYBSOL_HIP_DS) || defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#if defined(HYBSOL_HIP_DS) || defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
 #include "ds_math.h"
+#endif
+
+/* One spelling for "this object carries an Ozaki block-GEMM path": the
+   argument lists, wave walks and fast paths are identical across the
+   realizations, which differ only inside oz_block_gemm. */
+#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
+#define HYBSOL_HIP_OZ
 #endif
 
 #ifdef HYBSOL_HIP_DOUBLE
@@ -60,6 +73,8 @@ typedef double scalar;
 #define HYBSOL_NAME(n) hybsol_##n##_f64_ozf16
 #elif defined(HYBSOL_HIP_OZ_I8)
 #define HYBSOL_NAME(n) hybsol_##n##_f64_ozi8
+#elif defined(HYBSOL_HIP_OZ2)
+#define HYBSOL_NAME(n) hybsol_##n##_f64_oz2
 #else
 #define HYBSOL_NAME(n) hybsol_##n##_f64
 #endif
@@ -338,7 +353,7 @@ static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigne
 
 #endif /* HYBSOL_HIP_DS */
 
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
 
 /* --------------------------------------------------------------------- */
 /* Ozaki-I on the RDNA4 matrix cores                                       */
@@ -379,6 +394,16 @@ static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigne
  * partial sums stay at or under 4 * 2^20 < 2^22, and the double combine
  * adds the groups. No f32 rounding ever happens; the only error in the
  * whole path is the pruned band.
+ *
+ * Ozaki-II (the _f64_oz2 object) keeps this whole machinery and thins one
+ * side: the left operand is still sliced k = 5, but the right is a single
+ * window -- its top 11 bits under the same halved-ceiling scale -- so a
+ * product pair is (a_u, b_0) with weight 2^{-tau(u+1)}, five pairs instead
+ * of fifteen, and the only error is the right operand's dropped residue
+ * (~2^-12 relative). That is refinement-partner accuracy, not a solve's;
+ * the harness prints it and never gates it. The same group-split k walk
+ * keeps every f32 partial an exact integer: the single b window is at most
+ * 2^10, so a group sum still sits under 2^22.
  *
  * Fragments: one wavefront (32 lanes) carries one 16x16 output tile, the
  * layout the Phase D probe pinned down numerically at gfx1201 -- lane L holds
@@ -651,13 +676,102 @@ static __device__ void oz_block_gemm_i8(const double *a, const double scale_a, c
     }
 }
 
+/*
+ * The Ozaki-II walk: the left operand keeps its five FP16 slices, the
+ * right is its single leading window -- top 11 bits under the same
+ * halved power-of-two ceiling, exact in FP16 as an integer at or under
+ * 2^10 -- so five pairs (u, 0) carry the whole product and the right
+ * operand's residue is the mode's designed loss. Grouping is the f16
+ * walk's: quartets when both windows lead, halves otherwise, every f32
+ * partial an exact integer under 2^22.
+ */
+static __device__ void oz_block_gemm_oz2(const double *a, const double scale_a, const unsigned rows_a,
+                                         const unsigned a_stride, const unsigned inner, const double *b,
+                                         const double scale_b, const unsigned rows_b, const unsigned cols_b,
+                                         double *out)
+{
+    const unsigned lane = threadIdx.x & 31u;
+    const unsigned kbase_lane = 8u * (lane >> 4); /* the lane group's first k inside a k tile */
+    const double inv_a = 1.0 / scale_a, inv_b = 1.0 / scale_b; /* powers of two: exact */
+    for (unsigned ti = 0; ti * 16u < rows_a; ++ti)
+    {
+        for (unsigned tj = 0; tj * 16u < cols_b; ++tj)
+        {
+            double acc[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            for (unsigned tk = 0; tk * 16u < inner; ++tk)
+            {
+                const unsigned row = ti * 16u + (lane & 15u);
+                const unsigned col = tj * 16u + (lane & 15u);
+                _Float16 asl[8][HYBSOL_OZ_F16_SLICES];
+                _Float16 bwin[8];
+                #pragma unroll
+                for (unsigned e = 0; e < 8u; ++e)
+                {
+                    const unsigned kk = tk * 16u + kbase_lane + e;
+                    if (row < rows_a && kk < inner)
+                        oz_window_f16(a[row * a_stride + kk] * inv_a, &asl[e][0]);
+                    else
+                    {
+                        #pragma unroll
+                        for (int s = 0; s < HYBSOL_OZ_F16_SLICES; ++s)
+                            asl[e][s] = (_Float16)0;
+                    }
+                    if (col < cols_b && kk < inner && kk < rows_b)
+                        bwin[e] = (_Float16)nearbyint(b[kk * cols_b + col] * inv_b * 2048.0); /* the one window: exact */
+                    else
+                        bwin[e] = (_Float16)0;
+                }
+                #pragma unroll
+                for (unsigned u = 0; u < HYBSOL_OZ_F16_SLICES; ++u)
+                {
+                    const unsigned groups = (u == 0u) ? 4u : 2u;
+                    #pragma unroll
+                    for (unsigned gq = 0; gq < 4u; ++gq)
+                    {
+                        if (gq >= groups)
+                            break;
+                        const unsigned span = 16u / groups;
+                        const unsigned klo = span * gq;
+                        oz_v8half frag_a = {}, frag_b = {};
+                        #pragma unroll
+                        for (unsigned e = 0; e < 8u; ++e)
+                        {
+                            if (kbase_lane + e < klo || kbase_lane + e >= klo + span)
+                                continue;
+                            frag_a[e] = asl[e][u];
+                            frag_b[e] = bwin[e];
+                        }
+                        oz_v8float c = {};
+                        c = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(frag_a, frag_b, c);
+                        const double w = oz_f16_weights[u]; /* 2^{-tau(u+1)}: the b window weighs one slice */
+                        #pragma unroll
+                        for (unsigned g = 0; g < 8u; ++g)
+                            acc[g] += (double)c[g] * w;
+                    }
+                }
+            }
+            const double weight = scale_a * scale_b;
+            const unsigned crow = ti * 16u + (lane >> 4) * 8u;
+            const unsigned ccol = tj * 16u + (lane & 15u);
+            #pragma unroll
+            for (unsigned g = 0; g < 8u; ++g)
+            {
+                if (crow + g < rows_a && ccol < cols_b)
+                    out[(crow + g) * cols_b + ccol] = acc[g] * weight;
+            }
+        }
+    }
+}
+
 /* The dispatch the kernels call: whichever realization this object compiled. */
 static __device__ void oz_block_gemm(const double *a, const double scale_a, const unsigned rows_a,
                                      const unsigned a_stride, const unsigned inner, const double *b,
                                      const double scale_b, const unsigned rows_b, const unsigned cols_b,
                                      double *out)
 {
-#ifdef HYBSOL_HIP_OZ_I8
+#ifdef HYBSOL_HIP_OZ2
+    oz_block_gemm_oz2(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
+#elif defined(HYBSOL_HIP_OZ_I8)
     oz_block_gemm_i8(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
 #else
     oz_block_gemm_f16(a, scale_a, rows_a, a_stride, inner, b, scale_b, rows_b, cols_b, out);
@@ -801,7 +915,7 @@ static __device__ void oz_scale_run(scalar *lu, const double host_lu, scalar *rh
 
 #endif /* __gfx1200__ || __gfx1201__ */
 
-#endif /* HYBSOL_HIP_OZ_F16 || HYBSOL_HIP_OZ_I8 */
+#endif /* HYBSOL_HIP_OZ */
 
 /* One pass's eliminations: a work item per (block row, source block) of the grid's second dimension. */
 /* Occurrences that factor a diagonal instead are left to hybsol_diagonal_pass. */
@@ -812,13 +926,13 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
                                             const unsigned long *block_offsets, scalar *vals, scalar *scratch,
                                             const unsigned long pass_first, const unsigned long pass_count,
                                             const unsigned long sources_stride, const unsigned long scratch_stride
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
                                             ,
                                             const double *block_scales
 #endif
                                             )
 {
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
     /* The Ozaki builds run one whole wavefront per work item: the host
        launches 1-D with workgroups of 64 lanes, and the wave's index carries
        the (which, m) pair the plain kernels walk with two grid dimensions.
@@ -874,7 +988,7 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
     const scalar *const left = vals + entry_val_offset[at_step];
     const scalar *const right = vals + entry_val_offset[entry_src];
     scalar *const dest_block = vals + entry_val_offset[at_tgt + dest];
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
 #if defined(__gfx1200__) || defined(__gfx1201__)
     /* The matrix cores when the whole pair fits the tile walk and every entry
        sits in the range the slicing carries; the host only reaches this entry
@@ -942,14 +1056,14 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
                                         const unsigned long *entry_col, const unsigned long *entry_val_offset,
                                         const unsigned long *block_offsets, scalar *vals,
                                         const unsigned long pass_first, const unsigned long pass_count
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
                                             ,
                                             const double *block_scales, scalar *scratch,
                                             const unsigned long tail_stride, const unsigned long scratch_stride
 #endif
                                             )
 {
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
     /* One wavefront per work item, the wave's index carrying the (row, tail
        slot) pair -- see the note at the eliminate entry's head. */
     const unsigned long wave = HYBSOL_GID0 >> 5;
@@ -975,7 +1089,7 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
     const unsigned long size_tail = block_size(block_offsets, entry_col[at + slot]);
     scalar *const lu = vals + entry_val_offset[at + i_diag];
     scalar *const rhs = vals + entry_val_offset[at + slot];
-#if defined(HYBSOL_HIP_OZ_F16) || defined(HYBSOL_HIP_OZ_I8)
+#ifdef HYBSOL_HIP_OZ
 #if defined(__gfx1200__) || defined(__gfx1201__)
     /* The matrix-core solve when the pair fits the tile walk and every entry
        sits in the range the slicing carries; the Neumann inversion of the

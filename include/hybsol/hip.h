@@ -65,10 +65,9 @@ typedef struct hybsol_hip_device_details
  * device; :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` runs the factors in their
  * own type, single accumulating in ``float`` and double in ``double``; and
  * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` carries double factors as
- * two FP32 pieces on the FP32 FMA unit. The Ozaki modes below slice the
+ * the FP32 FMA unit. The Ozaki modes below slice the
  * factors' mantissas for the WMMA matrix cores: only gfx12-family devices
- * have those, and Ozaki-II's name is still only an ABI -- until its phase
- * lands, asking for it is refused with
+ * have those, and asking for either on another device answers
  * :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY`.
  */
 typedef enum hybsol_hip_arith
@@ -91,7 +90,16 @@ typedef enum hybsol_hip_arith
      * keep the double-single path for those passes too.
      */
     HYBSOL_HIP_ARITH_OZAKI = 3,
-    /** Asymmetric slicing for use under iterative refinement; a later phase, refused for now. */
+    /**
+     * Ozaki-II: asymmetric slicing -- the first operand keeps its five
+     * FP16 slices while the second is kept as a single one, block-scaled
+     * apart. That is ~11 bits per operand, an accuracy no direct solve
+     * gates on: the mode exists as the cheap inner solve under iterative
+     * refinement (``hybsol.refined_solve``), and the selection harness
+     * prints its residual without gating it. Needs a gfx12-family device;
+     * smaller blocks keep the double-single path, and
+     * :c:enumerator:`HYBSOL_HIP_ARITH_AUTO` never picks it.
+     */
     HYBSOL_HIP_ARITH_OZAKI2 = 4,
 } hybsol_hip_arith_t;
 

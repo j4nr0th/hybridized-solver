@@ -439,40 +439,6 @@ static void test_split_parity(hybsol_hip_device_t *const device)
     hybsol_system_destroy(sys);
 }
 
-/** Ozaki-II names the ABI but lands in a later phase: asked for, refused. (Ozaki-I landed with the WMMA kernels; Ozaki-II stays on the waiting list.) */
-static void test_split_modes_refused(hybsol_hip_device_t *const device)
-{
-    static const hybsol_hip_arith_t later[] = {
-        HYBSOL_HIP_ARITH_OZAKI2,
-    };
-
-    uint64_t sizes[2] = {2, 2};
-    hybsol_system_t *sys = NULL;
-    CHECK_OK(hybsol_system_create(2, sizes, &sys, &CUTL_STD_ALLOCATOR));
-    const double diag_a[4] = {4.0, 0.0, 0.0, 4.0};
-    const double off[4] = {0.5, 0.0, 0.0, 0.5};
-    CHECK_OK(hybsol_system_add_block(sys, 0, 0, 2, 2, diag_a));
-    CHECK_OK(hybsol_system_add_block(sys, 0, 1, 2, 2, off));
-    CHECK_OK(hybsol_system_add_block(sys, 1, 0, 2, 2, off));
-    CHECK_OK(hybsol_system_add_block(sys, 1, 1, 2, 2, diag_a));
-    CHECK(hybsol_system_is_valid(sys));
-
-    hybsol_elimination_t *graph = NULL;
-    CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
-
-    for (size_t c = 0; c < sizeof(later) / sizeof(later[0]); ++c)
-    {
-        hybsol_decomposition_t *gpu = NULL;
-        CHECK_RESULT(hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, later[c], device,
-                                                               &gpu),
-                     HYBSOL_ERROR_DEVICE_CAPABILITY);
-        CHECK(gpu == NULL);
-    }
-
-    hybsol_elimination_destroy(graph);
-    hybsol_system_destroy(sys);
-}
-
 /** The block a singular diagonal names is the block the CPU names. */
 static void test_singular_block_agrees(hybsol_hip_device_t *const device)
 {
@@ -637,7 +603,6 @@ int main(void)
     test_parity_in_both_precisions(device);
     test_mixed_precision_on_device(device);
     test_split_parity(device);
-    test_split_modes_refused(device);
     test_singular_block_agrees(device);
     test_replay_matches_solve(device);
     test_device_lifetime(device, device_index);
