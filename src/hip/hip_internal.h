@@ -60,6 +60,20 @@ extern void hybsol_back_substitute_f64(void);
 extern void hybsol_apply_ops_f32(void);
 extern void hybsol_apply_ops_f64(void);
 
+/*
+ * The double-single set: the same six entry points again, suffixed _f64_ds,
+ * compiled from the same source under -DHYBSOL_HIP_DOUBLE -DHYBSOL_HIP_DS.
+ * Same signatures as the _f64 set -- the factors and vectors are stored the
+ * same way -- only the arithmetic inside differs, and the host picks the set
+ * per decomposition by the address it launches.
+ */
+extern void hybsol_eliminate_pass_f64_ds(void);
+extern void hybsol_diagonal_pass_f64_ds(void);
+extern void hybsol_scale_pass_f64_ds(void);
+extern void hybsol_forward_pass_f64_ds(void);
+extern void hybsol_back_substitute_f64_ds(void);
+extern void hybsol_apply_ops_f64_ds(void);
+
 /**
  * A work-group (thread block) size worth launching a kernel with.
  *

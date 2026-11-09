@@ -63,9 +63,10 @@ typedef struct hybsol_hip_device_details
  *
  * :c:enumerator:`HYBSOL_HIP_ARITH_AUTO` lets the backend choose for the
  * device; :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` runs the factors in their
- * own type, single accumulating in ``float`` and double in ``double``. The
- * split-precision modes below exist so the ABI is stable; until their phases
- * land, asking for one is refused with
+ * own type, single accumulating in ``float`` and double in ``double``; and
+ * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` carries double factors as
+ * two FP32 pieces on the FP32 FMA unit. The Ozaki modes below exist so the
+ * ABI is stable; until their phases land, asking for one is refused with
  * :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY`.
  */
 typedef enum hybsol_hip_arith
@@ -74,7 +75,12 @@ typedef enum hybsol_hip_arith
     HYBSOL_HIP_ARITH_AUTO = 0,
     /** The factors' own arithmetic, the CPU backend's model. */
     HYBSOL_HIP_ARITH_NATIVE = 1,
-    /** FP64 as two FP32 pieces on the FP32 FMA unit; comes in a later phase. */
+    /**
+     * FP64 factor arithmetic as two FP32 pieces on the FP32 FMA unit:
+     * ~14 significant digits kept, and a block outside a float's comfortable
+     * range falls back to native arithmetic rather than overflow the pair.
+     * Only meaningful for double factors; single factors are FP32 already.
+     */
     HYBSOL_HIP_ARITH_DOUBLE_SINGLE = 2,
     /** FP64 on the matrix cores by mantissa slicing; comes in a later phase. */
     HYBSOL_HIP_ARITH_OZAKI = 3,

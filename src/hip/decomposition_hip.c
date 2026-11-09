@@ -27,8 +27,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-/** The compiled kernel for ``precision``: the base name pasted with its suffix. */
-#define KERNEL(precision, base) ((precision) == HYBSOL_PRECISION_SINGLE ? (const void *)&base##_f32 : (const void *)&base##_f64)
+/**
+ * The compiled kernel for this decomposition: the base name pasted with its
+ * suffix. Single factors always take the FP32 set; double factors take the
+ * double-single set when the decomposition asked for that arithmetic, and
+ * the native double set otherwise.
+ */
+#define KERNEL(state, precision, base)                                                                                       \
+    ((precision) == HYBSOL_PRECISION_SINGLE ? (const void *)&base##_f32                                                      \
+                                            : ((state)->kernels_ds ? (const void *)&base##_f64_ds : (const void *)&base##_f64))
 
 /** Everything one device decomposition owns beyond the core's frame; ``destroy`` releases all of it. */
 typedef struct
@@ -39,6 +46,8 @@ typedef struct
     hybsol_decomposition_t *dec;
     /** The largest block either dimension has, which strides the scratch. */
     uint64_t max_block;
+    /** Non-zero when double factors run as double-single pairs on the FP32 FMA unit. */
+    int kernels_ds;
     /** What the kernels walk. */
     void *block_offsets;
     void *level_offset;
@@ -277,11 +286,11 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
 
-    // The split-precision modes name the ABI but arrive in a later phase.
-    if (arith != HYBSOL_HIP_ARITH_AUTO && arith != HYBSOL_HIP_ARITH_NATIVE)
+    // Ozaki's two modes name the ABI but arrive in a later phase.
+    if (arith == HYBSOL_HIP_ARITH_OZAKI || arith == HYBSOL_HIP_ARITH_OZAKI2)
     {
-        hybsol_hip_set_error("The HIP backend's double-single and Ozaki arithmetic comes in a later phase; "
-                             "ask for auto or native for now.");
+        hybsol_hip_set_error("The HIP backend's Ozaki arithmetic comes in a later phase; "
+                             "ask for auto, native, or double-single for now.");
         return HYBSOL_ERROR_DEVICE_CAPABILITY;
     }
     // Until the selection phase measures the split paths on this hardware, auto is native.
@@ -322,6 +331,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
     state->device = device;
     state->dec = dec;
+    // Double-single splits *FP64* factor arithmetic; single factors are FP32 already and take the native set.
+    state->kernels_ds = (arith == HYBSOL_HIP_ARITH_DOUBLE_SINGLE && precision == HYBSOL_PRECISION_DOUBLE) ? 1 : 0;
     dec->backend = &HIP_BACKEND;
     dec->backend_state = state;
 
@@ -575,9 +586,9 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
     (void)hipSetDevice(device->id);
 
     // The kernels are compiled into the library; nothing to build, so nothing to fetch.
-    const void *const eliminate = KERNEL(precision, hybsol_eliminate_pass);
-    const void *const diagonal = KERNEL(precision, hybsol_diagonal_pass);
-    const void *const scale = KERNEL(precision, hybsol_scale_pass);
+    const void *const eliminate = KERNEL(state, precision, hybsol_eliminate_pass);
+    const void *const diagonal = KERNEL(state, precision, hybsol_diagonal_pass);
+    const void *const scale = KERNEL(state, precision, hybsol_scale_pass);
 
     // Bounded work groups rather than the runtime's maximum; the grids round up to whole ones.
     size_t local_x = 0;
@@ -703,7 +714,7 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
         return res;
     }
 
-    const void *const kernel = KERNEL(precision, hybsol_forward_pass);
+    const void *const kernel = KERNEL(state, precision, hybsol_forward_pass);
     const size_t local_size = hybsol_hip_work_group_size(device, kernel);
     for (uint64_t pass = 0; pass < dec->n_levels && res == HYBSOL_SUCCESS; ++pass)
     {
@@ -738,7 +749,7 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
 
     if (res == HYBSOL_SUCCESS)
     {
-        const void *const back = KERNEL(precision, hybsol_back_substitute);
+        const void *const back = KERNEL(state, precision, hybsol_back_substitute);
         uint64_t n_arg = dec->n;
         void *args[] = {&state->row_entry_offset,
                                &state->entry_col,
@@ -817,7 +828,7 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
     }
     if (res == HYBSOL_SUCCESS)
     {
-        const void *const kernel = KERNEL(precision, hybsol_apply_ops);
+        const void *const kernel = KERNEL(state, precision, hybsol_apply_ops);
         uint64_t n_ops_arg = n_ops;
         void *args[] = {&state->row_entry_offset,
                                &state->entry_col,
@@ -865,7 +876,7 @@ static void backend_solve_upper(void *const state_ptr, double *const vec)
         return;
     }
 
-    const void *const kernel = KERNEL(precision, hybsol_back_substitute);
+    const void *const kernel = KERNEL(state, precision, hybsol_back_substitute);
     uint64_t n_arg = dec->n;
     void *args[] = {&state->row_entry_offset,
                            &state->entry_col,

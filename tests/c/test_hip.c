@@ -313,11 +313,10 @@ static void test_mixed_precision_on_device(hybsol_hip_device_t *const device)
     }
 }
 
-/** The split-precision modes name the ABI but land in a later phase: asked for, refused. */
+/** The Ozaki modes name the ABI but land in a later phase: asked for, refused. */
 static void test_split_modes_refused(hybsol_hip_device_t *const device)
 {
     static const hybsol_hip_arith_t later[] = {
-        HYBSOL_HIP_ARITH_DOUBLE_SINGLE,
         HYBSOL_HIP_ARITH_OZAKI,
         HYBSOL_HIP_ARITH_OZAKI2,
     };
