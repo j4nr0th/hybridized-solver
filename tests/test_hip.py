@@ -482,6 +482,8 @@ def test_a_mode_the_device_cannot_do_names_the_capability_it_lacks(arith: str) -
             assert str(info["index"]) in str(exc), str(exc)
     if refusals == len(DEVICES):
         pytest.skip("no device here has the WMMA matrix cores")
+    if refusals == 0:
+        pytest.skip("no device here lacks WMMA")
 
 
 @requires_device

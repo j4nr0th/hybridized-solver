@@ -50,7 +50,7 @@ def decompose(
     device: int = 0,
     precision: Precision | None = None,
     n_threads: int = 0,
-    arith: str = "auto",
+    arith: str | None = "auto",
 ) -> Decomposition:
     """Factorize a system with its factors on a HIP device.
 
@@ -68,11 +68,12 @@ def decompose(
         Defaults to the system's own precision.
     n_threads : int, default: 0
         Accepted for symmetry and ignored: the device schedules its own work.
-    arith : str, default: "auto"
-        The factor arithmetic mode: ``"auto"`` resolves single factors
-        to ``"native"`` and double factors to the fastest mode the
-        selection harness gates clean -- ``"native"`` today, on a
-        gfx12-family device as on every other AMD gfx device.
+    arith : str or None, default: "auto"
+        The factor arithmetic mode; ``None`` means ``"auto"``.
+        ``"auto"`` resolves single factors to ``"native"``, and for
+        double factors the fastest mode the selection harness gates
+        clean -- ``"native"`` today, on a gfx12-family device as on
+        every other AMD gfx device.
         ``"native"`` runs the factors in their own type; ``"ozaki"``
         takes the two block GEMMs onto the WMMA matrix cores instead,
         which needs a gfx12-family device and tiles blocks of at least

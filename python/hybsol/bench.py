@@ -34,10 +34,13 @@ def _bench_system(n_blocks: int, block_size: int, precision: str) -> BlockSystem
     """Build the benchmark system: a block tridiagonal matrix plus a hub row.
 
     Block row 0 connects to every other block row, so the graph is not just a
-    band and the passes have real width. The system is strictly dominant by
-    construction -- every diagonal block is shifted past the norms of its row
-    -- which is what makes it factorizable without pivoting, in every
-    backend; the asserts below are that guarantee, made visible.
+    band and the passes have real width. Each diagonal block is shifted past
+    the spectral norms of its off-diagonal neighbours, and the asserts below
+    keep each block strictly dominant in itself; a full-matrix row -- the hub
+    row at 256 blocks -- can still outgrow its diagonal shift, so whole-row
+    dominance is not asserted. The seed is fixed and every backend tried on
+    this shape has factorized it without pivoting: empirically factorizable,
+    not guaranteed by construction.
     """
     rng = np.random.default_rng(17)
     blocks: dict[tuple[int, int], np.ndarray] = {}

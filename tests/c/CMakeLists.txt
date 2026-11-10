@@ -33,6 +33,9 @@ if (TARGET hybsol_opencl)
 endif ()
 
 if (TARGET hybsol_hip)
+    # Like test_gpu, both HIP tests need ASAN_OPTIONS=detect_leaks=0 under
+    # hybsol_sanitize: LeakSanitizer blames the vendor runtime's own
+    # exit-time leaks on libamdhip64, and they drown out anything of ours.
     add_executable(test_hip test_hip.c)
     target_link_libraries(test_hip PRIVATE hybsol_hip)
     target_compile_features(test_hip PRIVATE c_std_17)

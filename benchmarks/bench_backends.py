@@ -6,8 +6,10 @@ against the CPU's thread sweep rather than hiding in one number. Every
 GPU solve is also checked against the CPU solve of the same system and
 reports the relative difference; the GPU numbers are only comparable when
 that column stays near the precision of the factors. The shape is a block
-tridiagonal band plus a hub row, strictly diagonally dominant by
-construction, so every backend can factorize it without pivoting.
+tridiagonal band plus a hub row; the shift added to each diagonal block
+follows its neighbours' norms, but whole-row dominance is not asserted,
+so factorizing without pivoting is an observed property of the fixed
+seeds, not a guarantee of the construction.
 
 Run on a quiet machine: the GPU is shared, and a contended run misranks
 the backends. ``--json`` prints one JSON line per (shape, precision) so
@@ -220,6 +222,7 @@ def device_rows(
                         kwargs["arith"] = mode
 
                     def decompose(m=module, k=kwargs):  # noqa: ANN001, ANN202
+                        """Factorize on this device in this arith mode."""
                         return m.decompose(system, **k)
 
                     factor_s, solve_s = timed_pair(decompose, rhs, rounds)

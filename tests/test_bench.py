@@ -34,12 +34,35 @@ def test_the_table_has_cpu_and_is_sorted():
             assert row["name"] != "cpu"
 
 
-def test_the_best_entry_is_the_first_row():
-    """``best_backend`` returns the fastest row of the same table."""
-    rows = bench_backends(n_blocks=4, seconds_budget=0.05)
+def test_the_best_entry_is_the_first_row(monkeypatch: pytest.MonkeyPatch):
+    """``best_backend`` returns the first row of its table; that is the contract.
+
+    Which backend wins on which machine at which moment is timed noise, so
+    the pinning is tested against a fixed table, and the live call here only
+    keeps the row's shape and membership honest.
+    """
     best = best_backend(n_blocks=4, seconds_budget=0.05)
-    assert (best["backend"], best["device"]) == (rows[0]["backend"], rows[0]["device"])
+    assert set(best) == _KEYS
     assert best["backend"] in {"cpu", "opencl", "hip"}
+
+    table = [
+        {
+            "backend": "hip",
+            "device": 1,
+            "name": "gfx1201",
+            "seconds": 0.001,
+            "total_size": 16,
+        },
+        {
+            "backend": "cpu",
+            "device": None,
+            "name": "cpu",
+            "seconds": 0.002,
+            "total_size": 16,
+        },
+    ]
+    monkeypatch.setattr("hybsol.bench.bench_backends", lambda **_: table)
+    assert best_backend(n_blocks=4, seconds_budget=0.05) == table[0]
 
 
 @pytest.mark.parametrize("precision", ["double", "single"])

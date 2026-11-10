@@ -86,7 +86,7 @@ def decompose(
     device: int = 0,
     precision: Precision | None = None,
     n_threads: int = 0,
-    arith: str = "auto",
+    arith: str | None = "auto",
 ) -> Decomposition:
     """Factorize a system with its factors on a HIP device.
 
@@ -108,7 +108,7 @@ def decompose(
     n_threads : int, default: 0
         Accepted for symmetry with :meth:`hybsol.BlockSystem.decompose` and
         ignored: the device schedules its own work.
-    arith : str, default: "auto"
+    arith : str or None, default: "auto"
         How the factor arithmetic runs on the device: ``"auto"`` picks
         ``"native"`` for single factors, and for double factors the
         fastest mode the selection harness gates clean -- ``"native"``
@@ -128,7 +128,7 @@ def decompose(
         than refusing. Blocks the tiles cannot serve -- narrower than 16,
         wider than 32, or carrying magnitudes outside the range the
         arithmetic of the moment can hold -- fall back per block, silently
-        and at full accuracy.
+        and at full accuracy. ``None`` means ``"auto"``.
 
     Returns
     -------
