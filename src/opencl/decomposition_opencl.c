@@ -344,6 +344,16 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     const uint64_t total_size = dec->block_offsets[n];
     state->vec = buffer_create(device, (size_t)total_size * sizeof(double), rw);
 
+    // The solve paths write every entry of the vector, so the required-buffer
+    // invariant covers it too: an empty one skips its buffer on purpose (as
+    // in buffer_write), but a real one has to be there.
+    if (total_size > 0 && state->vec == NULL)
+    {
+        hybsol_opencl_set_error("Out of device memory for the decomposition's buffers.");
+        hybsol_decomposition_destroy(dec);
+        return HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+
     state->max_block = 1;
     for (uint64_t i = 0; i < n; ++i)
     {
@@ -454,16 +464,32 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
         state->dev_scale_tail = buffer_create(device, scale_count * sizeof(uint64_t), ro);
         state->scratch = buffer_create(device, scratch_elements * scalar, rw);
 
-        res = buffer_write(device, state->dev_diag_offset, state->diag_offset, bytes_levels);
-        if (res == HYBSOL_SUCCESS)
-            res = buffer_write(device, state->dev_scale_offset, state->scale_offset, bytes_levels);
-        if (res == HYBSOL_SUCCESS && diag_count > 0)
+        // Same invariant as the first audit block, sized by the same counts:
+        // the pass kernels read the two offset lists, the paired diagonal and
+        // scale rows, and the scratch, so each has to be there whenever its
+        // count is non-zero; a zero-count one skips its buffer on purpose.
+        if ((n_levels > 0 && (state->dev_diag_offset == NULL || state->dev_scale_offset == NULL)) ||
+            (diag_count > 0 &&
+             (state->dev_diag_row == NULL || state->dev_scale_row == NULL || state->dev_scale_tail == NULL)) ||
+            (scratch_elements > 0 && state->scratch == NULL))
         {
-            res = buffer_write(device, state->dev_diag_row, state->diag_row, diag_count * sizeof(uint64_t));
+            hybsol_opencl_set_error("Out of device memory for the decomposition's buffers.");
+            res = HYBSOL_ERROR_OUT_OF_MEMORY;
+        }
+        else
+        {
+            res = buffer_write(device, state->dev_diag_offset, state->diag_offset, bytes_levels);
             if (res == HYBSOL_SUCCESS)
-                res = buffer_write(device, state->dev_scale_row, state->scale_row, scale_count * sizeof(uint64_t));
-            if (res == HYBSOL_SUCCESS)
-                res = buffer_write(device, state->dev_scale_tail, state->scale_tail, scale_count * sizeof(uint64_t));
+                res = buffer_write(device, state->dev_scale_offset, state->scale_offset, bytes_levels);
+            if (res == HYBSOL_SUCCESS && diag_count > 0)
+            {
+                res = buffer_write(device, state->dev_diag_row, state->diag_row, diag_count * sizeof(uint64_t));
+                if (res == HYBSOL_SUCCESS)
+                    res = buffer_write(device, state->dev_scale_row, state->scale_row, scale_count * sizeof(uint64_t));
+                if (res == HYBSOL_SUCCESS)
+                    res = buffer_write(device, state->dev_scale_tail, state->scale_tail,
+                                       scale_count * sizeof(uint64_t));
+            }
         }
     }
 

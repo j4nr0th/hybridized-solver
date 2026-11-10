@@ -776,7 +776,11 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
     /* The Ozaki builds run one whole wavefront per work item: the host
        launches 1-D with workgroups of 64 lanes, and the wave's index carries
        the (which, m) pair the plain kernels walk with two grid dimensions.
-       The pair is wave-uniform by construction, so every lane agrees. */
+       The pair is wave-uniform by construction, so every lane agrees.
+       Load-bearing alongside it: the scratch slot and the destination block
+       are indexed by that pair alone, so this wave owns them outright --
+       changing the group size or the scratch indexing without the ownership
+       with it would put two waves in one slot. */
     const unsigned long wave = HYBSOL_GID0 >> 5;
     const unsigned long which = wave / sources_stride;
     const unsigned long m = wave % sources_stride;
@@ -888,7 +892,9 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
 {
 #ifdef HYBSOL_HIP_OZ
     /* One wavefront per work item, the wave's index carrying the (row, tail
-       slot) pair -- see the note at the eliminate entry's head. */
+       slot) pair -- see the note at the eliminate entry's head. The scratch
+       slot below (wave * scratch_stride) and the rhs block it scales belong
+       to this wave alone; the same ownership caveat applies. */
     const unsigned long wave = HYBSOL_GID0 >> 5;
     const unsigned long which = wave / tail_stride;
     const unsigned long gid1 = wave % tail_stride;

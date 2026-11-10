@@ -146,6 +146,8 @@ typedef struct
     int supports_double;
     /** The device's name, kept for the order the enumeration is sorted into. */
     char name[128];
+    /** The runtime index the device was listed at; the tie-break below the name. */
+    int ordinal;
 } listed_device_t;
 
 /*
@@ -246,12 +248,14 @@ static void device_name(const hipDevice_t device, char *const out, const size_t 
 }
 
 /**
- * Append one device to the enumeration at ``count``.
+ * Append one device to the enumeration at ``count``, remembering the runtime
+ * index ``ordinal`` it was read at: two same-model cards tie on name, and
+ * only the runtime order tells them apart.
  *
  * Returns ``HYBSOL_ERROR_DEVICE`` when the fixed table is full; the cap only
  * binds on a machine with more devices than this backend has ever seen.
  */
-static hybsol_result_t device_append(const uint64_t count, const hipDevice_t id)
+static hybsol_result_t device_append(const uint64_t count, const hipDevice_t id, const int ordinal)
 {
     if (count >= HYBSOL_HIP_MAX_LISTED_DEVICES)
     {
@@ -265,6 +269,7 @@ static hybsol_result_t device_append(const uint64_t count, const hipDevice_t id)
     g_devices[count].kind = device_kind(id);
     g_devices[count].supports_double = device_has_double();
     device_name(id, g_devices[count].name, sizeof(g_devices[count].name));
+    g_devices[count].ordinal = ordinal;
     return HYBSOL_SUCCESS;
 }
 
@@ -279,7 +284,16 @@ static int device_before(const void *const a_ptr, const void *const b_ptr)
     {
         return a_discrete ? -1 : 1; // The card a caller means sorts first.
     }
-    return strcmp(a->name, b->name); // strcmp itself, negative when a comes first.
+    const int by_name = strcmp(a->name, b->name); // strcmp itself, negative when a comes first.
+    if (by_name != 0)
+    {
+        return by_name;
+    }
+    // Two cards of one model tie on the name; the runtime order they were
+    // listed in breaks the tie, and it is the same in every process on the
+    // same hardware -- what keeps qsort's total order, and the caller's
+    // index, pinned down.
+    return a->ordinal < b->ordinal ? -1 : (a->ordinal > b->ordinal ? 1 : 0);
 }
 
 /**
@@ -311,7 +325,7 @@ static hybsol_result_t enumerate_devices(void)
             const int discrete = kind == HYBSOL_HIP_DEVICE_GPU;
             if (discrete == discrete_pass)
             {
-                res = device_append(count, (hipDevice_t)d);
+                res = device_append(count, (hipDevice_t)d, d);
                 if (res == HYBSOL_SUCCESS)
                 {
                     ++count;
@@ -327,7 +341,9 @@ static hybsol_result_t enumerate_devices(void)
     }
 
     // Sort once: an index a caller writes down should still mean the same device tomorrow.
-    // Two identical cards tie on name alone, as in the OpenCL backend; the uuid disambiguates those.
+    // Two cards of one model tie on name alone, as in the OpenCL backend; the
+    // runtime ordinal they were listed at breaks the tie, so the same
+    // hardware sorts to the same indices in every process.
     if (count > 1)
     {
         qsort(g_devices, (size_t)count, sizeof(*g_devices), device_before);

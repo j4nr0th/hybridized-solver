@@ -140,6 +140,8 @@ typedef struct
     int supports_double;
     /** The device's name, kept for the order the enumeration is sorted into. */
     char name[128];
+    /** Its position in the platform-then-device walk; the tie-break below the name. */
+    int ordinal;
 } listed_device_t;
 
 /*
@@ -197,7 +199,7 @@ static void device_uuid_string(cl_device_id device, char *const out, const size_
     }
 
     size_t at = 0;
-    for (size_t i = 0; i < sizeof(uuid) && at + 3 < capacity; ++i)
+    for (size_t i = 0; i < sizeof(uuid) && at + 3 <= capacity; ++i)
     {
         at += (size_t)snprintf(out + at, capacity - at, "%02x", uuid[i]);
     }
@@ -233,7 +235,10 @@ static int device_has_double(cl_device_id device)
 }
 
 /**
- * Append one device to the enumeration at ``count``.
+ * Append one device to the enumeration at ``count``, remembering the walk
+ * position ``ordinal`` it was listed at: two same-model devices (the same
+ * card behind two ICDs, say) tie on name, and only the platform-then-device
+ * order tells them apart.
  *
  * Returns ``HYBSOL_ERROR_DEVICE`` when the fixed table is full; the cap only
  * binds on a machine with more devices than this backend has ever seen.
@@ -253,6 +258,7 @@ static hybsol_result_t device_append(const uint64_t count, const cl_device_id id
     g_devices[count].kind = device_kind(id);
     g_devices[count].supports_double = device_has_double(id);
     device_string(id, CL_DEVICE_NAME, g_devices[count].name, sizeof(g_devices[count].name));
+    g_devices[count].ordinal = (int)count;
     return HYBSOL_SUCCESS;
 }
 
@@ -267,7 +273,17 @@ static int device_before(const void *const a_ptr, const void *const b_ptr)
     {
         return a_gpu ? -1 : 1; // A GPU sorts ahead of anything else.
     }
-    return strcmp(a->name, b->name);
+    const int by_name = strcmp(a->name, b->name);
+    if (by_name != 0)
+    {
+        return by_name;
+    }
+    // Two same-model devices tie on the name -- one card behind two ICDs
+    // spells itself identically twice over; the walk position they were
+    // listed at breaks the tie, and it is the same in every process on the
+    // same hardware -- what keeps qsort's total order, and the caller's
+    // index, pinned down.
+    return a->ordinal < b->ordinal ? -1 : (a->ordinal > b->ordinal ? 1 : 0);
 }
 
 /**
@@ -352,6 +368,9 @@ static hybsol_result_t enumerate_devices(const hybsol_allocator_t *const allocat
     }
 
     // Sort once: an index a caller writes down should still mean the same device tomorrow.
+    // Two same-model devices tie on name alone, as in the HIP backend; the
+    // walk ordinal they were listed at breaks the tie, so the same ICD
+    // configuration sorts to the same indices in every process.
     if (count > 1)
     {
         qsort(g_devices, (size_t)count, sizeof(*g_devices), device_before);
