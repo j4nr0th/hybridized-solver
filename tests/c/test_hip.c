@@ -583,6 +583,63 @@ static void test_device_lifetime(hybsol_hip_device_t *const device, const uint64
     hybsol_system_destroy(sys);
 }
 
+/*
+ * The retain/release balance of the public pair, and the note discipline: a
+ * refusal leaves a note, and the next operation of one's own opens clean.
+ *
+ * The test CONSUMES the caller's reference and leaves one fresh acquire in
+ * its place, so it ends with the device destroyed exactly once and rebuilt,
+ * and main releases nothing further.
+ */
+static void test_refcounts_and_notes(hybsol_hip_device_t *const device, const uint64_t index)
+{
+    hybsol_hip_device_t *again = NULL;
+    CHECK_OK(hybsol_hip_device_acquire(index, &CUTL_STD_ALLOCATOR, &again));
+
+    // A refusal says why; the note names the index.
+    hybsol_hip_device_t *bogus = NULL;
+    CHECK_RESULT(hybsol_hip_device_acquire(UINT64_MAX, &CUTL_STD_ALLOCATOR, &bogus), HYBSOL_ERROR_NO_DEVICE);
+    CHECK_MSG(hybsol_hip_last_error()[0] != '\0', "the refused acquisition left no note");
+    CHECK_MSG(strstr(hybsol_hip_last_error(), "index") != NULL, "the note does not name the index: %s",
+              hybsol_hip_last_error());
+
+    // And the next operation of one's own starts from a clean note.
+    CHECK_OK(hybsol_hip_device_acquire(index, &CUTL_STD_ALLOCATOR, &bogus));
+    CHECK_MSG(hybsol_hip_last_error()[0] == '\0', "the successful acquire did not clear the note: %s",
+              hybsol_hip_last_error());
+    CHECK(bogus == again);
+    hybsol_hip_device_release(bogus);
+
+    // Retain adds exactly one reference and release drops exactly one.
+    hybsol_hip_device_retain(again);
+    hybsol_hip_device_release(again);
+
+    // Balance back to the caller's single reference: this handle, then theirs.
+    hybsol_hip_device_release(again);
+    hybsol_hip_device_release(device);
+
+    // Rebuilt on the next demand -- a different handle -- and it factorizes.
+    CHECK_OK(hybsol_hip_device_acquire(index, &CUTL_STD_ALLOCATOR, &again));
+    CHECK_MSG(again != device, "the destroyed handle came back");
+    uint64_t sizes[MAX_BLOCKS];
+    uint64_t state = 31;
+    hybsol_system_t *sys = build_system(&state, HYBSOL_PRECISION_DOUBLE, 3, sizes, NULL);
+    CHECK(sys != NULL);
+    if (sys != NULL)
+    {
+        hybsol_elimination_t *graph = NULL;
+        CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
+        hybsol_decomposition_t *gpu = NULL;
+        CHECK_OK(hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE,
+                                                           HYBSOL_HIP_ARITH_NATIVE, again, &CUTL_STD_ALLOCATOR, &gpu));
+        CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
+        hybsol_decomposition_destroy(gpu);
+        hybsol_elimination_destroy(graph);
+        hybsol_system_destroy(sys);
+    }
+    hybsol_hip_device_release(again);
+}
+
 int main(void)
 {
     if (hybsol_hip_device_count() == 0)
@@ -614,7 +671,8 @@ int main(void)
     test_hostile_arguments(device);
     test_replay_matches_solve(device);
     test_device_lifetime(device, device_index);
+    // Consumes main's reference; releases nothing afterwards.
+    test_refcounts_and_notes(device, device_index);
 
-    hybsol_hip_device_release(device);
     return test_report("test_hip");
 }

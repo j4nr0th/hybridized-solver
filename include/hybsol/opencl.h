@@ -101,6 +101,14 @@ hybsol_result_t hybsol_opencl_device_acquire(uint64_t index, const hybsol_alloca
                                              hybsol_opencl_device_t **out);
 
 /**
+ * Take one more reference on an acquired device, so it outlives the caller's
+ * own release. Only legal on a handle the caller holds; the count is the
+ * backend's, and the retain is what lets a payload (a decomposition, say)
+ * keep the device alive while the caller releases whenever it likes.
+ */
+void hybsol_opencl_device_retain(hybsol_opencl_device_t *device);
+
+/**
  * Release one reference to a device, destroying it when the last one goes.
  * ``NULL`` does nothing.
  */

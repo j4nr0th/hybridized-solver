@@ -582,26 +582,30 @@ def test_a_system_outside_a_fast_path_window_still_solves(
 
 @requires_device
 @pytest.mark.parametrize("arith", ("ozaki",))
-def test_a_block_outside_the_window_moves_only_itself(arith: str) -> None:
+def test_a_block_far_larger_than_the_rest_slices_at_its_own_scale(arith: str) -> None:
     """One huge block among order-one blocks: the guards answer per block.
 
-    The wide coupling is 1e31, the rest of the system is ordinary. Ozaki
-    takes each operand block's scale from a scan of that block itself, so
-    magnitude never pins the whole factorization to one scale: the huge
-    block is sliced at its own scale and the order-one blocks at theirs,
-    rather than the whole system being squeezed to one scale or handed to
-    the plain walk.
+    The wide coupling is 1e31 -- inside the entry window, so the Ozaki
+    path is taken -- and every block is 16 wide, so this really runs on
+    the matrix cores rather than the plain walk (which is what blocks
+    under 16 always get). Ozaki takes each operand block's scale from a
+    scan of that block itself, so magnitude never pins the whole
+    factorization to one scale: the huge block is sliced at its own scale
+    and the order-one blocks at theirs, rather than the whole system
+    being squeezed to one scale. The residual of every block product
+    stays at the full double-digit grade the slices are designed for, so
+    the solve lands at double accuracy.
     """
     rng = np.random.default_rng(11)
-    sizes = (8, 8, 8)
-    wide = rng.standard_normal((8, 8)) * 1e31
-    middle = rng.standard_normal((8, 8)) * 1e5
+    sizes = (16, 16, 16)
+    wide = rng.standard_normal((16, 16)) * 1e31
+    middle = rng.standard_normal((16, 16)) * 1e5
     system, matrix = _from_blocks(
         sizes,
         {
-            (0, 0): _dominated(8, rng),
-            (1, 1): _dominated(8, rng),
-            (2, 2): _dominated(8, rng),
+            (0, 0): _dominated(16, rng),
+            (1, 1): _dominated(16, rng),
+            (2, 2): _dominated(16, rng),
             (0, 1): wide,
             (1, 0): wide.T,
             (1, 2): middle,

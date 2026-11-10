@@ -186,7 +186,7 @@ static void device_uuid_string(const hipDevice_t device, char *const out, const 
     }
 
     size_t at = 0;
-    for (size_t i = 0; i < sizeof(uuid.bytes) && at + 3 < capacity; ++i)
+    for (size_t i = 0; i < sizeof(uuid.bytes) && at + 3 <= capacity; ++i)
     {
         at += (size_t)snprintf(out + at, capacity - at, "%02x", (unsigned char)uuid.bytes[i]);
     }
@@ -255,8 +255,9 @@ static hybsol_result_t device_append(const uint64_t count, const hipDevice_t id)
 {
     if (count >= HYBSOL_HIP_MAX_LISTED_DEVICES)
     {
-        hybsol_hip_set_error("The HIP runtime lists more than %d devices; the enumeration is capped at that many.",
-                             HYBSOL_HIP_MAX_LISTED_DEVICES);
+        // Reached from the enumeration, which holds the lock.
+        set_error_locked("The HIP runtime lists more than %d devices; the enumeration is capped at that many.",
+                         HYBSOL_HIP_MAX_LISTED_DEVICES);
         return HYBSOL_ERROR_DEVICE;
     }
 
@@ -293,7 +294,8 @@ static hybsol_result_t enumerate_devices(void)
     int n_runtime = 0;
     if (hipGetDeviceCount(&n_runtime) != hipSuccess || n_runtime <= 0)
     {
-        hybsol_hip_set_error("The HIP runtime answered no devices.");
+        // The caller holds the lock; the locking setter here would self-deadlock.
+        set_error_locked("The HIP runtime answered no devices.");
         return HYBSOL_ERROR_NO_DEVICE;
     }
 
@@ -476,18 +478,18 @@ hybsol_result_t hybsol_hip_device_acquire(const uint64_t index, const hybsol_all
     // g_device_count never exceeds the table, so a passing index is inside it too.
     CUTL_ASSERT(index < HYBSOL_HIP_MAX_LISTED_DEVICES, "The handle table is %d wide but was asked for index %llu.",
                 HYBSOL_HIP_MAX_LISTED_DEVICES, (unsigned long long)index);
-    hybsol_hip_device_t *const existing = g_devices_acquired[index];
-    lock_release();
-
+    hybsol_hip_device_t *existing = g_devices_acquired[index];
     if (existing != NULL)
     {
-        lock_acquire();
+        // The increment rides the same lock hold as the sample: a release
+        // cannot slip between the two and free the handle we are about to
+        // hand back.
         ++existing->refs;
-        const hybsol_hip_device_t *const handle = existing;
         lock_release();
-        *out = (hybsol_hip_device_t *)handle;
+        *out = existing;
         return HYBSOL_SUCCESS;
     }
+    lock_release();
 
     hybsol_hip_device_t *device = NULL;
     const hybsol_result_t res = device_create(index, allocator, &device);
@@ -513,6 +515,17 @@ hybsol_result_t hybsol_hip_device_acquire(const uint64_t index, const hybsol_all
     hybsol_free(allocator, device);
     *out = (hybsol_hip_device_t *)winner;
     return HYBSOL_SUCCESS;
+}
+
+void hybsol_hip_device_retain(hybsol_hip_device_t *const device)
+{
+    CUTL_ASSERT(device != NULL, "The device handle must not be NULL.");
+    CUTL_ASSERT(device->refs > 0, "A released device handle must not be retained again; it had %d references.",
+                device->refs);
+
+    lock_acquire();
+    ++device->refs;
+    lock_release();
 }
 
 void hybsol_hip_device_release(hybsol_hip_device_t *const device)

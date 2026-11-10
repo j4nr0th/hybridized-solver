@@ -422,6 +422,12 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
     memset(state, 0, sizeof(*state));
     state->device = device;
+    // The payload holds a reference from the moment it names the device, and
+    // the vtable is attached in the same breath: every later failure path is
+    // an hybsol_decomposition_destroy, which runs backend_destroy and drops
+    // exactly this reference. The caller may release first (as the module
+    // does) or last; nothing frees the handle twice either way.
+    hybsol_hip_device_retain(device);
     state->dec = dec;
     state->allocator = allocator;
     dec->backend = &HIP_BACKEND;
@@ -699,8 +705,7 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         return res;
     }
 
-    // A reference for the payload's life: the caller's own release may come first.
-    device->refs++;
+    // The payload's own reference was taken at attach; nothing to add here.
     *out = dec;
     return HYBSOL_SUCCESS;
 }
@@ -889,6 +894,7 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
 static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, const uint64_t n_threads)
 {
     HYBSOL_MARK_USED(n_threads);
+    hybsol_hip_clear_error(); // A note may only answer this call.
     hip_state_t *const state = (hip_state_t *)state_ptr;
     CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
                 "The backend state must belong to a created decomposition.");
@@ -969,6 +975,7 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
 static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops, const hybsol_operation_t *const ops,
                                      double *const vec)
 {
+    hybsol_hip_clear_error(); // A note may only answer this call.
     hip_state_t *const state = (hip_state_t *)state_ptr;
     CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
                 "The backend state must belong to a created decomposition.");
@@ -1004,11 +1011,21 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
         op_type = buffer_create(device, (size_t)n_ops * sizeof(uint32_t));
         op_row = buffer_create(device, (size_t)n_ops * sizeof(uint64_t));
         op_col = buffer_create(device, (size_t)n_ops * sizeof(uint64_t));
-        res = buffer_write(device, op_type, types, (size_t)n_ops * sizeof(uint32_t));
-        if (res == HYBSOL_SUCCESS)
-            res = buffer_write(device, op_row, rows, (size_t)n_ops * sizeof(uint64_t));
-        if (res == HYBSOL_SUCCESS)
-            res = buffer_write(device, op_col, cols, (size_t)n_ops * sizeof(uint64_t));
+        // Same audit as the create path: buffer_write skips a NULL buffer
+        // happily, and the kernel would then dereference a null argument.
+        if (op_type == NULL || op_row == NULL || op_col == NULL)
+        {
+            hybsol_hip_set_error("Out of device memory for an operation list's buffers.");
+            res = HYBSOL_ERROR_OUT_OF_MEMORY;
+        }
+        else
+        {
+            res = buffer_write(device, op_type, types, (size_t)n_ops * sizeof(uint32_t));
+            if (res == HYBSOL_SUCCESS)
+                res = buffer_write(device, op_row, rows, (size_t)n_ops * sizeof(uint64_t));
+            if (res == HYBSOL_SUCCESS)
+                res = buffer_write(device, op_col, cols, (size_t)n_ops * sizeof(uint64_t));
+        }
     }
     else
     {
@@ -1057,6 +1074,7 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
 /** Solve ``U x = y`` on the device: the back substitution on its own. */
 static void backend_solve_upper(void *const state_ptr, double *const vec)
 {
+    hybsol_hip_clear_error(); // A note may only answer this call.
     hip_state_t *const state = (hip_state_t *)state_ptr;
     CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
                 "The backend state must belong to a created decomposition.");

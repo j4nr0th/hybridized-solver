@@ -29,7 +29,8 @@ typedef enum hybsol_hip_device_kind
     /**
      * An integrated GPU -- the iGPU of an APU. HIP has no property that says
      * so, so the backend classifies by compute units: an iGPU has few (the
-     * 610M has 4, against the R9700's 64), and ten or fewer means integrated.
+     * 9900X's reports 1, against the R9700's 32), and sixteen or fewer means
+     * integrated.
      */
     HYBSOL_HIP_DEVICE_INTEGRATED,
 } hybsol_hip_device_kind_t;
@@ -150,6 +151,14 @@ typedef struct hybsol_hip_device hybsol_hip_device_t;
  */
 hybsol_result_t hybsol_hip_device_acquire(uint64_t index, const hybsol_allocator_t *allocator,
                                           hybsol_hip_device_t **out);
+
+/**
+ * Take one more reference on an acquired device, so it outlives the caller's
+ * own release. Only legal on a handle the caller holds; the count is the
+ * backend's, and the retain is what lets a payload (a decomposition, say)
+ * keep the device alive while the caller releases whenever it likes.
+ */
+void hybsol_hip_device_retain(hybsol_hip_device_t *device);
 
 /**
  * Release one reference to a device, destroying it when the last one goes.

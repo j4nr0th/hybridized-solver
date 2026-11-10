@@ -236,13 +236,19 @@ static void run_mode(const hybsol_hip_arith_t arith, const int gated, const char
         clock_gettime(CLOCK_MONOTONIC, &t0);
         const hybsol_result_t fact_res = hybsol_decomposition_factorize(dec, 0);
         double *const x = (double *)malloc((size_t)dim * sizeof(double));
+        if (x == NULL)
+        {
+            hybsol_decomposition_destroy(dec);
+            first_res = HYBSOL_ERROR_OUT_OF_MEMORY;
+            break;
+        }
         memcpy(x, rhs, (size_t)dim * sizeof(double));
         const hybsol_result_t solve_res = hybsol_decomposition_solve(dec, x, 0);
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
         hybsol_decomposition_destroy(dec);
 
-        if (fact_res != HYBSOL_SUCCESS || solve_res != HYBSOL_SUCCESS || x == NULL)
+        if (fact_res != HYBSOL_SUCCESS || solve_res != HYBSOL_SUCCESS)
         {
             free(x);
             first_res = (fact_res != HYBSOL_SUCCESS) ? fact_res : solve_res;

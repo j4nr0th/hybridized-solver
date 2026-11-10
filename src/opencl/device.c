@@ -90,6 +90,15 @@ void hybsol_opencl_note_cl_error(const cl_int error, const char *const what)
     hybsol_opencl_set_error("%s: OpenCL error %d.", what, (int)error);
 }
 
+/* For callers that already hold the lock; the locking setter would self-deadlock. */
+static void set_error_locked(const char *const format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vsnprintf(g_last_error, sizeof(g_last_error), format, args);
+    va_end(args);
+}
+
 const char *hybsol_opencl_last_error(void)
 {
     return g_last_error;
@@ -233,7 +242,8 @@ static hybsol_result_t device_append(const uint64_t count, const cl_device_id id
 {
     if (count >= HYBSOL_OPENCL_MAX_LISTED_DEVICES)
     {
-        hybsol_opencl_set_error(
+        // Reached from the enumeration, which holds the lock.
+        set_error_locked(
             "The OpenCL runtime lists more than %d devices; the enumeration is capped at that many.",
             HYBSOL_OPENCL_MAX_LISTED_DEVICES);
         return HYBSOL_ERROR_DEVICE;
@@ -273,7 +283,8 @@ static hybsol_result_t enumerate_devices(const hybsol_allocator_t *const allocat
     cl_uint n_platforms = 0;
     if (clGetPlatformIDs(0, NULL, &n_platforms) != CL_SUCCESS || n_platforms == 0)
     {
-        hybsol_opencl_set_error("No OpenCL platform answered; the loader found no vendor.");
+        // The caller holds the lock; the locking setter here would self-deadlock.
+        set_error_locked("No OpenCL platform answered; the loader found no vendor.");
         return HYBSOL_ERROR_NO_DEVICE;
     }
 
@@ -286,7 +297,7 @@ static hybsol_result_t enumerate_devices(const hybsol_allocator_t *const allocat
     if (clGetPlatformIDs(n_platforms, platforms, NULL) != CL_SUCCESS)
     {
         hybsol_free(allocator, platforms);
-        hybsol_opencl_set_error("The OpenCL platforms went away while they were being listed.");
+        set_error_locked("The OpenCL platforms went away while they were being listed.");
         return HYBSOL_ERROR_NO_DEVICE;
     }
 
@@ -500,18 +511,18 @@ hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, const hybsol_
     // g_device_count never exceeds the table, so a passing index is inside it too.
     CUTL_ASSERT(index < HYBSOL_OPENCL_MAX_LISTED_DEVICES, "The handle table is %d wide but was asked for index %llu.",
                 HYBSOL_OPENCL_MAX_LISTED_DEVICES, (unsigned long long)index);
-    hybsol_opencl_device_t *const existing = g_devices_acquired[index];
-    lock_release();
-
+    hybsol_opencl_device_t *existing = g_devices_acquired[index];
     if (existing != NULL)
     {
-        lock_acquire();
+        // The increment rides the same lock hold as the sample: a release
+        // cannot slip between the two and free the handle we are about to
+        // hand back.
         ++existing->refs;
-        const hybsol_opencl_device_t *const handle = existing;
         lock_release();
-        *out = (hybsol_opencl_device_t *)handle;
+        *out = existing;
         return HYBSOL_SUCCESS;
     }
+    lock_release();
 
     hybsol_opencl_device_t *device = NULL;
     const hybsol_result_t res = device_create(index, allocator, &device);
@@ -538,6 +549,17 @@ hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, const hybsol_
     hybsol_free(allocator, device);
     *out = (hybsol_opencl_device_t *)winner;
     return HYBSOL_SUCCESS;
+}
+
+void hybsol_opencl_device_retain(hybsol_opencl_device_t *const device)
+{
+    CUTL_ASSERT(device != NULL, "The device handle must not be NULL.");
+    CUTL_ASSERT(device->refs > 0, "A released device handle must not be retained again; it had %d references.",
+                device->refs);
+
+    lock_acquire();
+    ++device->refs;
+    lock_release();
 }
 
 void hybsol_opencl_device_release(hybsol_opencl_device_t *const device)
