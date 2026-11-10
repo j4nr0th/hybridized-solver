@@ -90,7 +90,7 @@ def decompose(
     ------
     hybsol.DeviceError
         No device has that index, it cannot do double arithmetic, ``arith``
-        asks for a mode the backend does not offer yet, or the device runtime
+        asks for a mode the device cannot serve, or the device runtime
         failed.
     ValueError
         The system does not satisfy the solver's structural assumptions,

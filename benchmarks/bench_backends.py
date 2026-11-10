@@ -110,11 +110,17 @@ def bench_system(
     dense = np.zeros((n_blocks * block_size, n_blocks * block_size))
     offsets = np.cumsum((0, *(block_size,) * n_blocks))
     for (i, j), block in blocks.items():
-        rows += [i, j]
-        cols += [j, i]
-        data += [block, np.ascontiguousarray(block.T)]
+        rows.append(i)
+        cols.append(j)
+        data.append(block)
+        # Only off-diagonal blocks get a stored partner: from_blocks sums
+        # duplicates, so adding (i, i) twice would double the diagonal.
+        if i != j:
+            rows.append(j)
+            cols.append(i)
+            data.append(np.ascontiguousarray(block.T))
+            dense[offsets[j] : offsets[j + 1], offsets[i] : offsets[i + 1]] = block.T
         dense[offsets[i] : offsets[i + 1], offsets[j] : offsets[j + 1]] = block
-        dense[offsets[j] : offsets[j + 1], offsets[i] : offsets[i + 1]] = block.T
 
     system = BlockSystem.from_blocks(
         [block_size] * n_blocks,
@@ -124,6 +130,9 @@ def bench_system(
         precision=precision,
     )
     assert system.is_valid()
+    # The guard catches mis-stored blocks (duplicate entries are summed);
+    # single-precision storage rounds, so compare with tolerances.
+    assert np.allclose(system.as_array(), dense)
     return system, dense
 
 
