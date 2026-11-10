@@ -112,17 +112,15 @@ def decompose(
         How the factor arithmetic runs on the device: ``"auto"`` picks
         ``"native"`` for single factors, and for double factors the
         fastest mode the selection harness gates clean -- ``"native"``
-        on a gfx12-family device, where the split modes live, and
-        ``"split"`` on every other AMD gfx device. ``"native"`` runs the
-        factors in their own type. ``"split"`` carries double factors as
-        double-single pairs on the FP32 FMA unit; ``"ozaki"`` slices
-        them for the WMMA matrix cores, which needs a gfx12-family
-        device and tiles only where a block reaches 16 wide -- smaller
-        blocks, and every pass the tiles do not serve, keep the
-        double-single path. ``"ozaki2"`` is the asymmetric variant: one
-        operand keeps its five slices, the other its single top-11-bit
-        window. Its accuracy is the refinement partner's, not a direct
-        solve's: use it under :func:`hybsol.refined_solve`.
+        today, on a gfx12-family device as on every other AMD gfx
+        device. ``"native"`` runs the factors in their own type.
+        ``"ozaki"`` slices double factors for the WMMA matrix cores,
+        which needs a gfx12-family device and tiles only where a block
+        reaches 16 wide -- smaller blocks, and every pass the tiles do
+        not serve, stay native. ``"ozaki2"`` is the asymmetric variant:
+        one operand keeps its five slices, the other its single
+        top-11-bit window. Its accuracy is the refinement partner's,
+        not a direct solve's: use it under :func:`hybsol.refined_solve`.
 
         Single factors ignore the mode on every device: they are already
         the narrow arithmetic and the matrix cores hold no double, so

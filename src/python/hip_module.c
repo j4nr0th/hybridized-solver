@@ -182,7 +182,6 @@ typedef struct
 static const arith_name_t ARITH_NAMES[] = {
     {"auto", HYBSOL_HIP_ARITH_AUTO},
     {"native", HYBSOL_HIP_ARITH_NATIVE},
-    {"split", HYBSOL_HIP_ARITH_DOUBLE_SINGLE},
     {"ozaki", HYBSOL_HIP_ARITH_OZAKI},
     {"ozaki2", HYBSOL_HIP_ARITH_OZAKI2},
 };
@@ -218,7 +217,7 @@ static int parse_arith(PyObject *const value, hybsol_hip_arith_t *const out)
     }
 
     PyErr_SetString(PyExc_ValueError,
-                    "decompose: arith must be one of \"auto\", \"native\", \"split\", \"ozaki\", \"ozaki2\".");
+                    "decompose: arith must be one of \"auto\", \"native\", \"ozaki\", \"ozaki2\".");
     return -1;
 }
 
@@ -344,14 +343,12 @@ PyDoc_STRVAR(hip_decompose_docstring, "decompose(system: hybsol.BlockSystem, *, 
                                       "    How the factor arithmetic runs on the device: ``\"auto\"`` picks\n"
                                       "    ``\"native\"`` for single factors, and for double factors the\n"
                                       "    fastest mode the selection harness gates clean -- ``\"native\"``\n"
-                                      "    on a gfx12-family device, where the split modes live, and\n"
-                                      "    ``\"split\"`` on every other AMD gfx device. ``\"native\"`` runs\n"
-                                      "    the factors in their own type. ``\"split\"`` carries double\n"
-                                      "    factors as double-single pairs on the FP32 FMA unit;\n"
-                                      "    ``\"ozaki\"`` slices them for the WMMA matrix cores, which needs\n"
-                                      "    a gfx12-family device and tiles only where a block reaches 16\n"
-                                      "    wide -- smaller blocks, and every pass the tiles do not serve,\n"
-                                      "    keep the double-single path. ``\"ozaki2\"`` is the asymmetric\n"
+                                      "    today, on a gfx12-family device as on every other AMD gfx\n"
+                                      "    device. ``\"native\"`` runs the factors in their own type.\n"
+                                      "    ``\"ozaki\"`` slices double factors for the WMMA matrix cores,\n"
+                                      "    which needs a gfx12-family device and tiles only where a block\n"
+                                      "    reaches 16 wide -- smaller blocks, and every pass the tiles do\n"
+                                      "    not serve, stay native. ``\"ozaki2\"`` is the asymmetric\n"
                                       "    variant: one operand keeps its five slices, the other its\n"
                                       "    single top-11-bit window. Its accuracy is the refinement\n"
                                       "    partner's, not a direct solve's: use it under\n"

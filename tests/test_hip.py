@@ -198,36 +198,11 @@ def test_arith_native_is_an_explicit_name_for_the_default() -> None:
 
 
 @requires_device
-def test_split_arith_solves_at_native_accuracy() -> None:
-    """``arith="split"`` carries the double factors in double-single pairs.
-
-    Upgraded from the refusal that guarded this mode before the double-single
-    kernels landed: the same seeded system now solves inside the
-    ``cond * 1e-10`` gate, beats the single-precision factors of that system
-    by 1e3, and agrees with the native solve to native tolerance.
-    """
-    system, matrix = build()
-    rhs = np.ones(sum(SIZES))
-    device = first_device()
-
-    native = hip.decompose(system, device=device, arith="native").solve(rhs)
-    split = hip.decompose(system, device=device, arith="split").solve(rhs)
-    single = hip.decompose(system, device=device, precision=Precision.SINGLE).solve(rhs)
-
-    split_residual = np.abs(matrix @ split - 1.0).max()
-    single_residual = np.abs(matrix @ single - 1.0).max()
-
-    assert split_residual < max(np.linalg.cond(matrix) * 1e-10, 1e-8)
-    assert split_residual * 1e3 < single_residual
-    np.testing.assert_allclose(split, native, rtol=1e-9, atol=1e-12)
-
-
-@requires_device
 def test_ozaki_arith_solves_at_native_accuracy() -> None:
     """``arith="ozaki"`` runs the block GEMMs on the WMMA matrix cores.
 
-    Sized so the tiles apply (a 16-wide block at the gate), gated exactly
-    like the split parity case: residual inside ``cond * 1e-10``, and the
+    Sized so the tiles apply (a 16-wide block at the gate), gated on
+    residual inside ``cond * 1e-10``, and the
     solve agrees with the native one to native tolerance.
     """
     sizes = (16, 16, 8)
@@ -352,7 +327,7 @@ def test_two_device_decompositions_coexist() -> None:
 # The shapes and magnitudes the fast paths are particular about
 # ---------------------------------------------------------------------------
 
-_ARITH = ("auto", "native", "split", "ozaki", "ozaki2")
+_ARITH = ("auto", "native", "ozaki", "ozaki2")
 
 
 def _from_blocks(
@@ -424,7 +399,7 @@ def test_stored_zero_blocks_are_walked_like_any_other(arith: str) -> None:
 
 @requires_device
 @pytest.mark.parametrize("spokes", [2, 6])
-@pytest.mark.parametrize("arith", ("auto", "split", "ozaki"))
+@pytest.mark.parametrize("arith", ("auto", "ozaki"))
 def test_a_hub_of_stored_blocks_solves_like_the_cpu(spokes: int, arith: str) -> None:
     """One row feeding many: scratch is sized for a row's sources, not its blocks.
 
@@ -451,7 +426,7 @@ def test_a_hub_of_stored_blocks_solves_like_the_cpu(spokes: int, arith: str) -> 
 
 
 @requires_device
-@pytest.mark.parametrize("arith", ("auto", "split", "ozaki"))
+@pytest.mark.parametrize("arith", ("auto", "ozaki"))
 def test_a_multi_pass_singular_block_is_named_by_the_device(arith: str) -> None:
     """The block the device blames is the block the CPU blames.
 
@@ -571,15 +546,17 @@ def test_a_block_past_the_tile_width_falls_back_quietly() -> None:
 
 @requires_device
 @pytest.mark.parametrize("scale", [1e-300, 1e-40, 1e-30, 1e20, 1e300])
-@pytest.mark.parametrize("arith", ("split", "ozaki"))
+@pytest.mark.parametrize("arith", ("ozaki",))
 def test_a_system_outside_a_fast_path_window_still_solves(
     scale: float, arith: str
 ) -> None:
     """Leaving a fast path is a switch of arithmetic, never a wrong answer.
 
-    The double-single pairs and the Ozaki slices carry magnitudes over a
-    range narrower than a double's, so both modes ask per block whether the
-    block fits and hand the rest to the plain walk. A 20-wide system of
+    The Ozaki slicing carries magnitudes over a range narrower than a
+    double's, so the walk asks per block whether the block fits and hands
+    the rest to the plain walk; and because the scale is taken by rescanning
+    each block itself, an extreme but still windowed block is sliced at its
+    own scale rather than skipped. A 20-wide system of
     1e-300 entries -- wide enough to be walked as 16-wide panels, which is
     where the slicing scale used to be taken from the wrong half of the
     block -- answers as well as an order-one one.
@@ -604,14 +581,16 @@ def test_a_system_outside_a_fast_path_window_still_solves(
 
 
 @requires_device
-@pytest.mark.parametrize("arith", ("split", "ozaki"))
+@pytest.mark.parametrize("arith", ("ozaki",))
 def test_a_block_outside_the_window_moves_only_itself(arith: str) -> None:
     """One huge block among order-one blocks: the guards answer per block.
 
-    The wide coupling is 1e31, the rest of the system is ordinary. The mode
-    has to leave that block to the plain walk and keep the fast arithmetic
-    for the others, rather than degrade the whole factorization -- or lose
-    the one block it decided to carry in the narrow form.
+    The wide coupling is 1e31, the rest of the system is ordinary. Ozaki
+    takes each operand block's scale from a scan of that block itself, so
+    magnitude never pins the whole factorization to one scale: the huge
+    block is sliced at its own scale and the order-one blocks at theirs,
+    rather than the whole system being squeezed to one scale or handed to
+    the plain walk.
     """
     rng = np.random.default_rng(11)
     sizes = (8, 8, 8)

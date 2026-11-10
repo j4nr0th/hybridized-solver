@@ -6,7 +6,7 @@
  * block size -- 128 blocks of 8, 16 and 32 -- and one row per (size, mode):
  * the median of 7 create+factorize+solve rounds, the relative residual of
  * that solve against the assembled matrix, and the conditioning bound.
- * native, double_single and ozaki gate on residual <= max(cond*1e-10,
+ * native and ozaki gate on residual <= max(cond*1e-10,
  * 1e-8); ozaki2 is asymmetric slicing, a refinement partner by design, so
  * its accuracy is printed and never gated. The timings drive
  * ``HYBSOL_HIP_DEFAULT_FOR_GFX12`` in src/hip/device.c; the printed table
@@ -46,7 +46,8 @@ static uint64_t rng_next(uint64_t *const state)
  * A seeded banded SPD system: ``n_blocks`` blocks of ``size``, present only
  * on the block-diagonal tridiagonal, every block's entries random, and each
  * diagonal entry raised by one plus its row's off-diagonal absolute sum --
- * the builder test_split_parity uses, so Gershgorin again bounds the
+ * the builder test_parity_in_both_precisions uses in test_hip.c, so
+ * Gershgorin again bounds the
  * spectrum into [1, 1 + 2R] for the largest such sum R. ``dense`` (which
  * must hold MAX_DIM * MAX_DIM doubles) receives the assembled matrix.
  */
@@ -291,7 +292,6 @@ static void run_size(const uint64_t size, hybsol_hip_device_t *const device)
 
     static const mode_case_t modes[] = {
         { "native", HYBSOL_HIP_ARITH_NATIVE, 1 },
-        { "double_single", HYBSOL_HIP_ARITH_DOUBLE_SINGLE, 1 },
         { "ozaki_i8", HYBSOL_HIP_ARITH_OZAKI, 1 },
         { "ozaki2", HYBSOL_HIP_ARITH_OZAKI2, 0 },
     };

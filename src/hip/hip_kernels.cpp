@@ -7,26 +7,14 @@
  * ``scalar`` differs between the two variants, the type the factors are stored
  * in -- the single one accumulates its products in ``float`` exactly as the
  * ``HYBSOL_ACC`` of the CPU's single instantiation does. The file is compiled
- * twice, once per factor precision: the double pass arrives under
- * -DHYBSOL_HIP_DOUBLE, which is what pastes the _f32/_f64 suffixes onto the
- * extern "C" entry points the host declares in ``hip_internal.h``.
+ * once per factor precision, plus the two Ozaki instantiations below: the
+ * double pass arrives under -DHYBSOL_HIP_DOUBLE, which is what pastes the
+ * _f32/_f64 suffixes onto the extern "C" entry points the host declares in
+ * ``hip_internal.h``.
  *
- * A third instantiation, under -DHYBSOL_HIP_DOUBLE -DHYBSOL_HIP_DS -- and
- * -ffp-contract=off, because implicit fusion past the named fmaf re-rounds
- * terms the TwoProd/TwoSum balances depend on -- carries
- * the double factors' arithmetic in double-single pairs (``ds_math.h``) on
- * the FP32 FMA unit, entry points suffixed _f64_ds: the same grids, the same
- * argument lists, the same double storage -- a kernel splits each block it
- * loads, chains the ds operations, and folds the result back to double for
- * the store. Any block with an element outside the HYBSOL_DS_MIN-to-DS_MAX
- * window is a range the pair cannot carry, and that work item does its block in
- * plain double instead, through the same un-#ifdef'd helpers the _f64 pass
- * uses. Which set a launch reaches is the host's choice, so the mode costs
- * nothing here.
- *
- * A fourth and fifth instantiation, each under -DHYBSOL_HIP_DOUBLE plus
- * -DHYBSOL_HIP_OZ_I8 or -DHYBSOL_HIP_OZ2 (and -ffp-contract=off for the
- * same reason as the double-single object: the slice windows are exact
+ * Two further instantiations, each under -DHYBSOL_HIP_DOUBLE plus
+ * -DHYBSOL_HIP_OZ_I8 or -DHYBSOL_HIP_OZ2 (and -ffp-contract=off: the slice
+ * windows are exact
  * integer windows of exact quotients, and a fused multiply-add the
  * compiler invents past the named fma re-rounds a term that balance
  * depends on), carry the two block-GEMM passes -- ``eliminate_pass`` and
@@ -47,7 +35,7 @@
  * and every work item whose blocks are too big for the tile walk or carry a
  * magnitude outside the sliced window, keeps the plain double arithmetic the
  * file already has; the host simply never launches these entry points on a
- * device without WMMA, and the whole section is compiled out on a
+ * device without WMMA, and the WMMA walk itself is compiled out on a
  * non-gfx12 target so one source still builds for gfx1036.
  *
  * The two dead helpers of the OpenCL string -- ``eliminate_step`` and
@@ -56,10 +44,6 @@
  */
 
 #include <hip/hip_runtime.h>
-
-#if defined(HYBSOL_HIP_DS) || defined(HYBSOL_HIP_OZ_I8) || defined(HYBSOL_HIP_OZ2)
-#include "ds_math.h"
-#endif
 
 /* One spelling for "this object carries an Ozaki block-GEMM path": the
    argument lists, wave walks and fast paths are identical across the
@@ -70,9 +54,7 @@
 
 #ifdef HYBSOL_HIP_DOUBLE
 typedef double scalar;
-#ifdef HYBSOL_HIP_DS
-#define HYBSOL_NAME(n) hybsol_##n##_f64_ds
-#elif defined(HYBSOL_HIP_OZ_I8)
+#if defined(HYBSOL_HIP_OZ_I8)
 #define HYBSOL_NAME(n) hybsol_##n##_f64_ozi8
 #elif defined(HYBSOL_HIP_OZ2)
 #define HYBSOL_NAME(n) hybsol_##n##_f64_oz2
@@ -212,158 +194,6 @@ static __device__ void vec_lu_solve(const scalar *m, double *b, const unsigned l
     }
 }
 
-#ifdef HYBSOL_HIP_DS
-
-/* The ds kernels reuse a pass's scratch bytes for ds blocks, and store pairs into factor slots: one pair is exactly
-   as wide as a stored double. */
-static_assert(sizeof(ds_t) == sizeof(scalar), "a double-single pair must fill one factor slot to share its scratch");
-
-/*
- * The range guard, run as a block is loaded: a block with any element outside the window the pair
- * carries is done in plain double instead, through the same un-#ifdef'd helpers the _f64 pass uses.
- * Both ends matter, and per element rather than per block: past the top a float ``hi`` is infinite,
- * and below the bottom it is zero, which silently deletes that element's contribution rather than
- * announcing itself. A factored diagonal block is exactly the mixed case -- multipliers of order
- * one beside entries at the block's own scale -- so a window on the block's largest element alone
- * would let the small side through. Zeros are exempt: a zero pair is exact at any scale, and a
- * stored block of nothing but zeros is a normal thing to meet. A sweep of the block is cheap next
- * to the block walk it gates, and the fallback is what keeps the mode never wrong at any magnitude.
- *
- * ``scalar`` is double in this instantiation, so a double vector segment passes through the same
- * sweep.
- */
-static __device__ int ds_fits(const scalar *m, const unsigned long count)
-{
-    for (unsigned long i = 0; i < count; ++i)
-    {
-        const double v = m[i] < 0.0 ? -(double)m[i] : (double)m[i];
-        if (v == 0.0)
-            continue;
-        if (v > (double)HYBSOL_DS_MAX || v < (double)HYBSOL_DS_MIN)
-            return 0;
-    }
-    return 1;
-}
-
-/* out = a @ b, in the CPU's i-k-j order, the products and the accumulation chains ds: out is a ds block. */
-static __device__ void mat_multiply_ds(const scalar *a, const scalar *b, ds_t *out, const unsigned long rows,
-                                       const unsigned long inner, const unsigned long cols)
-{
-    const ds_t zero = {0.0f, 0.0f};
-    for (unsigned long i = 0; i < rows; ++i)
-    {
-        for (unsigned long j = 0; j < cols; ++j)
-            out[i * cols + j] = zero;
-
-        for (unsigned long k = 0; k < inner; ++k)
-        {
-            const ds_t aik = ds_split(a[i * inner + k]);
-            for (unsigned long j = 0; j < cols; ++j)
-                out[i * cols + j] = ds_add(out[i * cols + j], ds_mul(aik, ds_split(b[k * cols + j])));
-        }
-    }
-}
-
-/* a -= out, a the stored-double block and out the ds product block. */
-static __device__ void mat_subtract_ds(scalar *a, const ds_t *b, const unsigned long rows, const unsigned long cols)
-{
-    for (unsigned long i = 0; i < rows * cols; ++i)
-        a[i] = ds_to_double(ds_add(ds_split(a[i]), ds_neg(b[i])));
-}
-
-/* Doolittle LU in place on the double storage, ds chains between the loads and stores; the zero pivot fails the
-   same way. A stored element loses nothing: a pair's value fits double exactly. */
-static __device__ int lu_decompose_ds(scalar *m, const unsigned long n)
-{
-    for (unsigned long i = 0; i < n; ++i)
-    {
-        for (unsigned long j = i; j < n; ++j)
-        {
-            ds_t u_ij = ds_split(m[i * n + j]);
-            for (unsigned long k = 0; k < i; ++k)
-                u_ij = ds_add(u_ij, ds_neg(ds_mul(ds_split(m[i * n + k]), ds_split(m[k * n + j]))));
-            m[i * n + j] = ds_to_double(u_ij);
-        }
-
-        if (m[i * n + i] == (scalar)0)
-            return 1;
-        const ds_t pivot = ds_split(m[i * n + i]);
-
-        for (unsigned long j = i + 1; j < n; ++j)
-        {
-            ds_t l_ij = ds_split(m[j * n + i]);
-            for (unsigned long k = 0; k < i; ++k)
-                l_ij = ds_add(l_ij, ds_neg(ds_mul(ds_split(m[k * n + i]), ds_split(m[j * n + k]))));
-            m[j * n + i] = ds_to_double(ds_div(l_ij, pivot));
-        }
-    }
-    return 0;
-}
-
-/* Solve m @ x = b in place on the stored block b, a column at a time: ds chains, and the diagonals divided with
-   ds_div rather than the hardware pipe. */
-static __device__ void lu_solve_ds(const scalar *m, scalar *b, const unsigned long n, const unsigned long cols)
-{
-    for (unsigned long c = 0; c < cols; ++c)
-    {
-        for (unsigned long i = 0; i < n; ++i)
-        {
-            ds_t v = ds_split(b[i * cols + c]);
-            for (unsigned long j = 0; j < i; ++j)
-                v = ds_add(v, ds_neg(ds_mul(ds_split(m[i * n + j]), ds_split(b[j * cols + c]))));
-            b[i * cols + c] = ds_to_double(v);
-        }
-
-        for (unsigned long i = n; i > 0; --i)
-        {
-            ds_t v = ds_split(b[(i - 1) * cols + c]);
-            for (unsigned long j = i; j < n; ++j)
-                v = ds_add(v, ds_neg(ds_mul(ds_split(m[(i - 1) * n + j]), ds_split(b[j * cols + c]))));
-            b[(i - 1) * cols + c] = ds_to_double(ds_div(v, ds_split(m[(i - 1) * n + i - 1])));
-        }
-    }
-}
-
-/* out -= a @ b, a the factor block and b, out double vectors: the pair replaces double as the accumulator. */
-static __device__ void vec_multiply_sub_ds(const scalar *a, const double *b, double *out, const unsigned long rows,
-                                           const unsigned long inner, const unsigned long cols)
-{
-    const ds_t zero = {0.0f, 0.0f};
-    for (unsigned long i = 0; i < rows; ++i)
-    {
-        for (unsigned long j = 0; j < cols; ++j)
-        {
-            ds_t v = zero;
-            for (unsigned long k = 0; k < inner; ++k)
-                v = ds_add(v, ds_mul(ds_split(a[i * inner + k]), ds_split(b[k * cols + j])));
-
-            out[i * cols + j] -= ds_to_double(v);
-        }
-    }
-}
-
-/* Solve m @ x = b with b the double vector: the vectors stay double end to end, the chain is ds. */
-static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigned long n)
-{
-    for (unsigned long i = 0; i < n; ++i)
-    {
-        ds_t v = ds_split(b[i]);
-        for (unsigned long j = 0; j < i; ++j)
-            v = ds_add(v, ds_neg(ds_mul(ds_split(m[i * n + j]), ds_split(b[j]))));
-        b[i] = ds_to_double(v);
-    }
-
-    for (unsigned long i = n; i > 0; --i)
-    {
-        ds_t v = ds_split(b[i - 1]);
-        for (unsigned long j = i; j < n; ++j)
-            v = ds_add(v, ds_neg(ds_mul(ds_split(m[(i - 1) * n + j]), ds_split(b[j]))));
-        b[i - 1] = ds_to_double(ds_div(v, ds_split(m[(i - 1) * n + i - 1])));
-    }
-}
-
-#endif /* HYBSOL_HIP_DS */
-
 #ifdef HYBSOL_HIP_OZ
 
 /* --------------------------------------------------------------------- */
@@ -430,6 +260,55 @@ static __device__ void vec_lu_solve_ds(const scalar *m, double *b, const unsigne
  * 64 lanes -- exactly two wavefronts, one work item each -- and the kernel
  * recovers the (which, m) pair the plain kernels walk from the wave index.
  */
+
+/* Slice constants and the per-block magnitude guard, shared by the two
+   Ozaki instantiations. */
+
+/**
+ * The magnitudes an Ozaki work item agrees to slice, as a window on a block's
+ * largest element.
+ *
+ * The shared block scale is a power of two from the block's own maximum, and
+ * the extraction below shifts a slice window by up to the full slice span; a
+ * scale beyond ~2^332 puts the tile's result past what the double combine can
+ * hold once the two operands' scales multiply, so an entry block reaching this
+ * magnitude leaves the work item to the plain double path. Powers of two up to
+ * 2^333 carry every window exactly. The floor is the same ceiling mirrored:
+ * at 2^-332 the product of the two scales underflows to zero, and a block
+ * sliced at that scale contributes nothing at all -- a wrong answer with
+ * nothing wrong in it. An all-zero block slices at zero whatever its scale, so
+ * it fits.
+ */
+#define HYBSOL_OZ_MAX_ENTRY 1e100
+#define HYBSOL_OZ_MIN_ENTRY 1e-100
+
+/**
+ * Slice parameters (Ozaki et al. 2012; Ootomo et al. for the
+ * FP16-slice/FP32-accumulator pairing; arXiv:2409.13313 for INT8 units):
+ * tau mantissa bits per slice, k = ceil(53 / tau) slices to cover a double.
+ * The int8 pair drives the Ozaki-I slices; the FP16 pair drives the windows
+ * Ozaki-II slices one operand into.
+ */
+#define HYBSOL_OZ_F16_TAU 11
+#define HYBSOL_OZ_F16_SLICES 5
+#define HYBSOL_OZ_I8_TAU 7
+#define HYBSOL_OZ_I8_SLICES 8
+
+/** Whether a block sits in the magnitude window the slicing carries. */
+static __device__ inline int oz_block_fits(const double *const m, const unsigned long count)
+{
+    double maxabs = 0.0;
+    for (unsigned long i = 0; i < count; ++i)
+    {
+        const double v = m[i] < 0.0 ? -m[i] : m[i];
+        if (v > maxabs)
+            maxabs = v;
+    }
+    if (maxabs == 0.0)
+        return 1;
+    return maxabs <= HYBSOL_OZ_MAX_ENTRY && maxabs >= HYBSOL_OZ_MIN_ENTRY;
+}
+
 #if defined(__gfx1200__) || defined(__gfx1201__)
 
 using oz_v8half = _Float16 [[clang::ext_vector_type(8)]];
@@ -750,8 +629,8 @@ static __device__ void oz_block_gemm(const double *a, const double scale_a, cons
  * only rows inside the edge are ever applied to a right-hand side. The two
  * GEMM walks around the inversion -- folding the earlier panels' eliminations
  * into this panel's right-hand side, and applying the inverse -- read the
- * stored blocks with their own rescanned scales (eliminations grow entries,
- * exactly as in the double-single range guard). Accumulation between GEMMs
+ * stored blocks with their own rescanned scales (eliminations grow entries
+ * past the operands' own magnitudes). Accumulation between GEMMs
  * stays in double, matching the plain path's scratch contract.
  *
  * scratch layout, one stride per work item: G (16 x size_tail), P (16x16),
@@ -966,17 +845,6 @@ extern "C" __global__ void HYBSOL_NAME(eliminate_pass)(const unsigned long *leve
     }
 #endif
 #endif
-#ifdef HYBSOL_HIP_DS
-    if (ds_fits(left, size_tgt * size_src) && ds_fits(right, size_src * n_cols)
-        && ds_fits(dest_block, size_tgt * n_cols))
-    {
-        /* The scratch slot holds the ds block where the double one would sit: same bytes. */
-        ds_t *const out_ds = (ds_t *)out;
-        mat_multiply_ds(left, right, out_ds, size_tgt, size_src, n_cols);
-        mat_subtract_ds(dest_block, out_ds, size_tgt, n_cols);
-    }
-    else
-#endif
     {
         mat_multiply(left, right, out, size_tgt, size_src, n_cols);
         mat_subtract(dest_block, out, size_tgt, n_cols);
@@ -1000,12 +868,7 @@ extern "C" __global__ void HYBSOL_NAME(diagonal_pass)(const unsigned long *diag_
     const unsigned long size = block_size(block_offsets, row);
     scalar *const diag = vals + entry_val_offset[at + i_diag];
     int failed;
-#ifdef HYBSOL_HIP_DS
-    if (ds_fits(diag, size * size))
-        failed = lu_decompose_ds(diag, size);
-    else
-#endif
-        failed = lu_decompose(diag, size);
+    failed = lu_decompose(diag, size);
     if (failed != 0)
         atomicMin(fail_j, (int)(pass_first + HYBSOL_GID0));
 }
@@ -1062,12 +925,7 @@ extern "C" __global__ void HYBSOL_NAME(scale_pass)(const unsigned long *scale_ro
     }
 #endif
 #endif
-#ifdef HYBSOL_HIP_DS
-    if (ds_fits(lu, size * size) && ds_fits(rhs, size * size_tail))
-        lu_solve_ds(lu, rhs, size, size_tail);
-    else
-#endif
-        lu_solve(lu, rhs, size, size_tail);
+    lu_solve(lu, rhs, size, size_tail);
 }
 
 /* The solve's forward substitution: the same passes, one work item per row. */
@@ -1095,23 +953,13 @@ extern "C" __global__ void HYBSOL_NAME(forward_pass)(const unsigned long *level_
         const scalar *const a = vals + entry_val_offset[entry];
         const double *const in = vec + block_offsets[col];
         double *const out_segment = vec + block_offsets[row];
-#ifdef HYBSOL_HIP_DS
-        if (ds_fits(a, size_row * size_col) && ds_fits(in, size_col))
-            vec_multiply_sub_ds(a, in, out_segment, size_row, size_col, (unsigned long)1);
-        else
-#endif
-            vec_multiply_sub(a, in, out_segment, size_row, size_col, (unsigned long)1);
+        vec_multiply_sub(a, in, out_segment, size_row, size_col, (unsigned long)1);
     }
     if (pass == row_level[row])
     {
         const scalar *const lu = vals + entry_val_offset[at + row_n_elim[row]];
         double *const segment = vec + block_offsets[row];
-#ifdef HYBSOL_HIP_DS
-        if (ds_fits(lu, size_row * size_row) && ds_fits(segment, size_row))
-            vec_lu_solve_ds(lu, segment, size_row);
-        else
-#endif
-            vec_lu_solve(lu, segment, size_row);
+        vec_lu_solve(lu, segment, size_row);
     }
 }
 
@@ -1140,12 +988,7 @@ extern "C" __global__ void HYBSOL_NAME(back_substitute)(const unsigned long *row
             const scalar *const a = vals + entry_val_offset[entry];
             const double *const in = vec + block_offsets[col];
             double *const out_segment = vec + block_offsets[row];
-#ifdef HYBSOL_HIP_DS
-            if (ds_fits(a, size_row * size_col) && ds_fits(in, size_col))
-                vec_multiply_sub_ds(a, in, out_segment, size_row, size_col, (unsigned long)1);
-            else
-#endif
-                vec_multiply_sub(a, in, out_segment, size_row, size_col, (unsigned long)1);
+            vec_multiply_sub(a, in, out_segment, size_row, size_col, (unsigned long)1);
         }
     }
 }
@@ -1184,12 +1027,7 @@ extern "C" __global__ void HYBSOL_NAME(apply_ops)(const unsigned long *row_entry
             const scalar *const a = vals + entry_val_offset[entry];
             const double *const in = vec + block_offsets[col];
             double *const out_segment = vec + block_offsets[row];
-#ifdef HYBSOL_HIP_DS
-            if (ds_fits(a, size_row * size_col) && ds_fits(in, size_col))
-                vec_multiply_sub_ds(a, in, out_segment, size_row, size_col, (unsigned long)1);
-            else
-#endif
-                vec_multiply_sub(a, in, out_segment, size_row, size_col, (unsigned long)1);
+            vec_multiply_sub(a, in, out_segment, size_row, size_col, (unsigned long)1);
         }
         else
         {
@@ -1206,12 +1044,7 @@ extern "C" __global__ void HYBSOL_NAME(apply_ops)(const unsigned long *row_entry
             const unsigned long entry = at + lo;
             const scalar *const lu = vals + entry_val_offset[entry];
             double *const segment = vec + block_offsets[row];
-#ifdef HYBSOL_HIP_DS
-            if (ds_fits(lu, size_row * size_row) && ds_fits(segment, size_row))
-                vec_lu_solve_ds(lu, segment, size_row);
-            else
-#endif
-                vec_lu_solve(lu, segment, size_row);
+            vec_lu_solve(lu, segment, size_row);
         }
     }
 }

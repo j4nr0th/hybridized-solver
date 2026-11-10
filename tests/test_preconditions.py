@@ -310,7 +310,7 @@ class TestDeviceBackendPreconditions:
     """The device backends answer a bad argument before touching a device.
 
     The C entry points guard the same arguments (a precision outside the two
-    names, an arithmetic mode outside the five) for the caller who writes the
+    names, an arithmetic mode outside the four) for the caller who writes the
     enum himself; ``tests/c/test_hip.c`` and ``tests/c/test_gpu.c`` cover that
     half. This is the Python half of the same rule: no value that the bindings
     can recognize as a mistake may reach an acquire, a kernel or a refusal
@@ -355,7 +355,7 @@ class TestDeviceBackendPreconditions:
             module.decompose(full_system(2), precision=value)
 
     def test_decompose_rejects_an_arithmetic_mode_it_cannot_name(self) -> None:
-        """The arithmetic mode is checked against the five it knows."""
+        """The arithmetic mode is checked against the four it knows."""
         module = self._module("hybsol.hip")
         for wrong in ("fast", ["auto"], 3, ""):
             with pytest.raises(ValueError, match='must be one of "auto"'):

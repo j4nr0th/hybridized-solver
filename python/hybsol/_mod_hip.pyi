@@ -71,15 +71,15 @@ def decompose(
     arith : str, default: "auto"
         The factor arithmetic mode: ``"auto"`` resolves single factors
         to ``"native"`` and double factors to the fastest mode the
-        selection harness gates clean -- ``"native"`` on a gfx12-family
-        device, ``"split"`` on every other AMD gfx device. ``"native"``
-        runs the factors in their own type; the split-precision names
-        ``"split"`` and ``"ozaki"`` replace it -- ``"ozaki"`` needs a
-        WMMA-capable gfx12 device and tiles blocks of at least 16,
-        falling back to ``"split"`` below that. ``"ozaki2"`` is the
-        asymmetric Ozaki variant, a refinement partner: accurate to
-        roughly 11 bits on the unsliced side, so it is meant for the
-        inner solve of ``hybsol.refined_solve``, not a direct solve.
+        selection harness gates clean -- ``"native"`` today, on a
+        gfx12-family device as on every other AMD gfx device.
+        ``"native"`` runs the factors in their own type; ``"ozaki"``
+        takes the two block GEMMs onto the WMMA matrix cores instead,
+        which needs a gfx12-family device and tiles blocks of at least
+        16, staying native below that. ``"ozaki2"`` is the asymmetric
+        Ozaki variant, a refinement partner: accurate to roughly 11
+        bits on the unsliced side, so it is meant for the inner solve
+        of ``hybsol.refined_solve``, not a direct solve.
 
     Returns
     -------

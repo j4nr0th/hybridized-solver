@@ -31,12 +31,10 @@
 /**
  * The compiled kernel for this decomposition: the base name pasted with its
  * suffix. Single factors always take the FP32 set; double factors take the
- * double-single set when the decomposition asked for that arithmetic, and
- * the native double set otherwise.
+ * native double set.
  */
 #define KERNEL(state, precision, base)                                                                                       \
-    ((precision) == HYBSOL_PRECISION_SINGLE ? (const void *)&base##_f32                                                      \
-                                            : ((state)->kernels_ds ? (const void *)&base##_f64_ds : (const void *)&base##_f64))
+    ((precision) == HYBSOL_PRECISION_SINGLE ? (const void *)&base##_f32 : (const void *)&base##_f64)
 
 /** Everything one device decomposition owns beyond the core's frame; ``destroy`` releases all of it. */
 typedef struct
@@ -47,17 +45,14 @@ typedef struct
     hybsol_decomposition_t *dec;
     /** The largest block either dimension has, which strides the scratch. */
     uint64_t max_block;
-    /** Non-zero when double factors run as double-single pairs on the FP32 FMA unit. */
-    int kernels_ds;
     /**
      * Which Ozaki path the two block-GEMM passes run on: 0 none,
      * 1 the Ozaki-I signed int8 slices, 2 the Ozaki-II asymmetric walk
      * (FP16 slices against a single FP16 window). Only set on a gfx12
      * device, only for double factors, and only once a block is big
      * enough for a 16x16 tile to pay for itself; every other pass, and
-     * every smaller system, keeps the double-single set -- an Ozaki mode
-     * asked for the split paths, the matrix cores just do not apply to
-     * it.
+     * every smaller system, runs the plain native double set -- the
+     * matrix cores just do not apply to it.
      */
     int kernels_oz;
     /** What the kernels walk. */
@@ -107,7 +102,7 @@ static size_t scalar_bytes(const hybsol_precision_t precision)
 /**
  * The scratch stride, in elements, one work item's block walk owns.
  *
- * The plain and double-single paths need one max-sized block; the Ozaki
+ * The plain path needs one max-sized block; the Ozaki
  * scaling pass lays a panel solve in its slot -- a 16 x max_block GEMM
  * result, the panel's inverse, and the Neumann series' working matrix,
  * 16*max_block + 512 doubles -- while its GEMM combines stay inside one
@@ -332,11 +327,10 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     {
     case HYBSOL_HIP_ARITH_AUTO:
     case HYBSOL_HIP_ARITH_NATIVE:
-    case HYBSOL_HIP_ARITH_DOUBLE_SINGLE:
     case HYBSOL_HIP_ARITH_OZAKI:
     case HYBSOL_HIP_ARITH_OZAKI2: break;
     default:
-        hybsol_hip_set_error("Arithmetic mode %d is not one of auto, native, double-single, Ozaki or Ozaki-II.",
+        hybsol_hip_set_error("Arithmetic mode %d is not one of auto, native, Ozaki or Ozaki-II.",
                              (int)arith);
         return HYBSOL_ERROR_DEVICE_CAPABILITY;
     }
@@ -351,7 +345,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     // AUTO: single factors are FP32 already and always run native; double
     // factors take the measured gfx12 default -- the selection harness
     // clocked native FP64 the fastest gating mode at every block size it
-    // benches -- and the double-single set on other gfx targets.
+    // benches -- and native on every other gfx target: auto resolves to
+    // native everywhere today.
     hybsol_hip_arith_t chosen = arith;
     if (chosen == HYBSOL_HIP_ARITH_AUTO)
     {
@@ -361,7 +356,7 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         }
         else
         {
-            chosen = gfx12 ? HYBSOL_HIP_DEFAULT_FOR_GFX12 : HYBSOL_HIP_ARITH_DOUBLE_SINGLE;
+            chosen = gfx12 ? HYBSOL_HIP_DEFAULT_FOR_GFX12 : HYBSOL_HIP_ARITH_NATIVE;
         }
     }
 
@@ -378,7 +373,7 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         && precision == HYBSOL_PRECISION_DOUBLE && !gfx12)
     {
         hybsol_hip_set_error("Device %llu reports %s; the Ozaki block kernels need the WMMA matrix "
-                             "cores of a gfx12 target. Ask for auto, native, or double-single here.",
+                             "cores of a gfx12 target. Ask for auto or native here.",
                              (unsigned long long)device->index,
                              (probe == hipSuccess) ? prop.gcnArchName : "(unknown)");
         return HYBSOL_ERROR_DEVICE_CAPABILITY;
@@ -420,8 +415,6 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
     state->device = device;
     state->dec = dec;
-    // Double-single splits *FP64* factor arithmetic; single factors are FP32 already and take the native set.
-    state->kernels_ds = (chosen == HYBSOL_HIP_ARITH_DOUBLE_SINGLE && precision == HYBSOL_PRECISION_DOUBLE) ? 1 : 0;
     dec->backend = &HIP_BACKEND;
     dec->backend_state = state;
 
@@ -470,26 +463,18 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
 
     // An Ozaki mode on a WMMA device runs the two block-GEMM passes on the
     // matrix cores once some block reaches 16 -- the tile a WMMA call answers
-    // for. A smaller system asked for the split paths and gets them on the
-    // double-single set, which is the mode's own fallback for the passes the
-    // matrix cores cannot serve. The Ozaki-I realization is the signed int8
-    // slice walk: the selection harness clocked it 1.3x ahead of the FP16
-    // slice sibling at 32-wide blocks (a tie at 16), and the loser was cut
-    // along with the environment hook that had compared them.
+    // for. Below that the tile never applies and the host launches the plain
+    // _f64 pair instead; every other pass runs the native set under an Ozaki
+    // mode anyway. The Ozaki-I realization is the
+    // signed int8 slice walk: the selection harness clocked it 1.3x ahead of
+    // the FP16 slice sibling at 32-wide blocks (a tie at 16), and the loser
+    // was cut along with the environment hook that had compared them.
     if ((chosen == HYBSOL_HIP_ARITH_OZAKI || chosen == HYBSOL_HIP_ARITH_OZAKI2)
         && precision == HYBSOL_PRECISION_DOUBLE)
     {
         if (state->max_block >= 16)
         {
             state->kernels_oz = (chosen == HYBSOL_HIP_ARITH_OZAKI2) ? 2 : 1;
-            // Every pass the matrix cores do not serve -- the diagonals and
-            // the whole solve -- runs the double-single set under an Ozaki
-            // mode too.
-            state->kernels_ds = 1;
-        }
-        else
-        {
-            state->kernels_ds = 1;
         }
     }
 
@@ -556,7 +541,7 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         }
 
         // One scratch block per work item of the pass, at the stride every
-        // launch of this decomposition will pass. The plain and double-single
+        // launch of this decomposition will pass. The plain
         // elimination walk owns ``rows x sources`` items; the Ozaki scaling
         // walk owns ``diagonals x tail`` instead, and each of its waves writes
         // its panel solve into its own slot. A pass that only factors

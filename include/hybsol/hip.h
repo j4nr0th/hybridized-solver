@@ -63,9 +63,8 @@ typedef struct hybsol_hip_device_details
  *
  * :c:enumerator:`HYBSOL_HIP_ARITH_AUTO` lets the backend choose for the
  * device; :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` runs the factors in their
- * own type, single accumulating in ``float`` and double in ``double``; and
- * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` carries double factors as
- * the FP32 FMA unit. The Ozaki modes below slice the
+ * own type, single accumulating in ``float`` and double in ``double``. The
+ * Ozaki modes below slice the
  * factors' mantissas for the WMMA matrix cores: only gfx12-family devices
  * have those, and asking for either on another device with double factors
  * answers :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY`. Single factors are
@@ -80,25 +79,18 @@ typedef enum hybsol_hip_arith
      * :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` (FP32 needs no split), double
      * factors take the fastest mode the selection harness gates clean on a
      * gfx12-family device -- native today -- and
-     * :c:enumerator:`HYBSOL_HIP_ARITH_DOUBLE_SINGLE` on every other gfx
-     * target.
+     * :c:enumerator:`HYBSOL_HIP_ARITH_NATIVE` on every other gfx target:
+     * auto resolves to native everywhere today.
      */
     HYBSOL_HIP_ARITH_AUTO = 0,
     /** The factors' own arithmetic, the CPU backend's model. */
     HYBSOL_HIP_ARITH_NATIVE = 1,
     /**
-     * FP64 factor arithmetic as two FP32 pieces on the FP32 FMA unit:
-     * ~14 significant digits kept, and a block outside a float's comfortable
-     * range falls back to native arithmetic rather than overflow the pair.
-     * Only meaningful for double factors; single factors are FP32 already.
-     */
-    HYBSOL_HIP_ARITH_DOUBLE_SINGLE = 2,
-    /**
      * FP64 on the WMMA matrix cores by mantissa slicing (Ozaki-I, signed
      * int8 slices): the two block-GEMM passes run as sliced 16x16 tiles,
-     * every other pass takes the double-single set. Needs a gfx12-family
-     * device; smaller blocks keep the double-single path for those passes
-     * too.
+     * every other pass takes the native set. Needs a gfx12-family
+     * device; a system with no 16-wide block runs those two passes
+     * native too.
      */
     HYBSOL_HIP_ARITH_OZAKI = 3,
     /**
@@ -108,7 +100,7 @@ typedef enum hybsol_hip_arith
      * gates on: the mode exists as the cheap inner solve under iterative
      * refinement (``hybsol.refined_solve``), and the selection harness
      * prints its residual without gating it. Needs a gfx12-family device;
-     * smaller blocks keep the double-single path, and
+     * a system with no 16-wide block runs the sliced passes native too, and
      * :c:enumerator:`HYBSOL_HIP_ARITH_AUTO` never picks it.
      */
     HYBSOL_HIP_ARITH_OZAKI2 = 4,
@@ -179,8 +171,8 @@ const char *hybsol_hip_last_error(void);
  * ``graph`` asserted to have been built from ``sys``.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY` when the device
- * cannot do double arithmetic, when ``arith`` asks for a split-precision
- * mode with double factors that the target lacks (Ozaki or Ozaki-II on a
+ * cannot do double arithmetic, when ``arith`` asks for a mode with double
+ * factors that the target lacks (Ozaki or Ozaki-II on a
  * device without WMMA matrix cores), or when ``precision`` or ``arith`` is
  * not one of the enumerated values -- an out-of-range enum names no kernel
  * set and no element width, and is refused rather than run as whichever

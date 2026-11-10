@@ -129,7 +129,7 @@ const char *hybsol_hip_last_error(void)
  * walk is the cheapest. The harness table that picked it lives in that
  * test's commit message (a contended-GPU run; the idle rerun's numbers
  * supersede them, and this line flips with them if the ranking moves).
- * The split paths stay explicitly reachable by name.
+ * The Ozaki modes stay explicitly reachable by name.
  */
 const hybsol_hip_arith_t HYBSOL_HIP_DEFAULT_FOR_GFX12 = HYBSOL_HIP_ARITH_NATIVE;
 

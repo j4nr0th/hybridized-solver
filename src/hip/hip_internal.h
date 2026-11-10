@@ -61,20 +61,6 @@ extern void hybsol_apply_ops_f32(void);
 extern void hybsol_apply_ops_f64(void);
 
 /*
- * The double-single set: the same six entry points again, suffixed _f64_ds,
- * compiled from the same source under -DHYBSOL_HIP_DOUBLE -DHYBSOL_HIP_DS.
- * Same signatures as the _f64 set -- the factors and vectors are stored the
- * same way -- only the arithmetic inside differs, and the host picks the set
- * per decomposition by the address it launches.
- */
-extern void hybsol_eliminate_pass_f64_ds(void);
-extern void hybsol_diagonal_pass_f64_ds(void);
-extern void hybsol_scale_pass_f64_ds(void);
-extern void hybsol_forward_pass_f64_ds(void);
-extern void hybsol_back_substitute_f64_ds(void);
-extern void hybsol_apply_ops_f64_ds(void);
-
-/*
  * The Ozaki sets: the eliminate and scale entry points again, suffixed
  * _f64_ozi8 and _f64_oz2 -- the Ozaki-I realization the selection harness
  * kept, and the Ozaki-II (asymmetric-slicing) mode -- compiled from the
@@ -86,8 +72,8 @@ extern void hybsol_apply_ops_f64_ds(void);
  * where the Neumann panel inverts the diagonal -- so the host passes each
  * entry point its own matching argument array. Only the WMMA devices reach
  * them, and only the two block-GEMM
- * passes: every other pass under an Ozaki mode still runs the _f64_ds set
- * above.
+ * passes: every other pass under an Ozaki mode still runs the plain
+ * _f64 set.
  */
 extern void hybsol_eliminate_pass_f64_ozi8(void);
 extern void hybsol_scale_pass_f64_ozi8(void);
