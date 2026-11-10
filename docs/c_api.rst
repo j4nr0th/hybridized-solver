@@ -120,9 +120,13 @@ device the factors are on, ``UINT64_MAX`` for host memory.
 
 The OpenCL backend is one: ``hybsol::opencl``, guarded by the
 ``HYBSOL_ENABLE_OPENCL`` option and reachable through its own Python module.
+The HIP/ROCm backend is another: ``hybsol::hip``, guarded by the
+``HYBSOL_ENABLE_HIP`` option and reachable through its own Python module.
 A backend for another runtime is one more library against
 ``hybsol/backend.h`` with no change to the core.
 
 .. c:autodoc:: include/hybsol/backend.h
 
 .. c:autodoc:: include/hybsol/opencl.h
+
+.. c:autodoc:: include/hybsol/hip.h

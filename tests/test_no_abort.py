@@ -24,7 +24,6 @@ failure even when nothing crashed.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -103,6 +102,37 @@ def _make_system(precision: str = "double"):
         ),
         precision=precision,
     )
+
+
+def _device_module(name: str):
+    """Import a backend module; an absent one raises, and the harness counts that."""
+    import importlib
+
+    return importlib.import_module(name)
+
+
+def _device_decompose(
+    module_name: str,
+    device: object,
+    precision: object = None,
+    arith: object = "auto",
+    nthreads: object = None,
+) -> None:
+    """Ask a device backend to factorize, with an argument of the caller's choosing."""
+    module = _device_module(module_name)
+    kwargs: dict[str, object] = {"device": device}
+    if precision is not None:
+        kwargs["precision"] = precision
+    if nthreads is not None:
+        kwargs["n_threads"] = nthreads
+    if module_name == "hybsol.hip":
+        kwargs["arith"] = arith
+    module.decompose(_make_system(), **kwargs)
+
+
+def _device_bad_system(module_name: str, system: object) -> None:
+    """Ask a device backend to factorize something that is not a BlockSystem."""
+    _device_module(module_name).decompose(system, device=0)
 
 
 # --------------------------------------------------------------------------
@@ -226,6 +256,57 @@ def _read_only_cases():
         ("str_data", lambda: BlockSystem.from_blocks([2, 2], [0], [0], ["a"] * 4)),
     ]:
         yield f"from_blocks/{name}", thunk
+
+    # The device bindings, against whatever devices this machine has. The import
+    # is inside the call so a build without a backend answers as a refusal
+    # rather than as a case that went missing.
+    for module_name in ("hybsol.hip", "hybsol.opencl"):
+        for name, value in [
+            ("negative", -1),
+            ("negative_far", -(2**40)),
+            ("float", 1.5),
+            ("str", "0"),
+            ("none", None),
+            ("past_the_end", 10**12),
+            ("uint64_max", 2**64 - 1),
+            ("complex", 1 + 0j),
+            ("list", [0]),
+        ]:
+            yield (
+                f"{module_name}.decompose/device_{name}",
+                lambda v=value, m=module_name: _device_decompose(m, v),
+            )
+            yield (
+                f"{module_name}.device_info/{name}",
+                lambda v=value, m=module_name: _device_module(m).device_info(v),
+            )
+        for name, value in [
+            ("quad", "quad"),
+            ("none", None),
+            ("int", 7),
+            ("list", ["auto"]),
+        ]:
+            yield (
+                f"{module_name}.decompose/precision_{name}",
+                lambda v=value, m=module_name: _device_decompose(m, 0, precision=v),
+            )
+        if module_name == "hybsol.hip":
+            for name, value in [("misspelled", "fast"), ("int", 3), ("list", ["auto"])]:
+                yield (
+                    "hybsol.hip.decompose/arith_" + name,
+                    lambda v=value: _device_decompose("hybsol.hip", 0, arith=v),
+                )
+        # These arguments reach a core assert if the binding lets them through.
+        for name, value in [("negative", -1), ("str", "2"), ("float", 1.5)]:
+            yield (
+                f"{module_name}.decompose/nthreads_{name}",
+                lambda v=value, m=module_name: _device_decompose(m, 0, nthreads=v),
+            )
+        for name, value in [("str", "the system"), ("none", None), ("int", 7)]:
+            yield (
+                f"{module_name}.decompose/system_{name}",
+                lambda v=value, m=module_name: _device_bad_system(m, v),
+            )
 
     for name, thunk in [
         ("bad_strategy", lambda: _make_system().compute_reordering("nonsense")),
@@ -447,6 +528,7 @@ def worker():
 
 
 def _last_case(stdout: str) -> str:
+    """Return the last case the worker announced -- where an abort found it."""
     cases = [line[5:] for line in stdout.splitlines() if line.startswith("CASE ")]
     return cases[-1] if cases else "<none>"
 
@@ -467,6 +549,7 @@ def test_hostile_input_never_aborts(worker):
 
 
 def _stats(worker) -> dict[str, int]:
+    """Parse the worker's final ``STATS`` line into a mapping of counters."""
     stats = [line for line in worker.stdout.splitlines() if line.startswith("STATS ")]
     assert stats, "the worker produced no statistics"
     return {k: int(v) for k, v in (kv.split("=") for kv in stats[-1].split()[1:])}
@@ -532,7 +615,6 @@ def test_interpreter_shuts_down_cleanly():
     if not example.is_file():
         pytest.skip("examples/compare_scipy.py is not present in this checkout")
 
-    env = {**os.environ, "OMP_NUM_THREADS": "1"}
     runs = 10
     crashes = []
     for _ in range(runs):
@@ -541,7 +623,6 @@ def test_interpreter_shuts_down_cleanly():
             capture_output=True,
             text=True,
             timeout=600,
-            env=env,
         )
         if proc.returncode != 0:
             crashes.append((proc.returncode, proc.stderr[-800:]))

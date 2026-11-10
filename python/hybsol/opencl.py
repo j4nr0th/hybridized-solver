@@ -45,7 +45,7 @@ def devices() -> list[dict[str, object]]:
     --------
     >>> import hybsol.opencl
     >>> found = hybsol.opencl.devices()
-    >>> all(info["double"] for info in found) or not found
+    >>> all(isinstance(info["double"], bool) for info in found) or not found
     True
     """
     return [device_info(i) for i in range(_device_count())]

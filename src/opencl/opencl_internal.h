@@ -46,6 +46,11 @@ struct hybsol_opencl_device
     int supports_double;
     /** Acquisitions not yet released. */
     unsigned refs;
+    /**
+     * The allocator the acquisition handed in, kept for the handle's own
+     * allocations; valid until the last release, as the header requires.
+     */
+    const hybsol_allocator_t *allocator;
     /** Kernels compiled per factor precision; ``CL_SUCCESS`` until asked for. */
     cl_program program_f32;
     cl_program program_f64;
@@ -91,3 +96,9 @@ void hybsol_opencl_set_error(const char *format, ...);
 
 /** Note a failing OpenCL call, if it has nothing of its own to say. */
 void hybsol_opencl_note_cl_error(cl_int error, const char *what);
+
+/**
+ * Forget the note, for the entry points about to start an operation of their
+ * own: a note may only ever explain the call that is failing right now.
+ */
+void hybsol_opencl_clear_error(void);

@@ -39,6 +39,17 @@ Dependencies
   vendor ICD -- the one that ships with the GPU driver. :mod:`hybsol.opencl`
   is then importable wherever such a device exists, and
   :func:`hybsol.opencl.devices` lists them.
+- ROCm, for the AMD GPU backend. Optional: with ``HYBSOL_ENABLE_HIP``
+  off -- which is also what a build falls back to, with a warning, when
+  ROCm is not installed -- there is no ``hybsol.hip``, and nothing else
+  changes. Building with it needs a ROCm installation, which the build
+  looks for under ``/opt/rocm`` unless told otherwise; the kernels are
+  compiled ahead of time for the architectures ``rocminfo`` names on the
+  build machine, or for a pinned list via
+  ``-DHYBSOL_HIP_ARCHITECTURES=gfx90a,gfx1100``. The kernels run on a
+  GPU of one of those architectures. :mod:`hybsol.hip` is then
+  importable wherever such a device exists, and :func:`hybsol.hip.devices`
+  lists them.
 
 .. code-block:: sh
 

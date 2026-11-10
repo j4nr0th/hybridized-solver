@@ -60,3 +60,32 @@ with ``device`` telling it apart.
 .. autoclass:: DeviceError
    :members:
    :undoc-members:
+
+The HIP backend
+---------------
+
+AMD GPUs under ROCm get the same shape: a module of their own,
+``hybsol.hip``, imported when it is wanted and never otherwise. An
+installation built without the backend has no :mod:`hybsol.hip` at all,
+and the import says so. The walk and the assembly stay on the CPU there
+too, and what comes back is an ordinary :class:`Decomposition` with
+``device`` telling it apart; :class:`DeviceError` is shared between the
+two GPU modules, not a second exception.
+
+.. autofunction:: hybsol.hip.devices
+
+.. autofunction:: hybsol.hip.device_info
+
+.. autofunction:: hybsol.hip.decompose
+
+Ranking the backends
+--------------------
+
+An application that does not know what hardware it lands on can ask the
+package directly: :func:`bench_backends` times a small system on every
+backend this machine can run and returns the results sorted by speed,
+and :func:`best_backend` just returns the winner.
+
+.. autofunction:: bench_backends
+
+.. autofunction:: best_backend

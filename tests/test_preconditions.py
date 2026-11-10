@@ -304,3 +304,77 @@ class TestDecompositionIsGuarded:
         dec = self.full_system().decompose()
         with pytest.raises(ValueError, match="non-negative"):
             dec.solve(np.ones(6), n_threads=-1)
+
+
+class TestDeviceBackendPreconditions:
+    """The device backends answer a bad argument before touching a device.
+
+    The C entry points guard the same arguments (a precision outside the two
+    names, an arithmetic mode outside the four) for the caller who writes the
+    enum himself; ``tests/c/test_hip.c`` and ``tests/c/test_gpu.c`` cover that
+    half. This is the Python half of the same rule: no value that the bindings
+    can recognize as a mistake may reach an acquire, a kernel or a refusal
+    about a device.
+    """
+
+    @staticmethod
+    def _module(name: str):
+        """Import the backend's module, skipping the test where it is not built."""
+        return pytest.importorskip(name, reason="built without that backend")
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    @pytest.mark.parametrize("value", [1.5, "0", None, [0]])
+    def test_decompose_rejects_a_device_that_is_not_an_index(
+        self, module_name: str, value: object
+    ) -> None:
+        """A float, a string, nothing, or a list is not an index."""
+        module = self._module(module_name)
+        with pytest.raises(TypeError):
+            module.decompose(full_system(2), device=value)
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    def test_decompose_reports_the_device_it_was_asked_for(
+        self, module_name: str
+    ) -> None:
+        """An index below zero is the call's mistake; one past the end is not."""
+        from hybsol import DeviceError
+
+        module = self._module(module_name)
+        with pytest.raises(ValueError, match="non-negative"):
+            module.decompose(full_system(2), device=-1)
+        with pytest.raises(DeviceError):
+            module.decompose(full_system(2), device=10**12)
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    @pytest.mark.parametrize("value", ["quad", 7, Precision.SINGLE.name * 2])
+    def test_decompose_rejects_a_precision_it_cannot_name(
+        self, module_name: str, value: object
+    ) -> None:
+        """Only a real member of the precision enum names a kernel set."""
+        module = self._module(module_name)
+        with pytest.raises((TypeError, ValueError), match="precision must be"):
+            module.decompose(full_system(2), precision=value)
+
+    def test_decompose_rejects_an_arithmetic_mode_it_cannot_name(self) -> None:
+        """The arithmetic mode is checked against the four it knows."""
+        module = self._module("hybsol.hip")
+        for wrong in ("fast", ["auto"], 3, ""):
+            with pytest.raises(ValueError, match='must be one of "auto"'):
+                module.decompose(full_system(2), device=0, arith=wrong)
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    def test_decompose_rejects_a_negative_thread_count(self, module_name: str) -> None:
+        """The thread-count guard runs before the call reaches a device."""
+        module = self._module(module_name)
+        with pytest.raises(ValueError, match="non-negative"):
+            module.decompose(full_system(2), n_threads=-1)
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    @pytest.mark.parametrize("wrong", ["the system", None, 7])
+    def test_decompose_rejects_a_system_that_is_not_a_block_system(
+        self, module_name: str, wrong: object
+    ) -> None:
+        """The core asserts a non-NULL system; the bindings make that a TypeError."""
+        module = self._module(module_name)
+        with pytest.raises(TypeError, match="BlockSystem"):
+            module.decompose(wrong, device=0)
