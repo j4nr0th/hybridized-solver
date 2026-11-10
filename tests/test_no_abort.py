@@ -528,6 +528,7 @@ def worker():
 
 
 def _last_case(stdout: str) -> str:
+    """Return the last case the worker announced -- where an abort found it."""
     cases = [line[5:] for line in stdout.splitlines() if line.startswith("CASE ")]
     return cases[-1] if cases else "<none>"
 
@@ -548,6 +549,7 @@ def test_hostile_input_never_aborts(worker):
 
 
 def _stats(worker) -> dict[str, int]:
+    """Parse the worker's final ``STATS`` line into a mapping of counters."""
     stats = [line for line in worker.stdout.splitlines() if line.startswith("STATS ")]
     assert stats, "the worker produced no statistics"
     return {k: int(v) for k, v in (kv.split("=") for kv in stats[-1].split()[1:])}

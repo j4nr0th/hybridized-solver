@@ -25,11 +25,13 @@ _SOURCE_SUFFIXES = {".c", ".h", ".inc", ".pyi"}
 
 
 def _stamp(path: Path) -> str:
+    """Render ``path``'s modification time as a second-precision ISO timestamp."""
     when = datetime.datetime.fromtimestamp(path.stat().st_mtime)
     return when.isoformat(timespec="seconds")
 
 
 def _newest_source(repo: Path) -> tuple[float, Path] | None:
+    """Return the newest source file under the watched dirs, with its mtime."""
     newest: tuple[float, Path] | None = None
     for directory in _SOURCE_DIRS:
         root = repo / directory

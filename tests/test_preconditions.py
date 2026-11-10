@@ -319,6 +319,7 @@ class TestDeviceBackendPreconditions:
 
     @staticmethod
     def _module(name: str):
+        """Import the backend's module, skipping the test where it is not built."""
         return pytest.importorskip(name, reason="built without that backend")
 
     @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
