@@ -260,17 +260,25 @@ def test_c_system_eliminate_row_sparse(
 
 @pytest.mark.parametrize(("n", "m"), ((2, 2), (3, 3), (10, 15)))
 def test_c_system_inverse(n: int, m: int) -> None:
-    """Check that inverse matrix function works correctly."""
+    """A single dense block solves its right-hand sides.
+
+    One block is the smallest case that is still a factorization, so this pins
+    that decomposing a one-block system inverts that block. The solve takes one
+    vector at a time, so a multi-column right-hand side is solved column by
+    column.
+    """
     rng = np.random.default_rng(n * m)
-    mat = rng.random((n, n))
+    mat = rng.random((n, n)) + np.eye(n) * n
     lhs = rng.random((n, m))
     rhs = mat @ lhs
-    out = np.empty_like(rhs)
 
     sys = BlockSystem(n)
     sys.add_block(0, 0, mat)
-    sys.decompose_diagonal(idx=0)
-    sys.solve_diagonal(out=out, idx=0, val=rhs)
+    decomposition = sys.decompose()
+
+    out = np.empty_like(rhs)
+    for column in range(m):
+        out[:, column] = decomposition.solve(rhs[:, column])
     assert pytest.approx(out) == lhs
 
 

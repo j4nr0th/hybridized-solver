@@ -1,0 +1,132 @@
+C API
+=====
+
+The solver lives in a small, dependency-free C library that knows nothing
+about Python. It is built as the ``hybsol_core`` static library and can be
+consumed directly with ``add_subdirectory`` or FetchContent_:
+
+.. code-block:: cmake
+
+    add_subdirectory(hybsol)
+    target_link_libraries(my_target PRIVATE hybsol::hybsol)
+
+Include ``hybsol/hybsol.h`` — or the individual headers under ``hybsol/`` — to
+get the whole API. The core is thread-safe as long as no single system is
+touched by two threads at once; the ``n_threads`` arguments select how many
+OpenMP threads are used, with ``0`` meaning the OpenMP default and ``1``
+running serially.
+
+.. _FetchContent: https://cmake.org/cmake/help/latest/module/FetchContent.html
+
+Conventions
+-----------
+
+Fallible functions return a result code instead of setting ``errno``;
+::c:func:`hybsol_result_str` turns a code into a short, stable description.
+Those codes cover outcomes of the data rather than mistakes: an allocation that
+failed, a diagonal with no pivot, a block order that admits no factorization, a
+row that stores no blocks, a row that stores no block past the given column, a
+colouring that ran out of colours.
+
+Conditions the caller can be asked to guarantee are *preconditions* instead:
+index ranges, non-``NULL`` output pointers, matching shapes, the precision
+spelling the system stores, a real permutation, a row that has its diagonal
+block, a decomposition that has been factorized and one that has not, and a
+system that is structurally valid. These are checked with cutl's
+``CUTL_ASSERT``, which aborts with a diagnostic naming the violated condition,
+and each function's comment lists the ones it assumes. They are compiled in for
+Debug builds and the test suite; Release leaves them off, and setting
+``CUTL_ASSERTS`` overrides either way. Code that must not abort — the Python
+bindings, most obviously — checks the same conditions itself and raises instead.
+Where the question is worth asking rather than assuming,
+::c:func:`hybsol_system_is_valid` is what to run first: it is the very check
+:c:func:`hybsol_elimination_create` asserts, returning ``1`` or ``0`` where the
+walk would abort instead.
+
+Memory is allocated through a `cutl <https://github.com/j4nr0th/cutl>`_
+allocator, chosen per system rather than globally:
+:c:func:`hybsol_system_create` takes the one to use and the system keeps it
+until :c:func:`hybsol_system_destroy` returns, so systems can use different
+allocators and a bare ``malloc`` pointer may be handed to the library. Pass
+``&CUTL_STD_ALLOCATOR`` for plain ``malloc``/``realloc``/``free``; cutl also
+provides arena, fixed-size-pool and validating allocators.
+
+The allocator need only be safe for the phases that run one at a time.
+::c:func:`hybsol_decomposition_factorize_with_workspace` is parallel and never
+calls it from inside a parallel region, so a plain bump arena with no locking
+at all can be supplied. That falls out of the split: the destination's whole
+layout — every block, including the fill-in — is fixed by
+::c:func:`hybsol_elimination_create` before any thread starts, and laid out in
+one region, so the factorization itself allocates nothing. The operation list is
+read back off the same schedule on demand rather than stored.
+
+The pipeline has four stages, each usable on its own:
+
+#. :c:func:`hybsol_elimination_create` walks the elimination graph
+   symbolically, computing no values, and reports the final pattern, the passes
+   the factorization runs in, the exact memory it will need, and whether the
+   block order admits a factorization at all. A block whose diagonal is
+   identically zero comes back as
+   :c:enumerator:`HYBSOL_ERROR_INVALID_ORDERING`, and the trailing
+   ``uint64_t *failing_block`` names it; passing ``NULL`` there is fine.
+#. :c:func:`hybsol_decomposition_create` lays the destination out in one
+   allocation and copies the system's blocks into it, with
+   :c:func:`hybsol_decomposition_init` the same thing in memory the caller owns
+   — :c:func:`hybsol_decomposition_bytes` sizes it, so a graph, a
+   decomposition and its workspace can share one region released together. A
+   decomposition laid out that way owns no memory, and
+   :c:func:`hybsol_decomposition_destroy` frees nothing for it.
+#. :c:func:`hybsol_decomposition_factorize` walks the graph, factorizing in
+   place.
+#. :c:func:`hybsol_decomposition_solve` substitutes forward — one pass at a
+   time, parallel across the rows of a pass — and back-substitutes serially.
+
+The transient scratch for the factorization comes from a buffer the caller
+supplies, sized by :c:func:`hybsol_workspace_bytes`;
+:c:func:`hybsol_decomposition_factorize` allocates that buffer itself. A
+decomposition owns a copy of the blocks it factorizes, so the system it came
+from is unchanged and may be released or decomposed again.
+
+Indices and counts are ``uint64_t`` throughout. The three opaque types are
+::c:type:`hybsol_system_t` (built by :c:func:`hybsol_system_create`),
+::c:type:`hybsol_elimination_t` (by :c:func:`hybsol_elimination_create`) and
+::c:type:`hybsol_decomposition_t` (by :c:func:`hybsol_decomposition_create` or
+:c:func:`hybsol_decomposition_init`), each with its own destroy.
+
+The headers
+-----------
+
+.. c:autodoc:: include/hybsol/types.h
+
+.. c:autodoc:: include/hybsol/matrix.h
+
+.. c:autodoc:: include/hybsol/block_system.h
+
+.. c:autodoc:: include/hybsol/elimination.h
+
+.. c:autodoc:: include/hybsol/decomposition.h
+
+.. c:autodoc:: include/hybsol/ordering.h
+
+Backends
+--------
+
+A backend keeps a decomposition's factors somewhere other than the host
+frame -- a device, in the general case -- and does the arithmetic over them
+itself. It fills in a :c:type:`hybsol_backend_t` and hands the decomposition
+over; the core calls through it wherever the CPU kernels would have run and
+never looks inside its state. :c:func:`hybsol_decomposition_device` says which
+device the factors are on, ``UINT64_MAX`` for host memory.
+
+The OpenCL backend is one: ``hybsol::opencl``, guarded by the
+``HYBSOL_ENABLE_OPENCL`` option and reachable through its own Python module.
+The HIP/ROCm backend is another: ``hybsol::hip``, guarded by the
+``HYBSOL_ENABLE_HIP`` option and reachable through its own Python module.
+A backend for another runtime is one more library against
+``hybsol/backend.h`` with no change to the core.
+
+.. c:autodoc:: include/hybsol/backend.h
+
+.. c:autodoc:: include/hybsol/opencl.h
+
+.. c:autodoc:: include/hybsol/hip.h
