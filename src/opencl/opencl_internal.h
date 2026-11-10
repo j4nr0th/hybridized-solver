@@ -46,6 +46,11 @@ struct hybsol_opencl_device
     int supports_double;
     /** Acquisitions not yet released. */
     unsigned refs;
+    /**
+     * The allocator the acquisition handed in, kept for the handle's own
+     * allocations; valid until the last release, as the header requires.
+     */
+    const hybsol_allocator_t *allocator;
     /** Kernels compiled per factor precision; ``CL_SUCCESS`` until asked for. */
     cl_program program_f32;
     cl_program program_f64;

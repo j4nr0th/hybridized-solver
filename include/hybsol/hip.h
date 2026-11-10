@@ -136,7 +136,11 @@ typedef struct hybsol_hip_device hybsol_hip_device_t;
  * Acquire the device at ``index``. The first acquisition of an index opens
  * its stream, later ones hand out the same device.
  *
- * Preconditions: ``out`` non-``NULL``.
+ * Preconditions: ``out`` and ``allocator`` non-``NULL``. Pass
+ * ``&CUTL_STD_ALLOCATOR`` for plain ``malloc``/``realloc``/``free``; any
+ * other allocator must stay valid until :c:func:`hybsol_hip_device_release`
+ * returns for the last reference, since the device allocates through it for
+ * its whole life.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_NO_DEVICE` for an index no device has,
  * :c:enumerator:`HYBSOL_ERROR_DEVICE` when the runtime refuses the stream, or
@@ -144,7 +148,8 @@ typedef struct hybsol_hip_device hybsol_hip_device_t;
  * kernels were not compiled for fails at the first launch instead, with the
  * reason in :c:func:`hybsol_hip_last_error`.
  */
-hybsol_result_t hybsol_hip_device_acquire(uint64_t index, hybsol_hip_device_t **out);
+hybsol_result_t hybsol_hip_device_acquire(uint64_t index, const hybsol_allocator_t *allocator,
+                                          hybsol_hip_device_t **out);
 
 /**
  * Release one reference to a device, destroying it when the last one goes.
@@ -167,8 +172,13 @@ const char *hybsol_hip_last_error(void);
  * decomposition holds its own reference to ``device``, so the caller's may be
  * released once this returns.
  *
- * Preconditions: ``sys``, ``graph``, ``device`` and ``out`` non-``NULL``;
- * ``graph`` asserted to have been built from ``sys``.
+ * The host-side bookkeeping -- the backend state, the per-pass schedule and
+ * the transfer scratch -- is allocated from ``allocator``, which therefore
+ * must stay valid until :c:func:`hybsol_decomposition_destroy` returns for
+ * this decomposition.
+ *
+ * Preconditions: ``sys``, ``graph``, ``device``, ``allocator`` and ``out``
+ * non-``NULL``; ``graph`` asserted to have been built from ``sys``.
  *
  * Returns :c:enumerator:`HYBSOL_ERROR_DEVICE_CAPABILITY` when the device
  * cannot do double arithmetic, when ``arith`` asks for a mode with double
@@ -184,6 +194,8 @@ const char *hybsol_hip_last_error(void);
 hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t *sys,
                                                           const hybsol_elimination_t *graph,
                                                           hybsol_precision_t precision, hybsol_hip_arith_t arith,
-                                                          hybsol_hip_device_t *device, hybsol_decomposition_t **out);
+                                                          hybsol_hip_device_t *device,
+                                                          const hybsol_allocator_t *allocator,
+                                                          hybsol_decomposition_t **out);
 
 #endif /* HYBSOL_HIP_H */

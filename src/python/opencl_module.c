@@ -396,14 +396,15 @@ static PyObject *opencl_decompose(PyObject *const Py_UNUSED(self), PyObject *con
     hybsol_result_t res;
 
     Py_BEGIN_ALLOW_THREADS;
-    res = hybsol_opencl_device_acquire((uint64_t)device_index, &device);
+    res = hybsol_opencl_device_acquire((uint64_t)device_index, &CUTL_STD_ALLOCATOR, &device);
     if (res == HYBSOL_SUCCESS)
     {
         res = hybsol_elimination_create(system->system, &graph, &failing_block);
     }
     if (res == HYBSOL_SUCCESS)
     {
-        res = hybsol_opencl_decomposition_create_on_device(system->system, graph, precision, device, &dec);
+        res = hybsol_opencl_decomposition_create_on_device(system->system, graph, precision, device,
+                                                           &CUTL_STD_ALLOCATOR, &dec);
         // The decomposition copied the schedule it needs, so the graph is done.
         hybsol_elimination_destroy(graph);
         graph = NULL;

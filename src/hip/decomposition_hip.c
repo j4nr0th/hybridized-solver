@@ -25,7 +25,6 @@
 
 #include <limits.h>
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 /**
@@ -43,6 +42,12 @@ typedef struct
     hybsol_hip_device_t *device;
     /** The decomposition this state belongs to. */
     hybsol_decomposition_t *dec;
+    /**
+     * The allocator handed to the creation, kept for every host allocation
+     * this state makes; valid until the decomposition is destroyed, as the
+     * header requires.
+     */
+    const hybsol_allocator_t *allocator;
     /** The largest block either dimension has, which strides the scratch. */
     uint64_t max_block;
     /**
@@ -77,6 +82,13 @@ typedef struct
     void *dev_diag_row;
     void *dev_scale_row;
     void *dev_scale_tail;
+    /**
+     * One arena for the seven host work lists below, sized exactly up
+     * front: ``(n_levels + 1) * 2 + n * 3 + n_levels * 2`` counts. The
+     * pointers under it are carved views, and destroy frees the arena
+     * as a whole.
+     */
+    uint64_t *schedule;
     uint64_t *diag_offset;  /**< ``n_levels + 1``, into ``diag_row``. */
     uint64_t *scale_offset; /**< ``n_levels + 1``, into ``scale_row``. */
     uint64_t *diag_row;     /**< The rows whose diagonal a pass factors, in pass order. */
@@ -203,7 +215,7 @@ static hybsol_result_t transfer_reserve(hip_state_t *const state, const size_t b
     {
         return HYBSOL_SUCCESS;
     }
-    void *const grown = realloc(state->transfer, bytes);
+    void *const grown = hybsol_grow(state->allocator, state->transfer, bytes);
     if (grown == NULL)
     {
         return HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -305,11 +317,13 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
                                                           const hybsol_precision_t precision,
                                                           const hybsol_hip_arith_t arith,
                                                           hybsol_hip_device_t *const device,
+                                                          const hybsol_allocator_t *const allocator,
                                                           hybsol_decomposition_t **const out)
 {
     CUTL_ASSERT(sys != NULL, "The system must not be NULL.");
     CUTL_ASSERT(graph != NULL, "The graph must not be NULL.");
     CUTL_ASSERT(device != NULL, "The device must not be NULL.");
+    CUTL_ASSERT(allocator != NULL, "The allocator must not be NULL; pass &CUTL_STD_ALLOCATOR for the default.");
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
     *out = NULL;
     hybsol_hip_clear_error();
@@ -407,14 +421,16 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     }
     dec->raw = storage;
 
-    hip_state_t *const state = (hip_state_t *)calloc(1, sizeof(*state));
+    hip_state_t *const state = (hip_state_t *)hybsol_alloc(allocator, sizeof(*state));
     if (state == NULL)
     {
         hybsol_decomposition_destroy(dec);
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     }
+    memset(state, 0, sizeof(*state));
     state->device = device;
     state->dec = dec;
+    state->allocator = allocator;
     dec->backend = &HIP_BACKEND;
     dec->backend_state = state;
 
@@ -481,17 +497,32 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     hybsol_result_t res = HYBSOL_SUCCESS;
 
     // One read of the schedule sizes every launch: per pass, the rows it factors, their tails, its widest source list.
-    state->diag_offset = (uint64_t *)calloc((size_t)n_levels + 1, sizeof(uint64_t));
-    state->scale_offset = (uint64_t *)calloc((size_t)n_levels + 1, sizeof(uint64_t));
-    state->diag_row = (uint64_t *)calloc(n, sizeof(uint64_t));
-    state->scale_row = (uint64_t *)calloc(n, sizeof(uint64_t));
-    state->scale_tail = (uint64_t *)calloc(n, sizeof(uint64_t));
-    state->max_sources = (uint64_t *)calloc((size_t)n_levels, sizeof(uint64_t));
-    state->max_tail = (uint64_t *)calloc((size_t)n_levels, sizeof(uint64_t));
-    if (state->diag_offset == NULL || state->scale_offset == NULL || state->diag_row == NULL ||
-        state->scale_row == NULL || state->scale_tail == NULL || state->max_sources == NULL || state->max_tail == NULL)
+    // The seven lists live in one arena sized for the exact counts, so the
+    // state asks the allocator once here and gives the block back once in
+    // destroy; the pointers are carved views into it.
+    const size_t schedule_words = (size_t)(n_levels + 1) * 2 + (size_t)n * 3 + (size_t)n_levels * 2;
+    state->schedule = (uint64_t *)hybsol_alloc(allocator, schedule_words * sizeof(uint64_t));
+    if (state->schedule == NULL)
     {
         res = HYBSOL_ERROR_OUT_OF_MEMORY;
+    }
+    else
+    {
+        memset(state->schedule, 0, schedule_words * sizeof(uint64_t));
+        uint64_t *carved = state->schedule;
+        state->diag_offset = carved;
+        carved += n_levels + 1;
+        state->scale_offset = carved;
+        carved += n_levels + 1;
+        state->diag_row = carved;
+        carved += n;
+        state->scale_row = carved;
+        carved += n;
+        state->scale_tail = carved;
+        carved += n;
+        state->max_sources = carved;
+        carved += n_levels;
+        state->max_tail = carved;
     }
 
     size_t scratch_elements = 0;
@@ -567,8 +598,11 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
             scratch_elements = need;
         }
     }
-    state->diag_offset[n_levels] = diag_count;
-    state->scale_offset[n_levels] = scale_count;
+    if (res == HYBSOL_SUCCESS)
+    {
+        state->diag_offset[n_levels] = diag_count;
+        state->scale_offset[n_levels] = scale_count;
+    }
 
     if (res == HYBSOL_SUCCESS)
     {
@@ -629,13 +663,14 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         res = HYBSOL_ERROR_OUT_OF_MEMORY;
     }
 
-    uint64_t *const val_offsets = n_columns > 0 ? (uint64_t *)malloc((size_t)n_columns * sizeof(uint64_t)) : NULL;
+    uint64_t *const val_offsets =
+        n_columns > 0 ? (uint64_t *)hybsol_alloc(allocator, (size_t)n_columns * sizeof(uint64_t)) : NULL;
     if (res == HYBSOL_SUCCESS && n_columns > 0 && val_offsets == NULL)
     {
         res = HYBSOL_ERROR_OUT_OF_MEMORY;
     }
 
-    void *const staging = total_elements > 0 ? malloc(total_elements * scalar) : NULL;
+    void *const staging = total_elements > 0 ? hybsol_alloc(allocator, total_elements * scalar) : NULL;
     if (res == HYBSOL_SUCCESS && total_elements > 0 && staging == NULL)
     {
         res = HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -676,8 +711,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         res = buffer_write(device, state->entry_val_offset, val_offsets, bytes_cols);
     }
 
-    free(val_offsets);
-    free(staging);
+    hybsol_free(allocator, val_offsets);
+    hybsol_free(allocator, staging);
     if (res != HYBSOL_SUCCESS)
     {
         hybsol_decomposition_destroy(dec);
@@ -963,9 +998,9 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
     (void)hipSetDevice(device->id);
 
     // Staged per call: a replay is a host-driven list, not a hot path.
-    uint32_t *const types = (uint32_t *)malloc((size_t)n_ops * sizeof(uint32_t));
-    uint64_t *const rows = (uint64_t *)malloc((size_t)n_ops * sizeof(uint64_t));
-    uint64_t *const cols = (uint64_t *)malloc((size_t)n_ops * sizeof(uint64_t));
+    uint32_t *const types = (uint32_t *)hybsol_alloc(state->allocator, (size_t)n_ops * sizeof(uint32_t));
+    uint64_t *const rows = (uint64_t *)hybsol_alloc(state->allocator, (size_t)n_ops * sizeof(uint64_t));
+    uint64_t *const cols = (uint64_t *)hybsol_alloc(state->allocator, (size_t)n_ops * sizeof(uint64_t));
     void *op_type = NULL;
     void *op_row = NULL;
     void *op_col = NULL;
@@ -1028,9 +1063,9 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
     buffer_release(op_type);
     buffer_release(op_row);
     buffer_release(op_col);
-    free(types);
-    free(rows);
-    free(cols);
+    hybsol_free(state->allocator, types);
+    hybsol_free(state->allocator, rows);
+    hybsol_free(state->allocator, cols);
 }
 
 /** Solve ``U x = y`` on the device: the back substitution on its own. */
@@ -1097,14 +1132,8 @@ static void backend_destroy(void *const state_ptr)
     buffer_release(state->dev_scale_row);
     buffer_release(state->dev_scale_tail);
 
-    free(state->diag_offset);
-    free(state->scale_offset);
-    free(state->diag_row);
-    free(state->scale_row);
-    free(state->scale_tail);
-    free(state->max_sources);
-    free(state->max_tail);
-    free(state->transfer);
+    hybsol_free(state->allocator, state->schedule);
+    hybsol_free(state->allocator, state->transfer);
     hybsol_hip_device_release(state->device);
-    free(state);
+    hybsol_free(state->allocator, state);
 }

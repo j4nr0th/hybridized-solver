@@ -37,6 +37,11 @@ struct hybsol_hip_device
     int supports_double;
     /** Acquisitions not yet released. */
     unsigned refs;
+    /**
+     * The allocator the acquisition handed in, kept for the handle's own
+     * allocations; valid until the last release, as the header requires.
+     */
+    const hybsol_allocator_t *allocator;
 };
 
 /*

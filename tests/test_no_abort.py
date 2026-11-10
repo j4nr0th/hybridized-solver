@@ -24,7 +24,6 @@ failure even when nothing crashed.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -595,7 +594,6 @@ def test_interpreter_shuts_down_cleanly():
     if not example.is_file():
         pytest.skip("examples/compare_scipy.py is not present in this checkout")
 
-    env = {**os.environ, "OMP_NUM_THREADS": "1"}
     runs = 10
     crashes = []
     for _ in range(runs):
@@ -604,7 +602,6 @@ def test_interpreter_shuts_down_cleanly():
             capture_output=True,
             text=True,
             timeout=600,
-            env=env,
         )
         if proc.returncode != 0:
             crashes.append((proc.returncode, proc.stderr[-800:]))

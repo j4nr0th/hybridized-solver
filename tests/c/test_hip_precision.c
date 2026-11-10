@@ -225,7 +225,8 @@ static void run_mode(const hybsol_hip_arith_t arith, const int gated, const char
     {
         hybsol_decomposition_t *dec = NULL;
         const hybsol_result_t res
-            = hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, arith, device, &dec);
+            = hybsol_hip_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, arith, device,
+                                                        &CUTL_STD_ALLOCATOR, &dec);
         if (res != HYBSOL_SUCCESS)
         {
             first_res = res;
@@ -329,7 +330,7 @@ static hybsol_hip_device_t *acquire_device(uint64_t *const index_out)
             continue;
         }
         hybsol_hip_device_t *device = NULL;
-        if (hybsol_hip_device_acquire(i, &device) == HYBSOL_SUCCESS)
+        if (hybsol_hip_device_acquire(i, &CUTL_STD_ALLOCATOR, &device) == HYBSOL_SUCCESS)
         {
             *index_out = i;
             return device;

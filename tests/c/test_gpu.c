@@ -157,7 +157,7 @@ static hybsol_opencl_device_t *acquire_device(uint64_t *const index_out)
             continue;
         }
         hybsol_opencl_device_t *device = NULL;
-        if (hybsol_opencl_device_acquire(i, &device) == HYBSOL_SUCCESS)
+        if (hybsol_opencl_device_acquire(i, &CUTL_STD_ALLOCATOR, &device) == HYBSOL_SUCCESS)
         {
             *index_out = i;
             return device;
@@ -252,7 +252,8 @@ static void test_parity_in_both_precisions(hybsol_opencl_device_t *const device)
         CHECK(hybsol_decomposition_device(cpu) == UINT64_MAX);
 
         hybsol_decomposition_t *gpu = NULL;
-        CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, precision, device, &gpu));
+        CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, precision, device, &CUTL_STD_ALLOCATOR,
+                                                              &gpu));
         CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
         CHECK_MSG(hybsol_decomposition_device(gpu) != UINT64_MAX, "the device decomposition reports no device");
         CHECK(hybsol_decomposition_is_factorized(gpu));
@@ -300,7 +301,8 @@ static void test_mixed_precision_on_device(hybsol_opencl_device_t *const device)
         CHECK_OK(hybsol_decomposition_factorize(cpu, 1));
 
         hybsol_decomposition_t *gpu = NULL;
-        CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, cases[c].factor_precision, device, &gpu));
+        CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, cases[c].factor_precision, device,
+                                                              &CUTL_STD_ALLOCATOR, &gpu));
         CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
 
         compare_solves(gpu, cpu, cases[c].tolerance, cases[c].what);
@@ -332,7 +334,8 @@ static void test_singular_block_agrees(hybsol_opencl_device_t *const device)
     CHECK_RESULT(hybsol_decomposition_factorize(cpu, 1), HYBSOL_ERROR_SINGULAR);
 
     hybsol_decomposition_t *gpu = NULL;
-    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device,
+                                                          &CUTL_STD_ALLOCATOR, &gpu));
     CHECK_RESULT(hybsol_decomposition_factorize(gpu, 0), HYBSOL_ERROR_SINGULAR);
     CHECK_MSG(hybsol_decomposition_failing_block(gpu) == hybsol_decomposition_failing_block(cpu),
               "the device named block %llu, the CPU named %llu",
@@ -377,7 +380,8 @@ static void test_multi_pass_singular_block_agrees(hybsol_opencl_device_t *const 
     CHECK_MSG(named == 1, "the CPU blamed block %llu, not the rank-one one", (unsigned long long)named);
 
     hybsol_decomposition_t *gpu = NULL;
-    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device,
+                                                          &CUTL_STD_ALLOCATOR, &gpu));
     CHECK_RESULT(hybsol_decomposition_factorize(gpu, 0), HYBSOL_ERROR_SINGULAR);
     CHECK_MSG(hybsol_decomposition_failing_block(gpu) == named,
               "the device named block %llu, the CPU named %llu",
@@ -416,19 +420,21 @@ static void test_hostile_arguments(hybsol_opencl_device_t *const device)
     // Kernel names and element widths both branch on the precision, so a value
     // outside the enum may not become whichever branch the comparison takes.
     hybsol_decomposition_t *gpu = NULL;
-    CHECK_RESULT(hybsol_opencl_decomposition_create_on_device(sys, graph, (hybsol_precision_t)7, device, &gpu),
+    CHECK_RESULT(hybsol_opencl_decomposition_create_on_device(sys, graph, (hybsol_precision_t)7, device,
+                                                              &CUTL_STD_ALLOCATOR, &gpu),
                  HYBSOL_ERROR_DEVICE_CAPABILITY);
     CHECK(gpu == NULL);
     CHECK(hybsol_opencl_last_error()[0] != '\0');
 
     // A refusal is not a wedged backend: the next honest call works.
-    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device,
+                                                          &CUTL_STD_ALLOCATOR, &gpu));
     CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
     hybsol_decomposition_destroy(gpu);
 
     // And the note answers the call that failed, not the one before it.
     hybsol_opencl_device_t *missing = NULL;
-    CHECK_RESULT(hybsol_opencl_device_acquire(9999, &missing), HYBSOL_ERROR_NO_DEVICE);
+    CHECK_RESULT(hybsol_opencl_device_acquire(9999, &CUTL_STD_ALLOCATOR, &missing), HYBSOL_ERROR_NO_DEVICE);
     CHECK(missing == NULL);
     CHECK_MSG(strstr(hybsol_opencl_last_error(), "9999") != NULL,
               "the refusal said ``%s'', which does not name the index asked for",
@@ -454,7 +460,8 @@ static void test_replay_matches_solve(hybsol_opencl_device_t *const device)
     CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
 
     hybsol_decomposition_t *gpu = NULL;
-    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device,
+                                                          &CUTL_STD_ALLOCATOR, &gpu));
     CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
 
     const uint64_t total = hybsol_decomposition_total_size(gpu);
@@ -498,7 +505,7 @@ static void test_replay_matches_solve(hybsol_opencl_device_t *const device)
 static void test_device_lifetime(hybsol_opencl_device_t *const device, const uint64_t index)
 {
     hybsol_opencl_device_t *second = NULL;
-    CHECK_OK(hybsol_opencl_device_acquire(index, &second));
+    CHECK_OK(hybsol_opencl_device_acquire(index, &CUTL_STD_ALLOCATOR, &second));
     CHECK_MSG(second == device, "acquiring the same device twice gave two handles");
     hybsol_opencl_device_release(second);
 
@@ -514,7 +521,8 @@ static void test_device_lifetime(hybsol_opencl_device_t *const device, const uin
     hybsol_elimination_t *graph = NULL;
     CHECK_OK(hybsol_elimination_create(sys, &graph, NULL));
     hybsol_decomposition_t *gpu = NULL;
-    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device, &gpu));
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, graph, HYBSOL_PRECISION_DOUBLE, device,
+                                                          &CUTL_STD_ALLOCATOR, &gpu));
     CHECK_OK(hybsol_decomposition_factorize(gpu, 0));
     hybsol_decomposition_destroy(gpu);
     hybsol_elimination_destroy(graph);
@@ -530,7 +538,8 @@ static void test_device_lifetime(hybsol_opencl_device_t *const device, const uin
     hybsol_elimination_t *g2 = NULL;
     CHECK_OK(hybsol_elimination_create(sys, &g2, NULL));
     hybsol_decomposition_t *d2 = NULL;
-    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, g2, HYBSOL_PRECISION_DOUBLE, device, &d2));
+    CHECK_OK(hybsol_opencl_decomposition_create_on_device(sys, g2, HYBSOL_PRECISION_DOUBLE, device,
+                                                          &CUTL_STD_ALLOCATOR, &d2));
     CHECK_OK(hybsol_decomposition_factorize(d2, 0));
     hybsol_decomposition_destroy(d2);
     hybsol_elimination_destroy(g2);

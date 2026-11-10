@@ -8,6 +8,7 @@
  */
 
 #include "opencl_internal.h"
+#include "core/internal.h"
 #include <cutl/common_defs.h>
 
 #include "gpu_kernels.h"
@@ -132,8 +133,15 @@ typedef struct
     char name[128];
 } listed_device_t;
 
+/*
+ * A machine has a handful of devices, so the enumeration lives in a fixed
+ * table rather than a growable list: the cache never allocates. Exceeding
+ * the cap is a refused enumeration with a note, never a silent truncation.
+ */
+#define HYBSOL_OPENCL_MAX_LISTED_DEVICES 32
+
 /** The cached enumeration; empty until :c:func:`hybsol_opencl_device_count` asks. */
-static listed_device_t *g_devices = NULL;
+static listed_device_t g_devices[HYBSOL_OPENCL_MAX_LISTED_DEVICES];
 static uint64_t g_device_count = 0;
 static int g_enumerated = 0;
 
@@ -216,27 +224,25 @@ static int device_has_double(cl_device_id device)
 }
 
 /**
- * Append one device to the enumeration.
+ * Append one device to the enumeration at ``count``.
  *
- * Returns ``HYBSOL_ERROR_OUT_OF_MEMORY`` when the list cannot grow.
+ * Returns ``HYBSOL_ERROR_DEVICE`` when the fixed table is full; the cap only
+ * binds on a machine with more devices than this backend has ever seen.
  */
-static hybsol_result_t device_append(listed_device_t **const list, uint64_t *const count, const cl_device_id id)
+static hybsol_result_t device_append(const uint64_t count, const cl_device_id id)
 {
-    CUTL_ASSERT(list != NULL && count != NULL, "The list and its count must not be NULL.");
-
-    listed_device_t *const grown = (listed_device_t *)realloc(*list, (size_t)(*count + 1) * sizeof(**list));
-    if (grown == NULL)
+    if (count >= HYBSOL_OPENCL_MAX_LISTED_DEVICES)
     {
-        hybsol_opencl_set_error("Out of memory listing the OpenCL devices.");
-        return HYBSOL_ERROR_OUT_OF_MEMORY;
+        hybsol_opencl_set_error(
+            "The OpenCL runtime lists more than %d devices; the enumeration is capped at that many.",
+            HYBSOL_OPENCL_MAX_LISTED_DEVICES);
+        return HYBSOL_ERROR_DEVICE;
     }
 
-    grown[*count].id = id;
-    grown[*count].kind = device_kind(id);
-    grown[*count].supports_double = device_has_double(id);
-    device_string(id, CL_DEVICE_NAME, grown[*count].name, sizeof(grown[*count].name));
-    *list = grown;
-    ++*count;
+    g_devices[count].id = id;
+    g_devices[count].kind = device_kind(id);
+    g_devices[count].supports_double = device_has_double(id);
+    device_string(id, CL_DEVICE_NAME, g_devices[count].name, sizeof(g_devices[count].name));
     return HYBSOL_SUCCESS;
 }
 
@@ -258,9 +264,11 @@ static int device_before(const void *const a_ptr, const void *const b_ptr)
  * Collect every device of every platform, GPUs first.
  *
  * No platform at all is not a failure but a machine without a device, which
- * the caller sees as a count of zero.
+ * the caller sees as a count of zero. The table itself is static; only the
+ * runtime's own lists need memory, and those come from ``allocator`` and are
+ * back with it before this returns.
  */
-static hybsol_result_t enumerate_devices(void)
+static hybsol_result_t enumerate_devices(const hybsol_allocator_t *const allocator)
 {
     cl_uint n_platforms = 0;
     if (clGetPlatformIDs(0, NULL, &n_platforms) != CL_SUCCESS || n_platforms == 0)
@@ -269,19 +277,19 @@ static hybsol_result_t enumerate_devices(void)
         return HYBSOL_ERROR_NO_DEVICE;
     }
 
-    cl_platform_id *const platforms = (cl_platform_id *)malloc((size_t)n_platforms * sizeof(*platforms));
+    cl_platform_id *const platforms =
+        (cl_platform_id *)hybsol_alloc(allocator, (size_t)n_platforms * sizeof(*platforms));
     if (platforms == NULL)
     {
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     }
     if (clGetPlatformIDs(n_platforms, platforms, NULL) != CL_SUCCESS)
     {
-        free(platforms);
+        hybsol_free(allocator, platforms);
         hybsol_opencl_set_error("The OpenCL platforms went away while they were being listed.");
         return HYBSOL_ERROR_NO_DEVICE;
     }
 
-    listed_device_t *list = NULL;
     uint64_t count = 0;
     hybsol_result_t res = HYBSOL_SUCCESS;
 
@@ -296,7 +304,7 @@ static hybsol_result_t enumerate_devices(void)
                 continue;
             }
 
-            cl_device_id *const ids = (cl_device_id *)malloc((size_t)n_devices * sizeof(*ids));
+            cl_device_id *const ids = (cl_device_id *)hybsol_alloc(allocator, (size_t)n_devices * sizeof(*ids));
             if (ids == NULL)
             {
                 res = HYBSOL_ERROR_OUT_OF_MEMORY;
@@ -304,7 +312,7 @@ static hybsol_result_t enumerate_devices(void)
             }
             if (clGetDeviceIDs(platforms[p], CL_DEVICE_TYPE_ALL, n_devices, ids, NULL) != CL_SUCCESS)
             {
-                free(ids);
+                hybsol_free(allocator, ids);
                 continue;
             }
 
@@ -314,43 +322,50 @@ static hybsol_result_t enumerate_devices(void)
                 const int is_gpu = kind == HYBSOL_OPENCL_DEVICE_GPU;
                 if (is_gpu == gpu_pass)
                 {
-                    res = device_append(&list, &count, ids[d]);
+                    res = device_append(count, ids[d]);
+                    if (res == HYBSOL_SUCCESS)
+                    {
+                        ++count;
+                    }
                 }
             }
-            free(ids);
+            hybsol_free(allocator, ids);
         }
     }
 
-    free(platforms);
+    hybsol_free(allocator, platforms);
     if (res != HYBSOL_SUCCESS)
     {
-        free(list);
+        g_device_count = 0;
         return res;
     }
 
     // Sort once: an index a caller writes down should still mean the same device tomorrow.
     if (count > 1)
     {
-        qsort(list, (size_t)count, sizeof(*list), device_before);
+        qsort(g_devices, (size_t)count, sizeof(*g_devices), device_before);
     }
 
-    g_devices = list;
     g_device_count = count;
     return HYBSOL_SUCCESS;
 }
 
-/** The enumeration, run once. The caller holds the lock. */
-static void ensure_enumerated(void)
+/**
+ * The enumeration, run once. The caller holds the lock.
+ *
+ * The entry points without an allocator argument hand in
+ * ``&CUTL_STD_ALLOCATOR``: the enumeration's temporaries live and die inside
+ * it, so the default is as good a pool as any there.
+ */
+static void ensure_enumerated(const hybsol_allocator_t *const allocator)
 {
     if (g_enumerated)
     {
         return;
     }
     g_enumerated = 1;
-    if (enumerate_devices() != HYBSOL_SUCCESS)
+    if (enumerate_devices(allocator) != HYBSOL_SUCCESS)
     {
-        free(g_devices);
-        g_devices = NULL;
         g_device_count = 0;
     }
 }
@@ -358,7 +373,7 @@ static void ensure_enumerated(void)
 uint64_t hybsol_opencl_device_count(void)
 {
     lock_acquire();
-    ensure_enumerated();
+    ensure_enumerated(&CUTL_STD_ALLOCATOR);
     const uint64_t count = g_device_count;
     lock_release();
     return count;
@@ -369,7 +384,7 @@ hybsol_result_t hybsol_opencl_device_info(const uint64_t index, hybsol_opencl_de
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
 
     lock_acquire();
-    ensure_enumerated();
+    ensure_enumerated(&CUTL_STD_ALLOCATOR);
     if (index >= g_device_count)
     {
         lock_release();
@@ -399,21 +414,23 @@ hybsol_result_t hybsol_opencl_device_info(const uint64_t index, hybsol_opencl_de
 /* ------------------------------------------------------------------------- */
 
 /** The one handle per index, if it has been built; only touched under the lock. */
-static hybsol_opencl_device_t **g_devices_acquired = NULL;
-static uint64_t g_acquired_capacity = 0;
+static hybsol_opencl_device_t *g_devices_acquired[HYBSOL_OPENCL_MAX_LISTED_DEVICES];
 
 /**
  * Build the context and the queue for one enumerated device.
  *
  * Returns ``HYBSOL_ERROR_NO_DEVICE`` for an index no device has; the rest is
- * the runtime's answer.
+ * the runtime's answer. The handle itself comes from ``allocator``, which the
+ * acquisition's caller owns and which the handle keeps for its own later
+ * allocations.
  */
-static hybsol_result_t device_create(const uint64_t index, hybsol_opencl_device_t **const out)
+static hybsol_result_t device_create(const uint64_t index, const hybsol_allocator_t *const allocator,
+                                     hybsol_opencl_device_t **const out)
 {
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
 
     lock_acquire();
-    ensure_enumerated();
+    ensure_enumerated(allocator);
     if (index >= g_device_count)
     {
         lock_release();
@@ -440,13 +457,15 @@ static hybsol_result_t device_create(const uint64_t index, hybsol_opencl_device_
         return HYBSOL_ERROR_DEVICE;
     }
 
-    hybsol_opencl_device_t *const device = (hybsol_opencl_device_t *)calloc(1, sizeof(*device));
+    hybsol_opencl_device_t *const device = (hybsol_opencl_device_t *)hybsol_alloc(allocator, sizeof(*device));
     if (device == NULL)
     {
+        hybsol_opencl_set_error("Out of memory building the device handle.");
         clReleaseCommandQueue(queue);
         clReleaseContext(context);
         return HYBSOL_ERROR_OUT_OF_MEMORY;
     }
+    memset(device, 0, sizeof(*device));
 
     device->index = index;
     device->id = id;
@@ -454,40 +473,29 @@ static hybsol_result_t device_create(const uint64_t index, hybsol_opencl_device_
     device->queue = queue;
     device->supports_double = supports_double;
     device->refs = 1;
+    device->allocator = allocator;
     device->program_f32 = NULL;
     device->program_f64 = NULL;
     *out = device;
     return HYBSOL_SUCCESS;
 }
 
-hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, hybsol_opencl_device_t **const out)
+hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, const hybsol_allocator_t *const allocator,
+                                             hybsol_opencl_device_t **const out)
 {
     CUTL_ASSERT(out != NULL, "The output pointer must not be NULL.");
+    CUTL_ASSERT(allocator != NULL, "The allocator must not be NULL; pass &CUTL_STD_ALLOCATOR for the default.");
     *out = NULL;
     hybsol_opencl_clear_error();
 
     lock_acquire();
-    ensure_enumerated();
+    ensure_enumerated(allocator);
     if (index >= g_device_count)
     {
         lock_release();
         hybsol_opencl_set_error("No OpenCL device has index %llu; the runtime lists %llu.",
                                 (unsigned long long)index, (unsigned long long)g_device_count);
         return HYBSOL_ERROR_NO_DEVICE;
-    }
-    if (index >= g_acquired_capacity)
-    {
-        const uint64_t wanted = index + 1;
-        hybsol_opencl_device_t **const grown =
-            (hybsol_opencl_device_t **)realloc(g_devices_acquired, (size_t)wanted * sizeof(*grown));
-        if (grown == NULL)
-        {
-            lock_release();
-            return HYBSOL_ERROR_OUT_OF_MEMORY;
-        }
-        memset(grown + g_acquired_capacity, 0, (size_t)(wanted - g_acquired_capacity) * sizeof(*grown));
-        g_devices_acquired = grown;
-        g_acquired_capacity = wanted;
     }
     hybsol_opencl_device_t *const existing = g_devices_acquired[index];
     lock_release();
@@ -503,7 +511,7 @@ hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, hybsol_opencl
     }
 
     hybsol_opencl_device_t *device = NULL;
-    const hybsol_result_t res = device_create(index, &device);
+    const hybsol_result_t res = device_create(index, allocator, &device);
     if (res != HYBSOL_SUCCESS)
     {
         return res;
@@ -524,7 +532,7 @@ hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, hybsol_opencl
 
     clReleaseCommandQueue(device->queue);
     clReleaseContext(device->context);
-    free(device);
+    hybsol_free(allocator, device);
     *out = (hybsol_opencl_device_t *)winner;
     return HYBSOL_SUCCESS;
 }
@@ -543,7 +551,7 @@ void hybsol_opencl_device_release(hybsol_opencl_device_t *const device)
         lock_release();
         return;
     }
-    if (device->index < g_acquired_capacity && g_devices_acquired[device->index] == device)
+    if (device->index < HYBSOL_OPENCL_MAX_LISTED_DEVICES && g_devices_acquired[device->index] == device)
     {
         g_devices_acquired[device->index] = NULL;
     }
@@ -559,7 +567,7 @@ void hybsol_opencl_device_release(hybsol_opencl_device_t *const device)
     }
     clReleaseCommandQueue(device->queue);
     clReleaseContext(device->context);
-    free(device);
+    hybsol_free(device->allocator, device);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -602,14 +610,14 @@ static cl_program device_program(hybsol_opencl_device_t *const device, const hyb
         if (clGetProgramBuildInfo(program, device->id, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size) == CL_SUCCESS &&
             log_size > 1)
         {
-            log = (char *)malloc(log_size);
+            log = (char *)hybsol_alloc(device->allocator, log_size);
         }
         if (log != NULL)
         {
             clGetProgramBuildInfo(program, device->id, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
             snprintf(g_last_error, sizeof(g_last_error), "The %s kernels did not build: %s",
                      precision == HYBSOL_PRECISION_SINGLE ? "single" : "double", log);
-            free(log);
+            hybsol_free(device->allocator, log);
         }
         else
         {
