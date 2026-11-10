@@ -325,8 +325,7 @@ static hybsol_result_t enumerate_devices(void)
     }
 
     // Sort once: an index a caller writes down should still mean the same device tomorrow.
-    // The order is total only while the names are distinct; two identical cards tie on name
-    // alone, exactly as in the OpenCL backend, and the uuid is what disambiguates those.
+    // Two identical cards tie on name alone, as in the OpenCL backend; the uuid disambiguates those.
     if (count > 1)
     {
         qsort(g_devices, (size_t)count, sizeof(*g_devices), device_before);
@@ -474,6 +473,9 @@ hybsol_result_t hybsol_hip_device_acquire(const uint64_t index, const hybsol_all
         lock_release();
         return HYBSOL_ERROR_NO_DEVICE;
     }
+    // g_device_count never exceeds the table, so a passing index is inside it too.
+    CUTL_ASSERT(index < HYBSOL_HIP_MAX_LISTED_DEVICES, "The handle table is %d wide but was asked for index %llu.",
+                HYBSOL_HIP_MAX_LISTED_DEVICES, (unsigned long long)index);
     hybsol_hip_device_t *const existing = g_devices_acquired[index];
     lock_release();
 
@@ -527,7 +529,11 @@ void hybsol_hip_device_release(hybsol_hip_device_t *const device)
         lock_release();
         return;
     }
-    if (device->index < HYBSOL_HIP_MAX_LISTED_DEVICES && g_devices_acquired[device->index] == device)
+    // Creation only ever hands out an index the table is wide enough for.
+    CUTL_ASSERT(device->index < HYBSOL_HIP_MAX_LISTED_DEVICES,
+                "The handle table is %d wide but a device claims index %llu.", HYBSOL_HIP_MAX_LISTED_DEVICES,
+                (unsigned long long)device->index);
+    if (g_devices_acquired[device->index] == device)
     {
         g_devices_acquired[device->index] = NULL;
     }

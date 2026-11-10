@@ -140,6 +140,7 @@ static uint64_t scratch_stride_of(const hip_state_t *const state)
  */
 static void *buffer_create(const hybsol_hip_device_t *const device, const size_t bytes)
 {
+    CUTL_ASSERT(device != NULL, "The device must not be NULL.");
     if (bytes == 0)
     {
         return NULL;
@@ -159,6 +160,7 @@ static void *buffer_create(const hybsol_hip_device_t *const device, const size_t
 static hybsol_result_t buffer_write(const hybsol_hip_device_t *const device, void *const buffer,
                                     const void *const data, const size_t bytes)
 {
+    CUTL_ASSERT(device != NULL && device->stream != NULL, "The device and its stream must not be NULL.");
     if (buffer == NULL)
     {
         return HYBSOL_SUCCESS;
@@ -182,6 +184,7 @@ static hybsol_result_t buffer_write(const hybsol_hip_device_t *const device, voi
 static hybsol_result_t buffer_read(const hybsol_hip_device_t *const device, const void *const buffer,
                                    void *const data, const size_t bytes)
 {
+    CUTL_ASSERT(device != NULL && device->stream != NULL, "The device and its stream must not be NULL.");
     if (buffer == NULL)
     {
         return HYBSOL_SUCCESS;
@@ -211,6 +214,7 @@ static void buffer_release(void *const buffer)
 /** Grow the transfer scratch to ``bytes``. */
 static hybsol_result_t transfer_reserve(hip_state_t *const state, const size_t bytes)
 {
+    CUTL_ASSERT(state != NULL && state->allocator != NULL, "The backend state and its allocator must not be NULL.");
     if (state->transfer_bytes >= bytes)
     {
         return HYBSOL_SUCCESS;
@@ -290,6 +294,8 @@ static hybsol_result_t kernel_launch(const hybsol_hip_device_t *const device, co
                                      const uint64_t grid_x, const uint64_t grid_y, const size_t block_x,
                                      const size_t block_y, void **const args)
 {
+    CUTL_ASSERT(device != NULL && device->stream != NULL && args != NULL,
+                "The device, its stream and the argument list must not be NULL.");
     dim3 grid;
     grid.x = (uint32_t)grid_x;
     grid.y = (uint32_t)grid_y;
@@ -328,10 +334,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     *out = NULL;
     hybsol_hip_clear_error();
 
-    // A value outside either enum names nothing this backend implements, and every test below
-    // compares against a named mode -- an unchecked one would silently mean whichever answer the
-    // comparisons happen to give. The bindings parse both arguments before reaching this call, so
-    // no Python caller sees the refusal; it is here for the C caller who writes the enum himself.
+    // An out-of-range enum would mean whichever answer the comparisons below happen to give; the
+    // bindings parse both arguments, so this refusal is for the C caller who writes the enum himself.
     if (precision != HYBSOL_PRECISION_SINGLE && precision != HYBSOL_PRECISION_DOUBLE)
     {
         hybsol_hip_set_error("Precision %d is neither single nor double.", (int)precision);
@@ -356,11 +360,7 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     const hipError_t probe = hipGetDeviceProperties(&prop, (int)device->id);
     const int gfx12 = (probe == hipSuccess && strncmp(prop.gcnArchName, "gfx12", 5) == 0);
 
-    // AUTO: single factors are FP32 already and always run native; double
-    // factors take the measured gfx12 default -- the selection harness
-    // clocked native FP64 the fastest gating mode at every block size it
-    // benches -- and native on every other gfx target: auto resolves to
-    // native everywhere today.
+    // AUTO: single factors are FP32 already; double takes the measured default recorded above.
     hybsol_hip_arith_t chosen = arith;
     if (chosen == HYBSOL_HIP_ARITH_AUTO)
     {
@@ -374,15 +374,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         }
     }
 
-    // An Ozaki mode without the WMMA cores is a capability miss, not a
-    // silent fallback -- but only for the factors that could ever reach
-    // them. Single factors run the FP32 kernels whatever ``arith`` says, on
-    // every device: there the mode names no path at all, so refusing it on
-    // one device and accepting it on another would be a distinction without
-    // a difference. (Ozaki-II is the asymmetric variant -- one operand
-    // sliced, the other a single window -- meant as the inner solve under
-    // iterative refinement; the harness prints its accuracy and never
-    // gates on it, and AUTO never names it.)
+    // An Ozaki mode without the WMMA cores is a capability miss, not a silent fallback -- but
+    // only for double factors: single factors run the FP32 kernels whatever ``arith`` says.
     if ((chosen == HYBSOL_HIP_ARITH_OZAKI || chosen == HYBSOL_HIP_ARITH_OZAKI2)
         && precision == HYBSOL_PRECISION_DOUBLE && !gfx12)
     {
@@ -477,14 +470,8 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         }
     }
 
-    // An Ozaki mode on a WMMA device runs the two block-GEMM passes on the
-    // matrix cores once some block reaches 16 -- the tile a WMMA call answers
-    // for. Below that the tile never applies and the host launches the plain
-    // _f64 pair instead; every other pass runs the native set under an Ozaki
-    // mode anyway. The Ozaki-I realization is the
-    // signed int8 slice walk: the selection harness clocked it 1.3x ahead of
-    // the FP16 slice sibling at 32-wide blocks (a tie at 16), and the loser
-    // was cut along with the environment hook that had compared them.
+    // An Ozaki mode runs the two block-GEMM passes on the matrix cores once some block reaches
+    // the 16-wide WMMA tile; below that the host launches the plain _f64 pair instead.
     if ((chosen == HYBSOL_HIP_ARITH_OZAKI || chosen == HYBSOL_HIP_ARITH_OZAKI2)
         && precision == HYBSOL_PRECISION_DOUBLE)
     {
@@ -497,9 +484,6 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
     hybsol_result_t res = HYBSOL_SUCCESS;
 
     // One read of the schedule sizes every launch: per pass, the rows it factors, their tails, its widest source list.
-    // The seven lists live in one arena sized for the exact counts, so the
-    // state asks the allocator once here and gives the block back once in
-    // destroy; the pointers are carved views into it.
     const size_t schedule_words = (size_t)(n_levels + 1) * 2 + (size_t)n * 3 + (size_t)n_levels * 2;
     state->schedule = (uint64_t *)hybsol_alloc(allocator, schedule_words * sizeof(uint64_t));
     if (state->schedule == NULL)
@@ -571,17 +555,10 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
             state->max_sources[pass] = sources;
         }
 
-        // One scratch block per work item of the pass, at the stride every
-        // launch of this decomposition will pass. The plain
-        // elimination walk owns ``rows x sources`` items; the Ozaki scaling
-        // walk owns ``diagonals x tail`` instead, and each of its waves writes
-        // its panel solve into its own slot. A pass that only factors
-        // diagonals has no elimination items at all -- which is exactly the
-        // case where an Ozaki scale wave still runs, so the scale count is the
-        // only thing that sizes the buffer there. Getting this wrong is not a
-        // wrong answer but a write past the end of the buffer: for a system
-        // with no eliminations anywhere, the buffer is empty, and the kernel
-        // writes through a null pointer.
+        // One scratch block per work item of the pass: ``rows x sources`` for the plain elimination
+        // walk, ``diagonals x tail`` for an Ozaki scale wave -- the only thing sizing the buffer
+        // when a pass has no eliminations at all. Undersizing is not a wrong answer but a write
+        // past the end: with no eliminations anywhere the buffer would be empty under a scale wave.
         const size_t elim_items = (size_t)(dec->level_offset[pass + 1] - dec->level_offset[pass]) * sources;
         size_t items = elim_items;
         if (state->kernels_oz != 0)
@@ -603,6 +580,9 @@ hybsol_result_t hybsol_hip_decomposition_create_on_device(const hybsol_system_t 
         state->diag_offset[n_levels] = diag_count;
         state->scale_offset[n_levels] = scale_count;
     }
+    // The kernels walk dev_diag_row and dev_scale_row with one shared count; the two lists must pair.
+    CUTL_ASSERT(diag_count == scale_count, "The pass walk paired %llu diagonal rows with %llu scale rows.",
+                (unsigned long long)diag_count, (unsigned long long)scale_count);
 
     if (res == HYBSOL_SUCCESS)
     {
@@ -730,6 +710,8 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
 {
     HYBSOL_MARK_USED(n_threads);
     hip_state_t *const state = (hip_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_hip_clear_error();
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_hip_device_t *const device = state->device;
@@ -908,6 +890,8 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
 {
     HYBSOL_MARK_USED(n_threads);
     hip_state_t *const state = (hip_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_hip_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -986,6 +970,8 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
                                      double *const vec)
 {
     hip_state_t *const state = (hip_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_hip_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -1072,6 +1058,8 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
 static void backend_solve_upper(void *const state_ptr, double *const vec)
 {
     hip_state_t *const state = (hip_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_hip_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -1105,6 +1093,7 @@ static void backend_solve_upper(void *const state_ptr, double *const vec)
 static uint64_t backend_device(const void *const state_ptr)
 {
     const hip_state_t *const state = (const hip_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->device != NULL, "The backend state must belong to a created decomposition.");
     return state->device->index;
 }
 

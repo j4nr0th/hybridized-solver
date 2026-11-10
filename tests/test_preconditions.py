@@ -360,3 +360,20 @@ class TestDeviceBackendPreconditions:
         for wrong in ("fast", ["auto"], 3, ""):
             with pytest.raises(ValueError, match='must be one of "auto"'):
                 module.decompose(full_system(2), device=0, arith=wrong)
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    def test_decompose_rejects_a_negative_thread_count(self, module_name: str) -> None:
+        """The thread-count guard runs before the call reaches a device."""
+        module = self._module(module_name)
+        with pytest.raises(ValueError, match="non-negative"):
+            module.decompose(full_system(2), n_threads=-1)
+
+    @pytest.mark.parametrize("module_name", ["hybsol.hip", "hybsol.opencl"])
+    @pytest.mark.parametrize("wrong", ["the system", None, 7])
+    def test_decompose_rejects_a_system_that_is_not_a_block_system(
+        self, module_name: str, wrong: object
+    ) -> None:
+        """The core asserts a non-NULL system; the bindings make that a TypeError."""
+        module = self._module(module_name)
+        with pytest.raises(TypeError, match="BlockSystem"):
+            module.decompose(wrong, device=0)

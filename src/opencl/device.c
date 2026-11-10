@@ -497,6 +497,9 @@ hybsol_result_t hybsol_opencl_device_acquire(const uint64_t index, const hybsol_
                                 (unsigned long long)index, (unsigned long long)g_device_count);
         return HYBSOL_ERROR_NO_DEVICE;
     }
+    // g_device_count never exceeds the table, so a passing index is inside it too.
+    CUTL_ASSERT(index < HYBSOL_OPENCL_MAX_LISTED_DEVICES, "The handle table is %d wide but was asked for index %llu.",
+                HYBSOL_OPENCL_MAX_LISTED_DEVICES, (unsigned long long)index);
     hybsol_opencl_device_t *const existing = g_devices_acquired[index];
     lock_release();
 
@@ -551,7 +554,11 @@ void hybsol_opencl_device_release(hybsol_opencl_device_t *const device)
         lock_release();
         return;
     }
-    if (device->index < HYBSOL_OPENCL_MAX_LISTED_DEVICES && g_devices_acquired[device->index] == device)
+    // Creation only ever hands out an index the table is wide enough for.
+    CUTL_ASSERT(device->index < HYBSOL_OPENCL_MAX_LISTED_DEVICES,
+                "The handle table is %d wide but a device claims index %llu.", HYBSOL_OPENCL_MAX_LISTED_DEVICES,
+                (unsigned long long)device->index);
+    if (g_devices_acquired[device->index] == device)
     {
         g_devices_acquired[device->index] = NULL;
     }

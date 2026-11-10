@@ -94,6 +94,7 @@ static size_t scalar_bytes(const hybsol_precision_t precision)
 /** A device buffer, or ``NULL`` for an empty array: OpenCL has no zero-sized buffer. */
 static cl_mem buffer_create(hybsol_opencl_device_t *const device, const size_t bytes, const cl_mem_flags flags)
 {
+    CUTL_ASSERT(device != NULL && device->context != NULL, "The device and its context must not be NULL.");
     if (bytes == 0)
     {
         return NULL;
@@ -112,6 +113,7 @@ static cl_mem buffer_create(hybsol_opencl_device_t *const device, const size_t b
 static hybsol_result_t buffer_write(hybsol_opencl_device_t *const device, const cl_mem buffer, const void *const data,
                                     const size_t bytes)
 {
+    CUTL_ASSERT(device != NULL && device->queue != NULL, "The device and its queue must not be NULL.");
     if (buffer == NULL)
     {
         return HYBSOL_SUCCESS;
@@ -129,6 +131,7 @@ static hybsol_result_t buffer_write(hybsol_opencl_device_t *const device, const 
 static hybsol_result_t buffer_read(const hybsol_opencl_device_t *const device, const cl_mem buffer, void *const data,
                                    const size_t bytes)
 {
+    CUTL_ASSERT(device != NULL && device->queue != NULL, "The device and its queue must not be NULL.");
     if (buffer == NULL)
     {
         return HYBSOL_SUCCESS;
@@ -154,6 +157,7 @@ static void buffer_release(cl_mem buffer)
 /** Grow the transfer scratch to ``bytes``. */
 static hybsol_result_t transfer_reserve(opencl_state_t *const state, const size_t bytes)
 {
+    CUTL_ASSERT(state != NULL && state->allocator != NULL, "The backend state and its allocator must not be NULL.");
     if (state->transfer_bytes >= bytes)
     {
         return HYBSOL_SUCCESS;
@@ -227,6 +231,7 @@ static size_t round_up_to(const size_t count, const size_t local)
 /** Set one kernel argument, noting the failure for a later report. */
 static void kernel_set(cl_kernel const kernel, const cl_uint index, const size_t size, const void *const value)
 {
+    CUTL_ASSERT(kernel != NULL, "The kernel must be fetched before its arguments are set.");
     const cl_int status = clSetKernelArg(kernel, index, size, value);
     hybsol_opencl_note_cl_error(status, "Setting a kernel argument");
 }
@@ -250,10 +255,8 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     *out = NULL;
     hybsol_opencl_clear_error();
 
-    // A precision outside the enum names no kernel set and no element width: the kernel names and
-    // the strides both branch on it, so an unchecked value would mean whichever branch the
-    // comparison happens to take. The bindings parse the argument before reaching this call, so
-    // no Python caller sees the refusal; it is here for the C caller who writes the enum himself.
+    // An out-of-range precision would mean whichever kernel set and element width the comparisons
+    // below happen to take; the bindings parse the argument, so this refusal is for the C caller.
     if (precision != HYBSOL_PRECISION_SINGLE && precision != HYBSOL_PRECISION_DOUBLE)
     {
         hybsol_opencl_set_error("Precision %d is neither single nor double.", (int)precision);
@@ -349,9 +352,6 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
     hybsol_result_t res = HYBSOL_SUCCESS;
 
     // One read of the schedule sizes every launch: per pass, the rows it factors, their tails, its widest source list.
-    // The seven lists live in one arena sized for the exact counts, so the
-    // state asks the allocator once here and gives the block back once in
-    // destroy; the pointers are carved views into it.
     const size_t schedule_words = (size_t)(n_levels + 1) * 2 + (size_t)n * 3 + (size_t)n_levels * 2;
     state->schedule = (uint64_t *)hybsol_alloc(allocator, schedule_words * sizeof(uint64_t));
     if (state->schedule == NULL)
@@ -436,6 +436,9 @@ hybsol_result_t hybsol_opencl_decomposition_create_on_device(const hybsol_system
         state->diag_offset[n_levels] = diag_count;
         state->scale_offset[n_levels] = scale_count;
     }
+    // The kernels walk dev_diag_row and dev_scale_row with one shared count; the two lists must pair.
+    CUTL_ASSERT(diag_count == scale_count, "The pass walk paired %llu diagonal rows with %llu scale rows.",
+                (unsigned long long)diag_count, (unsigned long long)scale_count);
 
     if (res == HYBSOL_SUCCESS)
     {
@@ -563,6 +566,8 @@ static hybsol_result_t backend_factorize(void *const state_ptr, const uint64_t n
 {
     HYBSOL_MARK_USED(n_threads);
     opencl_state_t *const state = (opencl_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_opencl_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -721,6 +726,8 @@ static hybsol_result_t backend_solve(void *const state_ptr, double *const vec, c
 {
     HYBSOL_MARK_USED(n_threads);
     opencl_state_t *const state = (opencl_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_opencl_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -836,6 +843,8 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
                                      double *const vec)
 {
     opencl_state_t *const state = (opencl_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_opencl_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -939,6 +948,8 @@ static void backend_apply_operations(void *const state_ptr, const uint64_t n_ops
 static void backend_solve_upper(void *const state_ptr, double *const vec)
 {
     opencl_state_t *const state = (opencl_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->dec != NULL && state->device != NULL,
+                "The backend state must belong to a created decomposition.");
     hybsol_decomposition_t *const dec = state->dec;
     hybsol_opencl_device_t *const device = state->device;
     const hybsol_precision_t precision = dec->precision;
@@ -981,6 +992,7 @@ static void backend_solve_upper(void *const state_ptr, double *const vec)
 static uint64_t backend_device(const void *const state_ptr)
 {
     const opencl_state_t *const state = (const opencl_state_t *)state_ptr;
+    CUTL_ASSERT(state != NULL && state->device != NULL, "The backend state must belong to a created decomposition.");
     return state->device->index;
 }
 

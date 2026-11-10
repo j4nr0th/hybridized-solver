@@ -116,15 +116,23 @@ def _device_decompose(
     device: object,
     precision: object = None,
     arith: object = "auto",
+    nthreads: object = None,
 ) -> None:
     """Ask a device backend to factorize, with an argument of the caller's choosing."""
     module = _device_module(module_name)
     kwargs: dict[str, object] = {"device": device}
     if precision is not None:
         kwargs["precision"] = precision
+    if nthreads is not None:
+        kwargs["n_threads"] = nthreads
     if module_name == "hybsol.hip":
         kwargs["arith"] = arith
     module.decompose(_make_system(), **kwargs)
+
+
+def _device_bad_system(module_name: str, system: object) -> None:
+    """Ask a device backend to factorize something that is not a BlockSystem."""
+    _device_module(module_name).decompose(system, device=0)
 
 
 # --------------------------------------------------------------------------
@@ -288,6 +296,17 @@ def _read_only_cases():
                     "hybsol.hip.decompose/arith_" + name,
                     lambda v=value: _device_decompose("hybsol.hip", 0, arith=v),
                 )
+        # These arguments reach a core assert if the binding lets them through.
+        for name, value in [("negative", -1), ("str", "2"), ("float", 1.5)]:
+            yield (
+                f"{module_name}.decompose/nthreads_{name}",
+                lambda v=value, m=module_name: _device_decompose(m, 0, nthreads=v),
+            )
+        for name, value in [("str", "the system"), ("none", None), ("int", 7)]:
+            yield (
+                f"{module_name}.decompose/system_{name}",
+                lambda v=value, m=module_name: _device_bad_system(m, v),
+            )
 
     for name, thunk in [
         ("bad_strategy", lambda: _make_system().compute_reordering("nonsense")),
